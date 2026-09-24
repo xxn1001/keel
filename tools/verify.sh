@@ -44,38 +44,59 @@ else
             grep -E '^‣' "$out/summary" | head -5 | sed 's/^/      /'
         fi
     done
-    # RepartDirectories 是集合型设置(**追加**语义),而 mkosi 还会把"存在的 mkosi.repart/ 目录"
-    # 当成隐式默认值 ⇒ 一旦源码树里真有个叫 mkosi.repart 的目录,profile 里再设一个,
-    # 就会变成两套分区布局同时生效。真机上正是这样炸的:
-    #   repart: ".../mkosi.repart-slot-b/10-root-b.conf and .../mkosi.repart/20-root-b.conf
-    #            have the same resolved split name ..., refusing."
-    # 所以断言:每个 profile 解析出来的 RepartDirectories 必须恰好一个。
-    # (这也是把三个目录改名成 repart/{install,slot-a,slot-b} 的原因 —— 消灭那个隐式默认值。)
+    # RepartDirectories 的守卫。**刻意不解析 mkosi 的输出**:那条路已被证明是版本相关的
+    # (25.x 与 27 的 --json 结构不同;而 verify.sh 开了 pipefail,mkosi 一旦不支持 --json
+    #  整条管道就失败,断言会误报),而且它只是"症状"。
+    # 改成检查**输入侧的不变量** —— 它们正是导致故障的两个条件,与 mkosi 版本无关:
+    #   ① 源码树里不能存在名为 mkosi.repart 的目录(mkosi 会把它当隐式默认值);
+    #   ② 每个产物 profile 必须恰好设一个 RepartDirectories=,且那个目录存在、里面有 .conf。
+    # 背景:mkosi 把"存在 mkosi.repart/"当默认值 + 集合型设置是追加语义 ⇒ 两者叠加会让
+    # 两套分区布局同时生效。真机上的表现是 repart 拒绝同名 split(AGENTS.md 坑 #20)。
+    if [ -e mkosi.repart ]; then
+        no "源码树里存在 mkosi.repart/ —— 它会成为 RepartDirectories= 的隐式默认值,和 profile 里设的目录叠加(坑 #20);请把布局放到 repart/ 下的子目录"
+    else
+        ok "源码树里没有 mkosi.repart/(不会触发隐式默认值)"
+    fi
     for p in $PROFILES; do
-        n=$(mkosi --profile "$p" summary --json 2>/dev/null | python3 -c '
-import json, re, sys
-# 不用固定结构去解析:mkosi 27 把每个镜像嵌在 "Images": [...] 里,
-# 而 25.x 的 --json 大概率是"一条记录一个镜像"(平铺)。所以直接按 key 名扫,
-# 取最后一个非空的 RepartDirectories —— 本项目只有主镜像会设它。
-raw = sys.stdin.read()
-best = []
-for m in re.finditer(r"\"RepartDirectories\"\s*:\s*(\[[^]]*\])", raw):
-    try:
-        v = json.loads(m.group(1))
-    except ValueError:
-        continue
-    if isinstance(v, list) and v:
-        best = v
-print(len(best))
-' 2>/dev/null) || n=parse-failed
-        if [ "$n" = 1 ]; then
-            ok "--profile $p:RepartDirectories 恰好一个"
+        f="mkosi.profiles/$p.conf"
+        cnt=$(grep -c '^RepartDirectories=' "$f" 2>/dev/null || true)
+        dir=$(sed -n 's/^RepartDirectories=//p' "$f" 2>/dev/null | head -1)
+        if [ "$cnt" != 1 ]; then
+            no "$f 里 RepartDirectories= 出现 $cnt 次(必须恰好 1 次)"
+        elif [ ! -d "$dir" ]; then
+            no "$f 指向的目录不存在:$dir"
+        elif ! ls "$dir"/*.conf >/dev/null 2>&1; then
+            no "$f 指向的目录里没有分区定义:$dir"
         else
-            no "--profile $p:RepartDirectories 解析出 $n 个(必须恰好 1 个;源码树里不能有名为 mkosi.repart 的目录)"
-            echo "      想确认是解析问题还是真的配错了,跑这条看看 mkosi 实际报了什么:" >&2
-            echo "        mkosi --profile $p summary --json | head -40" >&2
+            ok "--profile $p → $dir(存在且含分区定义)"
         fi
     done
+    # 尽力而为:如果 mkosi 的输出恰好能解析出来,再核对一次实际解析结果。
+    # 解析不出来**不判失败** —— 输出格式是版本相关的,不该让校验依赖它。
+    resolved=$(mkosi --profile install summary 2>/dev/null | awk '
+        # summary 里有多个镜像(先 tools tree、再 initrd、最后才是主镜像),
+        # 每出现一次 "Repart Directories:" 就重置一次计数,END 时打印的就是主镜像那份。
+        /Repart Directories:/ {
+            col = index($0, "Repart Directories:") + length("Repart Directories:")
+            v = substr($0, col + 1)
+            gsub(/^[ \t]+|[ \t]+$/, "", v)
+            n = (v == "" || v == "none") ? 0 : 1
+            inblock = 1
+            next
+        }
+        inblock && /^[ \t]+[^ \t]/ {
+            if (match($0, /[^ \t]/) - 1 >= col) { n++; next }
+            inblock = 0
+            next
+        }
+        inblock && !/^[ \t]*$/ { inblock = 0 }
+        END { if (inblock || n != "") print n }
+    ' | tail -1)
+    case "$resolved" in
+        1)   ok "mkosi 实际解析出的 RepartDirectories 也是 1 个" ;;
+        '')  warn "没能从 mkosi summary 里解析出 RepartDirectories(不影响判定,输入侧已检查)" ;;
+        *)   warn "mkosi 实际解析出 $resolved 个 RepartDirectories —— 输入侧看起来正常,若是真异常请把 'mkosi --profile install summary' 的输出报告出来" ;;
+    esac
 
     # 不带 --profile 会解析成功但没有任何 root=(产物形态必须显式选)。
     # 拦截点在构建期:mkosi.finalize 检查 $MKOSI_CONFIG。这里断言两件事:
