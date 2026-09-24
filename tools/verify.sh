@@ -198,6 +198,7 @@ else
             [ "$voltype" = "D605065B-64F9-4A07-A0B8-70963175C6E6" ] \
                 && ok "volume 类型 = 项目私有 UUID" \
                 || no "volume 类型不是私有 UUID(实际 $voltype)"
+            sizes_install="$sizes"
             ;;
         repart/slot-a)
             [ "$names" = "esp root-a " ] && ok "slot-a 载荷分区名 = esp root-a" || no "slot-a 载荷分区名不对:[$names]"
@@ -207,6 +208,37 @@ else
             ;;
         esac
     done
+
+    # os-install 在目标机上跑的是**镜像里那份**定义(mkosi.postinst 装进
+    # /usr/lib/keel/repart-install.d),它是 repart/install 去掉 CopyFiles= 的版本。
+    # 这里按同样的方式生成一份并真跑一遍:既证明它本身是合法定义,也证明分区表
+    # 与构建时那份逐字节一致(名字/尺寸/volume 类型)。
+    rt="$tree/repart-runtime"
+    mkdir -p "$rt"
+    for f in repart/install/*.conf; do
+        sed '/^[[:space:]]*CopyFiles=/d' "$f" >"$rt/$(basename "$f")"
+    done
+    if grep -q 'CopyFiles' "$rt"/*.conf; then
+        no "运行时定义里还留着 CopyFiles= —— repart 会去拷宿主机的 /proc、/Volume"
+    else
+        ok "运行时 repart 定义没有 CopyFiles=(不会去拷宿主机的 /proc、/Volume)"
+    fi
+    rtimg="$tree/rt.raw"; rm -f "$rtimg"
+    if systemd-repart --offline=yes --empty=create --size=15G --definitions="$rt" \
+            "$rtimg" >"$tree/rt.log" 2>&1; then
+        rnames=$(sfdisk --dump "$rtimg" 2>/dev/null | sed -n 's/.*name="\([^"]*\)".*/\1/p' | tr '\n' ' ')
+        rsizes=$(sfdisk --dump "$rtimg" 2>/dev/null | sed -n 's/.*size= *\([0-9]*\),.*/\1/p' | tr '\n' ' ')
+        rtype=$(sfdisk --dump "$rtimg" 2>/dev/null | grep 'name="volume"' | sed -n 's/.*type=\([0-9A-Fa-f-]*\).*/\1/p')
+        if [ "$rnames" = "esp root-a root-b volume " ] && [ "$rsizes" = "$sizes_install" ] \
+           && [ "$rtype" = "D605065B-64F9-4A07-A0B8-70963175C6E6" ]; then
+            ok "运行时定义产出的分区表与构建时一致(名字/尺寸/volume 类型)"
+        else
+            no "运行时定义与构建时的分区表不一致:[$rnames][$rsizes][$rtype] vs [esp root-a root-b volume ][$sizes_install]"
+        fi
+    else
+        no "运行时 repart 定义 dry-run 失败(os-install 在目标机上会跑的就是它)"
+        tail -5 "$tree/rt.log" | sed 's/^/      /'
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -399,6 +431,25 @@ if grep -qE "^[[:space:]]*login[[:space:]]*$" mkosi.conf.d/20-packages.conf; the
     ok "包清单包含 login(控制台登录 agetty → /bin/login 可用;libpam-runtime 是它的依赖)"
 else
     no "包清单缺 login —— agetty exec /bin/login 失败,控制台登录提示会每两秒重开(坑 #28)"
+fi
+
+# os-install 在**运行时**要调 systemd-repart(不是构建时那棵 tools tree 里的),
+# 所以它必须在包清单里;少了它 U 盘里敲 os-install 会报 "command not found"。
+if grep -qE "^[[:space:]]*systemd-repart[[:space:]]*$" mkosi.conf.d/20-packages.conf; then
+    ok "包清单包含 systemd-repart(os-install 在目标机上要跑它)"
+else
+    no "包清单缺 systemd-repart —— os-install 在 U 盘环境里没有 repart 可用"
+fi
+
+# os-install 读的定义目录必须正好是 mkosi.postinst 写进去的那个;
+# 两边写死的路径一旦不一致,错误只在**装机那一刻**才暴露(真机踩过:镜像是空的)
+defs_in_script=$(sed -n 's|^readonly REPART_DEFS="\([^"]*\)".*|\1|p' mkosi.extra/usr/bin/os-install)
+if [ "$defs_in_script" = "/usr/lib/keel/repart-install.d" ] \
+   && grep -q 'usr/lib/keel/repart-install.d' mkosi.postinst \
+   && grep -qF "CopyFiles=/d" mkosi.postinst; then
+    ok "os-install 的定义目录($defs_in_script)由 mkosi.postinst 装进镜像(且去掉 CopyFiles=)"
+else
+    no "os-install 与 mkosi.postinst 对 repart 定义目录不一致(os-install 读 '${defs_in_script:-空}')"
 fi
 
 # 运行时不能有 dpkg 工具链(决策 D10):apt 用 RemovePackages,dpkg 是 Essential

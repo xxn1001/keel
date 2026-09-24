@@ -59,6 +59,43 @@ fi
 # ---------------------------------------------------------------------------
 install -d -m 0755 "$R/efi" "$R/boot"
 
+# ---------------------------------------------------------------------------
+# os-install 用的 repart 定义 → /usr/lib/keel/repart-install.d
+#
+# 装机 U 盘里跑的 `os-install <目标盘>` 会执行:
+#     systemd-repart --empty=force --definitions=/usr/lib/keel/repart-install.d <目标盘>
+# 所以这份定义必须**在镜像里**。第一版漏了这一步,真机(VM)上的表现是:
+#     找不到 repart 定义目录:/usr/lib/keel/repart-install.d(这个镜像不完整?)
+#
+# 与构建时用的 repart/install/ 是同一份文件(单一事实来源),只做一处改动:
+# **删掉 CopyFiles=**。原因:repart 的 CopyFiles 源在既没有 --root=、也没有
+# --copy-source= 时解析到**宿主机的真实 /** —— mkosi 构建时会传镜像树,运行时不会。
+# 于是运行时跑这份定义会去拷 /proc /sys /run /Volume …(而 os-install 本来就自己
+# dd 根分区、mkfs volume、复制 ESP 内容,这些 CopyFiles 在运行时既没用又有害)。
+# 分区名/类型/尺寸全部保留 ⇒ 建出来的分区表与构建时完全一致
+# (tools/verify.sh 会把两份定义各 dry-run 一次做对比)。
+# ---------------------------------------------------------------------------
+install -d -m 0755 "$R/usr/lib/keel/repart-install.d"
+if [ -n "${SRCDIR:-}" ] && [ -d "${SRCDIR}/repart/install" ]; then
+    n_defs=0
+    for f in "$SRCDIR"/repart/install/*.conf; do
+        [ -f "$f" ] || continue
+        # 用 sed 而不是 grep -v:grep 在"一行都没输出"时返回 1,配上 set -e 会误杀构建
+        sed '/^[[:space:]]*CopyFiles=/d' "$f" >"$R/usr/lib/keel/repart-install.d/$(basename "$f")"
+        n_defs=$((n_defs + 1))
+    done
+    if [ "$n_defs" -lt 4 ]; then
+        log "致命:$SRCDIR/repart/install 里只有 $n_defs 个 .conf,os-install 需要完整的四分区定义"
+        exit 1
+    fi
+    log "已装 repart 安装定义($n_defs 个,去掉 CopyFiles=)→ $R/usr/lib/keel/repart-install.d"
+else
+    # 少了它装出来的 U 盘根本装不了机,而且要到目标机上手敲 os-install 才会发现 ⇒ 直接失败
+    log "致命:找不到 \${SRCDIR}/repart/install(当前 SRCDIR='${SRCDIR:-}')"
+    log "      没有它 os-install 在运行时就没有分区定义。检查是不是把 BuildSources= 设空了(坑 #22)"
+    exit 1
+fi
+
 # /etc/machine-id:mkosi 默认写入 "uninitialized",首启由 systemd 生成真正的 ID。
 # 这里只做断言,防止有人设了 MachineId= 把同一个 ID 烤进所有装机实例。
 if [ -f "$R/etc/machine-id" ] && [ "$(cat "$R/etc/machine-id")" != "uninitialized" ]; then

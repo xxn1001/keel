@@ -121,6 +121,14 @@ sudo os-install /dev/nvme0n1
 挂目标 ESP 并把 live ESP 的内容整体拷过去(引导器 + UKI + `loader.conf`)→
 格式化 `volume` 并用镜像里的骨架初始化。
 
+> **live 镜像里必须有 `/usr/lib/keel/repart-install.d`**:那是 `os-install` 建表用的分区定义,
+> 由 `mkosi.postinst` 在构建时从仓库的 `repart/install/` 拷进去(并去掉 `CopyFiles=`,
+> 原因见 `AGENTS.md` 坑 #31)。早于这个改动的产物没有它,敲 `os-install` 会直接报
+> 「找不到 repart 定义目录」—— 重新构建即可。
+>
+> 这条路径 **尚未在真机/虚拟机上走通过**:2026-09 第一次在 VM 里演练就卡在上面那个缺目录的
+> 问题上,修完还需要完整跑一遍(见 `AGENTS.md` §5 的待验证清单)。
+
 > **没有 `--seed-b`**:live 手上只有 A 槽的 UKI,它的 cmdline 写死了 `root=PARTLABEL=root-a`,
 > 复制一份改名成 `keel-b.efi` 会造出"B 的内核 + A 的根"的坏槽(违反不变量 3)。
 > 备用槽第一次被填充,就是第一次真实更新(见 §5 的本地更新源做法)。

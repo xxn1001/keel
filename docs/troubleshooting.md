@@ -118,6 +118,16 @@ journalctl -b -u systemd-networkd -u systemd-resolved -p warning
 `/etc/resolv.conf` 没指向 `/run/systemd/resolve/stub-resolv.conf`(postinst 里做的,§11 —— 被改坏就走 §3 的
 `--reset-etc`)。无线网络 main 不做。
 
+### 2.3 装机时 `os-install` 报错
+
+| 现象 | 原因 | 修 |
+|---|---|---|
+| `找不到 repart 定义目录:/usr/lib/keel/repart-install.d(这个镜像不完整?)` | 这个产物里没装安装用的 repart 定义:`os-install` 要靠镜像内的 `/usr/lib/keel/repart-install.d` 在目标盘上建表,它由 `mkosi.postinst` 在构建时从 `repart/install/` 拷进去(`AGENTS.md` 坑 #31)。2026-09 之前的产物都没有这个目录 | 重新构建(`sudo tools/build-container.sh -p <临时密码>`)并重写 U 盘/虚拟盘 |
+| 建表成功但后面的步骤报错 | `os-install` 这条路径 **尚未在真机上验证过**(脚本头部的声明) | 把报错原文 + `lsblk -f` 现状贴出来,不要盲目重试 |
+
+> 注意:`os-install` 会**擦除整块目标盘**。在 VM 里演练时,目标盘要是另一块盘
+> (`qemu-img create -f raw keel-target.raw 30G` 挂成 vda/vdb),别指向启动盘。
+
 ## 3. `/Volume` 相关
 
 `/Volume` 由 `keel-mounts.service` 在启动早期挂载(不变量 2:扫 `/sys` 的 `PARTNAME=volume`,

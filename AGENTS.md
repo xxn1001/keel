@@ -470,6 +470,28 @@
     你开起来的就是**上次那个镜像** —— 这是坑 #23 的另一面(改了配置就得 `--force build`)。
     附带一条安全注意:`.mkosi-private/history/latest.json` 存的是配置里的**原始值**,
     `--root-password=` 传的密码很可能是明文 ⇒ 它**绝不能进 git**(已在 `.gitignore` 里)。
+
+31. **给 repart 的定义要分"构建时"和"运行时"两份:`CopyFiles=` 只在构建时成立。**
+    装机 U 盘里 `os-install <目标盘>` 跑的是
+    `systemd-repart --empty=force --definitions=/usr/lib/keel/repart-install.d <盘>`,
+    也就是说这份定义必须**装进镜像**;而 mkosi 构建时用的是仓库里的 `repart/install/`。
+    第一版只做了后者,于是在 VM 里敲 `os-install /dev/vda` 得到:
+    ```
+    keel: 错误:找不到 repart 定义目录:/usr/lib/keel/repart-install.d(这个镜像不完整?)
+    ```
+    (`os-install` 的注释里原本写着"由父 agent 提供" —— 结果谁也没提供。)
+    ⇒ 现在 `mkosi.postinst` 在构建时把 `repart/install/*.conf` 拷进
+    `$R/usr/lib/keel/repart-install.d/`,并**删掉所有 `CopyFiles=` 行**。原因:
+    repart 的 `CopyFiles=` 源在既没有 `--root=` 也没有 `--copy-source=` 时解析到
+    **宿主机的真实 /** —— mkosi 构建时传了 `--root=<镜像树>`,所以构建时 `CopyFiles=/`
+    指的是"镜像里的 /";运行时(没有 `--root=`)它会把 `/proc` `/sys` `/run` `/Volume`
+    一起卷进来,而 `os-install` 本来就会自己 dd 根分区、mkfs volume、复制 ESP,
+    根本不需要 repart 代劳。
+    分区名/类型/尺寸仍是**同一份来源**(只删 CopyFiles),所以两张表必然一致:
+    `tools/verify.sh` 会把两份定义各 `systemd-repart --dry-run` 一次,逐个字段对比名字/
+    尺寸/volume 类型,并断言运行时那份里没有残留的 `CopyFiles=`。
+    **教训**:凡是"构建脚本产出的文件还会在运行时被消费一遍"的东西,都要多问一句
+    "里面的路径和默认值在运行时还成立吗"。
 ---
 
 ## 4. 常用命令
@@ -522,3 +544,6 @@ sudo tools/burn.sh /dev/nvme0n1
    在主系统里会挂但依赖 udev ⇒ 造成启动死锁。结论已回写到不变量 2 与坑 #24。
 2. `systemd-sysupdate` 的 `Type=partition` transfer 对双槽布局的匹配语义(验证通过后换掉 v1 的直接写盘)。
 3. `/usr/lib/modules/<kver>` 挂 overlay 后 `depmod` + 模块加载的实际行为(为"第三方内核模块外置"做准备)。
+4. **`os-install` 的完整流程**(在 VM 里对第二块盘演练,见 `docs/install.md` §2.2)。
+   2026-09 第一次尝试就卡在"镜像里没有 `/usr/lib/keel/repart-install.d`"(已修,见坑 #31);
+   修完**还没有**走通过全流程 —— dd 根分区、mkfs volume、复制 ESP、写 pending 都未实测。
