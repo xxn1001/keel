@@ -273,7 +273,8 @@
     `‣ (Make sure to (re)build the image first with 'mkosi build' or use '--force')`。
     第一次接触这个项目很容易在这里卡住(看起来像错误,其实只是顺序问题)。
     ⇒ `tools/build-container.sh vm` 已经改成"先 build 再 vm";手动跑的话就是两条命令:
-    `mkosi --profile install --profile test build` → `mkosi --profile install --profile test vm`。
+    `mkosi --profile install --profile test build` → `mkosi --profile install --profile test vm`
+    (要控制台登录就两边都加 `--root-password=<密码>`,见坑 #26/#30)。
     (这里曾经写着"别用 `--force` 图省事",**那是错的**:`-f` 不删增量缓存,而且换了 profile
     之后不加 `-f` 反而会静默复用旧镜像 —— 见坑 #23。)
 
@@ -331,7 +332,7 @@
     版本号(`mkosi.version` 的时间戳)只写在镜像**内部**,产物文件名里没有它 ⇒
     拿到的是"版本号是新的、内容是旧的"镜像,而且**没有任何错误**。
     真机上已因此白测一轮:`build-container.sh vm` 里那步 `--profile install --profile test build`
-    因为没带 `-f` 被跳过,随后 `vm` 开的是**上一次构建的、没有自动登录**的旧镜像。
+    因为没带 `-f` 被跳过,随后 `vm` 开的是**上一次构建的、没有登录密码**的旧镜像。
     ⇒ 规则:**任何"要产生新产物"的地方都必须写 `--force`**(`tools/build.sh` 三次构建、
     `tools/build-container.sh` 的 build 步骤),`tools/verify.sh` 里有对应断言。
     顺带纠正一个曾经的错误说法:`-f` **不是**"删掉已构建的镜像重来",它只重建输出、
@@ -385,17 +386,21 @@
     每两秒重复一次,**从来不出现 shell 提示符**,也没有任何报错;`journalctl -p warning` 里
     没有 pam/logind 告警 ⇒ 认证是成功的,死的是登录之后那个 shell 会话。
     更麻烦的是这个循环会**顶掉**手动输密码的机会(getty 每两秒重开一次)⇒ 一旦出现,控制台就废了。
-    ⇒ `mkosi.profiles/test.conf` 改用 `RootPassword=keel`(mkosi 的 `passwd.hashed-password.root`
-    credential,由 `systemd-firstboot` 在首启时应用)。这条路径**和真机一模一样**(真机用仓库根目录的
-    `mkosi.rootpw`),所以在虚拟机里验证控制台登录 = 验证真机路径。
-    `tools/verify.sh` 有断言:test profile 必须是密码、不许是 Autologin。
+    ⇒ 曾经的做法是在 `mkosi.profiles/test.conf` 里写 `RootPassword=keel`;现在**不再往仓库里
+    硬编码任何密码**(公开仓库 = 密码公开),改成从命令行传:
+    `sudo tools/build-container.sh -p <密码>` → mkosi 的 `--root-password=<密码>`。
+    它同样走 systemd 的 `passwd.hashed-password.root` credential、由 systemd-firstboot 在首启时应用
+    —— 和真机用仓库根目录 `mkosi.rootpw` 是**同一条路径**,所以在虚拟机里验证控制台登录 = 验证真机路径。
+    不加 `-p` 就是没有密码(root 锁定),这时进虚拟机只能靠 `authorized_keys` 里的公钥走 SSH。
+    `tools/verify.sh` 有两条断言:配置里不许出现 `RootPassword=`/`Autologin=`;
+    `-p` 必须**同时**传给 build 与 vm 两次调用(否则被 history 吃掉,见坑 #30)。
     (未查清:autologin 那条路径的 shell 为什么秒退。真机不受影响 —— 正式产物不带这个 profile。)
 
 27. **虚拟机的 SSH(曾用 VSock)已移除 —— 容器里那条路是死的。**
     背景:mkosi 的 `ssh` 动词用 VSock 连 guest 的 `sshd-vsock.socket`,本意是绕开 guest 网络
     (guest 里 DHCP 还没修)。实测 mkosi 25.3 的 `run_ssh` 会去 flock
     `$XDG_RUNTIME_DIR/mkosi/machine`,容器里没有 `/run/mkosi` ⇒ `FileNotFoundError`。
-    既然控制台密码登录已经可用(`mkosi.profiles/test.conf` 的 `RootPassword=`),这条路就不值得维护,
+    既然控制台密码登录已经可用(`tools/build-container.sh -p <密码>` → mkosi 的 `--root-password=`),这条路就不值得维护,
     已从 `tools/build-container.sh` 移除(vm-bg/ssh 两个模式一起删)。
     真机的 SSH 是 sshd + 公钥(不变量 7、docs/install.md §2.5),和这里无关。
 
@@ -442,6 +447,29 @@
       **ENOPKG 的根因仍未查清** —— strace 里没有任何 `ENOPKG` 系统调用失败(全是无关 ENOENT),
       说明是 networkd 内部判定"DHCP 实现不可用"(编译期开关或运行期条件)。哪天要换回 systemd 原生栈,
       从这里接着查。
+
+30. **`mkosi vm`(以及 `shell`/`boot` 这类"操作已构建镜像"的动作)不解析配置文件,它读上一次 build 的 history;与 history 不同的 CLI 设置只警告、不生效。**
+    mkosi 25.3 的 `parse_config`(27 同):
+    ```python
+    if have_history(args):                      # 有 .mkosi-private/history/latest.json 就为真
+        prev = Config.from_json(Path(".mkosi-private/history/latest.json").read_text())
+        for s in SETTINGS:
+            if s.section in ("Include", "Runtime"):   # 只有这两段允许现场改
+                continue
+            if hasattr(context.cli, s.dest) and getattr(context.cli, s.dest) != getattr(prev, s.dest):
+                logging.warning(f"Ignoring {s.long} from the CLI. Run with -f to rebuild the image with this setting")
+            setattr(context.cli, s.dest, getattr(prev, s.dest))
+        context.only_sections = ("Include", "Runtime", "Host")
+    ```
+    ⇒ `vm` 用的是**上一次 build 时**的配置,命令行上写的 Content 段设置(比如 `--root-password=`)
+    会被 history 里的值覆盖,只在日志里留一行 `Ignoring --root-password from the CLI` ——
+    **看起来像成功,其实密码没生效**。真机排查时很容易在这里绕圈(镜像里 root 还是锁的)。
+    规则:**"先 build 再 vm"的东西,两边的 Content 设置必须一致**;
+    `tools/build-container.sh vm` 就是把同一个 `$ROOTPW_Q` 同时拼进两次调用,`tools/verify.sh` 有断言。
+    另一个后果:手工 `mkosi --profile install vm` 时,如果上次 build 用的是别的 profile/设置,
+    你开起来的就是**上次那个镜像** —— 这是坑 #23 的另一面(改了配置就得 `--force build`)。
+    附带一条安全注意:`.mkosi-private/history/latest.json` 存的是配置里的**原始值**,
+    `--root-password=` 传的密码很可能是明文 ⇒ 它**绝不能进 git**(已在 `.gitignore` 里)。
 ---
 
 ## 4. 常用命令
@@ -455,9 +483,9 @@ tools/build.sh                       # 一次产出:安装镜像 + A/B 载荷 + 
 tools/build.sh --profile desktop     # 变体
 
 # 宿主不是 mkosi 支持的发行版时(NixOS 等):把构建放进容器(见已知的坑 #15)
-sudo tools/build-container.sh        # 构建
-sudo tools/build-container.sh vm     # 构建并在容器里起 QEMU(控制台登录:root / keel)
-sudo tools/build-container.sh shell  # 进容器手敲 mkosi
+sudo tools/build-container.sh               # 构建(产物里 root 无密码)
+sudo tools/build-container.sh -p <密码> vm  # 构建并在容器里起 QEMU(控制台用 root / 该密码登录)
+sudo tools/build-container.sh shell         # 进容器手敲 mkosi
 
 # 排错第一步:只看配置解析结果,不构建
 mkosi --profile install summary

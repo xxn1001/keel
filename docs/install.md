@@ -57,13 +57,18 @@
 ### 1.2 启动、退出与追加 QEMU 参数
 
 ```bash
-# --profile test 给 root 设一个已知的测试密码:控制台用 root / keel 登录。
-# 发布镜像里 root 密码是锁的、也没有你的公钥,不加它会卡在 keel login:(见 §2.5)
-sudo mkosi --profile install --profile test --force build   # 改了 profile 就必须 -f
-sudo mkosi --profile install --profile test vm
+# -p 给 root 设一个**临时密码**,才能从文本控制台登录(用户名 root / 你给的那个密码)。
+# 不加 -p 就没有密码:发布镜像里 root 是锁的、也没有你的公钥,会一直卡在 keel login:(见 §2.5)
+# 密码只从这个命令行参数来,仓库里不存(公开仓库 = 密码公开);它会同时传给 build 与 vm 两步 —— 
+# mkosi 的 vm 读的是上一次 build 的 history,只在 vm 上传会被忽略(AGENTS.md 坑 #30)。
+sudo tools/build-container.sh -p <临时密码> vm     # = verify + --force build + vm
+
+# 宿主本身是 Debian 系(不用容器)时,等价的原始命令是这两条:
+sudo mkosi --profile install --profile test --root-password=<临时密码> --force build
+sudo mkosi --profile install --profile test --root-password=<临时密码> vm
 ```
 
-> **进虚拟机**:等 `keel login:`,输 `root` / 密码 `keel`。
+> **进虚拟机**:等 `keel login:`,输 `root` / 你刚给的那个临时密码。
 > (以前用 mkosi 的 `Autologin=yes`,因为镜像里缺 `/bin/login` 而变成死循环,见 `AGENTS.md` 坑 #26/#28;
 > VSock ssh 那条路也去掉了,见坑 #27。)
 
@@ -131,7 +136,7 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 |---|---|---|
 | **首启 SSH 公钥(推荐)** | 把你的公钥放到仓库根目录的 `authorized_keys`(该文件已被 `.gitignore` 排除)。`mkosi.finalize` 会把它放进 `/Volume` 骨架的 `root/.ssh/authorized_keys` | 装完开机就能 `ssh root@<ip>`(sshd 默认已启用、`PermitRootLogin prohibit-password` 允许密钥登录) |
 | root 控制台密码 | 在仓库根目录建 `mkosi.rootpw`,内容写密码(mkosi 原生支持,同样已被 gitignore 排除) | 可以在文本控制台以 root 登录 |
-| 仅本地测试 | 构建时叠加 `--profile test`(root 自动登录) | 只适合虚拟机;真机上等于没有密码 |
+| 仅本地测试 | `sudo tools/build-container.sh -p <临时密码> build`(把密码烤进产物) | 只适合虚拟机/临时排查;**真机别这么干** —— 密码会进 shell 历史,而且产物一旦泄露就是明文口令 |
 
 > 公钥文件放在仓库根目录而不是 `mkosi.extra/` 里:因为镜像里的 `/root` 是指向 `/Volume` 的符号链接,
 > 往 `mkosi.extra/root/...` 放的东西会在 finalize 换符号链接时丢掉(见 `AGENTS.md` 坑 #2/#3)。

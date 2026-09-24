@@ -5,6 +5,10 @@ mkosi.pkgcache/
 mkosi.builddir/
 mkosi.tools/
 mkosi.workspace/
+# mkosi 每次 build 都把当次配置写在仓库根目录的 .mkosi-private/ 下,而 `mkosi vm` **只读**
+# 这里的 history/latest.json(不解析配置文件,见 AGENTS.md 坑 #30)。注意:里面存的是配置里的
+# 原始值,`--root-password=` 传的密码可能是**明文** ⇒ 绝不能提交。
+.mkosi-private/
 
 # 绝对不要提交的密钥与口令
 mkosi.key

@@ -23,11 +23,24 @@
 #   - qemu/OVMF **不用装**:mkosi 建 tools tree 时会按需带上(vm 的 runtime profile)
 #
 # ── 用法(在仓库根目录)───────────────────────────────────────────
-#   sudo tools/build-container.sh            # 只构建(verify + build.sh)
-#   sudo tools/build-container.sh vm         # 构建并在容器里起 QEMU(有 /dev/kvm 就自动传进去)
-#   sudo tools/build-container.sh shell      # 进容器手敲 mkosi,便于排错
-#   sudo tools/build-container.sh vm -- --profile install --profile test
-#                                            # -- 之后的参数原样交给 mkosi
+#   sudo tools/build-container.sh                  # 只构建(verify + build.sh)
+#   sudo tools/build-container.sh vm               # 构建并在容器里起 QEMU(有 /dev/kvm 就自动传进去)
+#   sudo tools/build-container.sh -p <密码> vm     # 同上,并给镜像里的 root 设这个初始密码
+#   sudo tools/build-container.sh shell            # 进容器手敲 mkosi,便于排错
+#   sudo tools/build-container.sh vm -- --console=gui
+#                                                  # -- 之后的参数原样交给 mkosi
+#                                                  # (**build 与 vm 两次调用都带**:mkosi 的 vm 只读
+#                                                  #  上一次 build 的 history,只给一次等于没给)
+#                                                  # 注意:QEMU 自己的参数(如 `-m 4G`)不能从这里走 ——
+#                                                  #  mkosi 的 `build` 不接受动词后的参数、会直接报错;
+#                                                  #  要加 QEMU 参数就用 `shell` 模式手敲两条 mkosi 命令
+#
+#   -p / --password <密码>  给 root 设**初始密码**(mkosi 的 `--root-password=`)。
+#     不加就是没有密码 —— 正式产物默认就是"root 锁定 + 只认 SSH 公钥"(见 docs/install.md §2.5)。
+#     密码只从命令行来,不落盘、不进 git:这是个公开仓库,写在 profile 里的密码等于公开的。
+#     三种模式都收这个参数:`build` 时经 `KEEL_ROOT_PASSWORD` 转给 tools/build.sh,
+#     `vm` 时直接拼到 mkosi 命令行上(而且**必须同时拼进 build 与 vm 两次调用**,
+#     因为 `vm` 不解析配置、只读上一次 build 的 history,见 AGENTS.md 坑 #30)。
 #
 #   换镜像(比如 Debian 25.3 的 mkosi 不认某个设置时):
 #   KEEL_BUILD_IMAGE=docker.io/library/archlinux:latest sudo tools/build-container.sh
@@ -45,11 +58,47 @@ cd "$(dirname "$0")/.."
 
 log() { printf 'keel-container: %s\n' "$*" >&2; }
 die() { printf 'keel-container: 错误:%s\n' "$*" >&2; exit 1; }
+usage() {
+    cat >&2 <<'EOF'
+用法:sudo tools/build-container.sh [build|vm|shell] [-p <密码>] [-- <mkosi 的额外参数>]
 
-MODE=${1:-build}
-if [ "$MODE" = "--" ]; then MODE=build; set -- build "$@"; shift; fi
-shift || true
-EXTRA_MKOSI=("$@")
+  build            只构建(verify + tools/build.sh),默认动作
+  vm               构建并在容器里起 QEMU(有 /dev/kvm 就自动传进去)
+  shell            进容器手敲 mkosi,便于排错
+
+  -p, --password <密码>   给镜像里的 root 设初始密码;不加则 root 无密码(锁定的)
+EOF
+}
+
+# 参数解析:模式一个位置参数,-p/--password 一个选项,`--` 之后原样交给 mkosi。
+# 刻意不用 getopt:$0 在宿主机与容器里都可能是不同路径,自己解析更好读、也更好报错。
+MODE=build
+MODE_SET=0
+PASSWORD=""
+EXTRA_MKOSI=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -p|--password)
+            [ $# -ge 2 ] || { usage; die "$1 后面要跟密码"; }
+            PASSWORD=$2; shift 2 ;;
+        --password=*)
+            PASSWORD=${1#*=}; shift ;;
+        --)
+            shift; EXTRA_MKOSI=("$@"); break ;;
+        -h|--help)
+            usage; exit 0 ;;
+        -*)
+            usage; die "不认识的选项:$1" ;;
+        *)
+            if [ "$MODE_SET" = 1 ]; then usage; die "只接受一个模式参数(已经有 '$MODE',又收到 '$1')"; fi
+            MODE=$1; MODE_SET=1; shift ;;
+    esac
+done
+
+case "$MODE" in
+    build|vm|shell) ;;
+    *) usage; die "模式只能是 build / vm / shell(收到 '$MODE')" ;;
+esac
 
 ENGINE=""
 for e in podman docker; do
@@ -58,6 +107,24 @@ done
 [ -n "$ENGINE" ] || die "找不到 podman 或 docker。NixOS 上可以:nix-shell -p podman;或把 virtualisation.podman.enable 打开"
 
 IMAGE=${KEEL_BUILD_IMAGE:-docker.io/library/debian:trixie}
+
+# root 初始密码只从命令行来(不落盘、不进 git)。回显密码是**不安全**的,所以日志里只说有没有设。
+#
+# ROOTPW_Q 是"给容器里那个 shell 用"的、已经转义好的形式(printf %q):PAYLOAD 是一段要被
+# `bash -lc` 执行的字符串,密码里若有空格/引号,直接拼进去就会碎成两个参数。
+ROOTPW_Q=""
+if [ -n "$PASSWORD" ]; then
+    ROOTPW_Q=$(printf '%q' "--root-password=$PASSWORD")
+    log "root 初始密码:已设置(只存在于本次构建,不回显、不落盘)"
+else
+    log "root 初始密码:未设置 —— 镜像里 root 是锁的(要登录请加 -p <密码>,或放 authorized_keys 用 SSH 公钥)"
+fi
+
+# EXTRA_MKOSI 是用户从 `--` 之后传给 mkosi 的额外参数,同样逐个转义后再拼进 PAYLOAD
+EXTRA_Q=""
+if [ ${#EXTRA_MKOSI[@]} -gt 0 ]; then
+    for a in "${EXTRA_MKOSI[@]}"; do EXTRA_Q+="$(printf '%q' "$a") "; done
+fi
 
 case "$MODE" in
 build) PAYLOAD='tools/verify.sh && tools/build.sh' ;;
@@ -72,21 +139,22 @@ vm)
     #
     # build 那一步必须带 --force:mkosi 的 `build` 是"没有才建" —— 产物已存在时它只打印一行
     #   ‣ Output path /work/mkosi.output/keel.raw exists already. (Use --force to rebuild.)
-    # 就返回成功、什么都不建。而 --profile test 是**改变了配置**的(设 root 测试密码),
-    # 少了 -f 就会拿着"上一次构建的、没有登录凭据的"旧镜像去开虚拟机(真机上踩过,坑 #23)。
-    # --profile test 只给 root 一个已知的测试密码(仅虚拟机用,见 mkosi.profiles/test.conf)
-    EXTRA="${EXTRA_MKOSI[*]:-}"
+    # 就返回成功、什么都不建,随后 vm 打开的是**上一次构建的旧镜像**(真机上踩过,见坑 #23)。
+    #
+    # $ROOTPW_Q 在两处都出现不是重复:mkosi 的 `vm` **不解析配置文件**,它读的是
+    # `.mkosi-private/history/latest.json`(上一次 build 用的配置);命令行上与 history 不同的
+    # Content 段设置只会打一行 `Ignoring --root-password from the CLI`,然后照 history 走
+    # ⇒ 只在 vm 那一步传密码等于没传,而且不报错。见 AGENTS.md 坑 #30。
     PAYLOAD="tools/verify.sh \
-        && mkosi --profile install --profile test $EXTRA --force build \
-        && mkosi --profile install --profile test $EXTRA vm"
+        && mkosi --profile install --profile test $EXTRA_Q$ROOTPW_Q --force build \
+        && mkosi --profile install --profile test $EXTRA_Q$ROOTPW_Q vm"
     ;;
 # 刻意**没有** ssh 模式。曾经加过 `mkosi ssh`(VSock),但:
-#   1. 控制台密码登录已经可用(见 mkosi.profiles/test.conf),进虚拟机的需求已经满足;
+#   1. 控制台密码登录已经可用(`-p`,见 mkosi.profiles/test.conf),进虚拟机的需求已经满足;
 #   2. mkosi 25.3 的 run_ssh 会去 flock $XDG_RUNTIME_DIR/mkosi/machine,而容器里的
 #      /run/mkosi 不存在 ⇒ FileNotFoundError: '/run/mkosi/machine'(实测)。
 # 真机上的 SSH 是另一回事(sshd + 公钥,见 docs/install.md §2.5),不受这里影响。
 shell) PAYLOAD='exec bash' ;;
-*) die "用法:$0 [build|vm|shell] [-- mkosi 的额外参数]" ;;
 esac
 
 # 容器里的准备工作:只装 mkosi 本体与它必须的伙伴。
@@ -118,6 +186,10 @@ mkdir -p "$WS" && chmod 1777 "$WS" || die "无法创建 $WS"
 
 ARGS=(run --rm -it --privileged -v "$PWD:/work" -v "$WS:/var/tmp" -w /work)
 [ -e /dev/kvm ] && ARGS+=(--device /dev/kvm)
+# root 初始密码也以环境变量传进容器:`build` 模式里跑的是 tools/build.sh,它从
+# KEEL_ROOT_PASSWORD 里取(命令行参数不经过 build.sh ⇒ 只能用环境变量)。
+# `vm` 模式则用它拼 mkosi 命令行(见上面的 $ROOTPW_Q);两处都设上,`shell` 模式里手敲 mkosi 也能用。
+[ -n "$PASSWORD" ] && ARGS+=(-e "KEEL_ROOT_PASSWORD=$PASSWORD")
 log "引擎:$ENGINE   镜像:$IMAGE   模式:$MODE"
 [ "$(id -u)" = 0 ] || log "提示:没在用 root 跑。若报权限错误,请加 sudo(mkosi 的沙箱需要 CAP_SYS_ADMIN)"
 log "产物会落在宿主机的 mkosi.output/ 与 dist/(属主是 root)"

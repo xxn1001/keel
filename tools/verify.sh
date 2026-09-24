@@ -327,8 +327,9 @@ fi
 
 # mkosi 的 `build` 是"没有才建":产物已存在时它只打印一行 info 就返回 0,静默复用旧镜像(坑 #23)。
 # 所以构建脚本里的每一次构建都必须带 --force。
+# 断言刻意不依赖 `--force` 的位置与写法:先挑出所有构建行,再看其中有几行含 --force。
 n_build=$(grep -cE '^[[:space:]]*mkosi .* build$' tools/build.sh)
-n_force=$(grep -cE '^[[:space:]]*mkosi .*--force build$' tools/build.sh)
+n_force=$(grep -E '^[[:space:]]*mkosi .* build$' tools/build.sh | grep -c -e '--force' || true)
 if [ "$n_build" -ge 3 ] && [ "$n_build" = "$n_force" ]; then
     ok "tools/build.sh 的 $n_build 次构建都带 --force(不会静默复用旧产物)"
 else
@@ -338,7 +339,7 @@ fi
 if grep -q -- '--force build' tools/build-container.sh; then
     ok "tools/build-container.sh 的 build 步骤带 --force"
 else
-    no "tools/build-container.sh 的 build 步骤没带 --force(--profile test 改变了配置,不 -f 就会拿旧镜像开虚拟机,坑 #23)"
+    no "tools/build-container.sh 的 build 步骤没带 --force(不 -f 就会拿上一次构建的旧镜像开虚拟机,坑 #23)"
 fi
 
 if grep -q -- '-v "$WS:/var/tmp"' tools/build-container.sh; then
@@ -347,12 +348,31 @@ else
     warn "build-container.sh 没有把 mkosi.workspace 绑到 /var/tmp —— 构建仍会成功,但收尾会退化成复制 14 GiB"
 fi
 
-# test profile 必须是"已知密码",不能是 Autologin(那条路径在 systemd 257 上会死循环,坑 #26)
-if grep -qE '^[[:space:]]*RootPassword=' mkosi.profiles/test.conf \
-   && ! grep -qE '^[[:space:]]*Autologin=' mkosi.profiles/test.conf; then
-    ok "test profile 用 RootPassword(不用 Autologin —— 那条路径会死循环,坑 #26)"
+# root 密码 / 自动登录都**不许硬编码在仓库里**:这是公开仓库,写进配置的密码等于公开的;
+# 而 `Autologin=yes` 在本镜像里会变成"登录成功但 shell 秒退"的死循环(坑 #26;根因是缺 /bin/login,
+# 见坑 #28)。密码只从命令行来:tools/build-container.sh -p <密码> → mkosi 的 `--root-password=`。
+if grep -rnE '^[[:space:]]*(RootPassword|Autologin)=' mkosi.conf mkosi.conf.d mkosi.profiles 2>/dev/null | grep -q .; then
+    no "配置里硬编码了 RootPassword=/Autologin=(密码必须由命令行传入,坑 #26):"
+    grep -rnE '^[[:space:]]*(RootPassword|Autologin)=' mkosi.conf mkosi.conf.d mkosi.profiles 2>/dev/null | head -3 | sed 's/^/      /'
 else
-    no "mkosi.profiles/test.conf 应该是 RootPassword= 且不设 Autologin=(坑 #26)"
+    ok "配置里没有硬编码的 RootPassword=/Autologin=(密码只从命令行来,坑 #26)"
+fi
+
+# mkosi 的 `vm` 不解析配置文件,它读上一次 build 的 history(.mkosi-private/history/latest.json);
+# 与 history 不同的 Content 段 CLI 设置只会打一行 `Ignoring --root-password from the CLI`,然后照
+# history 走 ⇒ 密码必须**同时**传给 build 与 vm 两次调用,只在 vm 那步传等于没传(且不报错,坑 #30)。
+if grep -qE '\$ROOTPW_Q +--force build' tools/build-container.sh \
+   && grep -qE '\$ROOTPW_Q +vm' tools/build-container.sh; then
+    ok "build-container.sh 把 --root-password 同时传给 build 与 vm(坑 #30:vm 用 history 里的配置)"
+else
+    no "build-container.sh 只在一次调用里传 --root-password:vm 那步会从 history 读配置,把 CLI 上的密码忽略掉(坑 #30)"
+fi
+
+# -p/--password 要一路通到 build 模式(那一模式跑的是 tools/build.sh,只能靠环境变量传进去)
+if grep -q -- '-p|--password)' tools/build-container.sh && grep -q 'KEEL_ROOT_PASSWORD' tools/build.sh; then
+    ok "-p/--password 也通到 build 模式(build-container.sh → KEEL_ROOT_PASSWORD → build.sh)"
+else
+    no "build-container.sh 的 -p 没接到 tools/build.sh(KEEL_ROOT_PASSWORD)"
 fi
 
 if grep -rn 'common-os' --include='*' . 2>/dev/null | grep -v '^\./\.git/' | grep -v '^\./tools/verify\.sh:' | grep -q .; then

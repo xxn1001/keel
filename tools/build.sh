@@ -32,6 +32,19 @@ VERSION=$(./mkosi.version 2>/dev/null | head -1)
 [ -n "$VERSION" ] || die "mkosi.version 没有输出(它应该是一个可执行脚本,打印版本号)"
 log "本次版本:$VERSION"
 
+# root 初始密码(可选,默认没有 = root 锁定)。
+# 口令只从环境变量来 —— 这是公开仓库,配置里硬编码的密码等于公开的,所以**不写进 mkosi.conf**。
+# 由 tools/build-container.sh 的 `-p/--password` 转成 KEEL_ROOT_PASSWORD 传进来,也可以自己:
+#     KEEL_ROOT_PASSWORD='...' sudo tools/build.sh
+# mkosi 的 `RootPassword=` 走 systemd 的 `passwd.hashed-password.root` credential,首启由
+# systemd-firstboot 应用 —— 和真机用仓库根目录 mkosi.rootpw 是**同一条路径**。
+# 注意:带到 dist/ 里的密码只适合临时测试;正式产物请改用 authorized_keys(SSH 公钥)。
+ROOTPW_ARGS=()
+if [ -n "${KEEL_ROOT_PASSWORD:-}" ]; then
+    ROOTPW_ARGS=("--root-password=$KEEL_ROOT_PASSWORD")
+    log "警告:产物里带 root 初始密码 —— 临时测试可以,装到自己机器上的正式产物请改用 authorized_keys"
+fi
+
 # 缓存目录先建出来:mkosi.conf 里已经显式指定了路径,这里只是保险
 # (mkosi 25.x 在没有缓存目录时会拒绝 Incremental=yes)。
 mkdir -p mkosi.cache mkosi.pkgcache mkosi.output
@@ -45,11 +58,11 @@ mkdir -p mkosi.cache mkosi.pkgcache mkosi.output
 # 已经这么白测过一轮,见 AGENTS.md 坑 #23)。
 # -f 只重建输出,不动增量缓存(mkosi.cache/);要连缓存一起删是 -ff,我们不用。
 log "构建 install 镜像"
-mkosi --profile install --image-version "$VERSION" --force build
+mkosi --profile install --image-version "$VERSION" --force "${ROOTPW_ARGS[@]}" build
 log "构建 slot-a 载荷"
-mkosi --profile slot-a --image-version "$VERSION" --force build
+mkosi --profile slot-a --image-version "$VERSION" --force "${ROOTPW_ARGS[@]}" build
 log "构建 slot-b 载荷"
-mkosi --profile slot-b --image-version "$VERSION" --force build
+mkosi --profile slot-b --image-version "$VERSION" --force "${ROOTPW_ARGS[@]}" build
 
 # ---------------------------------------------------------------------------
 # 组装 dist/
@@ -105,5 +118,6 @@ SCHEMA=$(cat schema-version 2>/dev/null || echo 1)
 log "完成:$D"
 log "下一步:"
 log "  装到机器上        sudo tools/burn.sh /dev/nvme0n1"
-log "  先在虚拟机里试    sudo mkosi --profile install --profile test --force build && sudo mkosi --profile install --profile test vm"
+log "  先在虚拟机里试    sudo tools/build-container.sh -p <临时密码> vm(控制台 root / 该密码)"
+log "  或者在 libvirt 里试 dist/keel-$VERSION/keel.raw(要能登录就得先 -p 构建,或放 authorized_keys)"
 log "  发布更新          把 $D 里除 keel.raw/install.md/update.md 之外的文件放到更新源目录"

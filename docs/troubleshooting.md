@@ -41,7 +41,7 @@
 |---|---|
 | 含义 | mkosi 的 `build` 是"**没有才建**":产物已存在 → 打印这行 → **返回 0**,不构建 |
 | 后果 | 版本号只写在镜像内部,所以你会拿到"版本号是新的、内容是旧的"镜像,而且没有任何报错 |
-| 修 | 改了配置/换了 profile(例如加 `--profile test`)之后必须 `mkosi … --force build`;`tools/build.sh` 与 `tools/build-container.sh` 已经带上 |
+| 修 | 改了配置/换了 profile(例如加 `--root-password=`)之后必须 `mkosi … --force build`;`tools/build.sh` 与 `tools/build-container.sh` 已经带上 |
 | 怎么确认拿到的是新镜像 | `mkosi.output/keel.manifest` 里的时间戳,或进系统后 `os-status`(`AGENTS.md` 坑 #23) |
 
 ### 0.3 其它构建期报错
