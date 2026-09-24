@@ -1,0 +1,57 @@
+#!/bin/bash
+# keel 启动确认:把当前槽标成"首选",并识别"更新失败已回滚"
+#
+# 由 keel-confirm.service 在 boot-complete.target 达成后调用
+# (docs/architecture.md §5.3 的 ⑨ 与 ⑪)。
+#
+# 这里**不**自己做回滚判断 —— 回滚是引导器 + boot counting 完成的;
+# 我们只负责:① 让 LoaderEntryPreferred 指向当前槽的正式名字;
+#             ② 把启动结果写进 /Volume/keel/state 供 os-status 报告。
+set -euo pipefail
+. /usr/lib/keel/lib.sh
+
+slot=$(keel_current_slot)
+if [ -z "$slot" ]; then
+    keel_log "无法从 /proc/cmdline 判断当前槽,跳过确认"
+    exit 0
+fi
+
+pending=$(keel_state_get pending_slot)
+pending_ver=$(keel_state_get pending_version)
+
+# --- ① 把"首选条目"指向当前槽的正式名字 ---
+# boot counting 生效时,systemd-bless-boot.service 已经在本单元之前把
+# keel-<槽>+N-M.efi 改名成 keel-<槽>.efi(状态 good),所以指向正式名字是稳定的。
+uki_name="keel-$slot.efi"
+if [ -e "$KEEL_UKI_DIR/$uki_name" ]; then
+    bootctl set-preferred "$uki_name" >/dev/null 2>&1 \
+        || keel_log "bootctl set-preferred 失败(固件可能不接受写 EFI 变量,靠 fallback 路径仍可启动)"
+fi
+
+# --- ② 判定这次启动是"更新成功"还是"更新失败后回滚" ---
+if [ -n "$pending" ] && [ "$pending" = "$slot" ]; then
+    keel_log "更新成功:槽 $slot 上的 $(keel_version) 已确认"
+    keel_state_set last_result success
+    keel_state_set last_result_version "$(keel_version)"
+    keel_state_set last_result_time "$(date +%s)"
+    keel_state_set pending_slot ""
+    keel_state_set pending_version ""
+
+elif [ -n "$pending" ] && [ "$pending" != "$slot" ]; then
+    # 我们跑在旧槽上,而当时安排的是切到 $pending
+    # ⇒ 那个槽连续三次没能到达 boot-complete,引导器已经自动回滚。
+    keel_log "检测到更新失败并已回滚:现在运行在槽 $slot;失败的槽是 $pending(版本 ${pending_ver:-未知})"
+    keel_state_set last_result failed
+    keel_state_set last_result_version "$pending_ver"
+    keel_state_set last_result_time "$(date +%s)"
+    keel_state_set pending_slot ""
+    keel_state_set pending_version ""
+    # 把坏掉的 UKI 挪走,免得 boot counting 的残留条目继续干扰引导菜单
+    for f in "$KEEL_UKI_DIR/keel-$pending"+*.efi; do
+        [ -e "$f" ] || continue
+        mv -f "$f" "$f.failed" 2>/dev/null || true
+    done
+    keel_log "运行 os-status 看详情;失败的载荷仍然留在 $KEEL_OTA 下,可以删掉"
+fi
+
+keel_state_set running_slot "$slot"

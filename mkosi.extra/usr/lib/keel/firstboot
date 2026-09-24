@@ -1,0 +1,70 @@
+#!/bin/bash
+# keel 首启与自愈:幂等,每次启动都跑一遍
+#
+# 由 keel-firstboot.service 调用。设计原则:每一步都能安全重复执行,
+# 任何一步失败都不应该让系统起不来(所以大部分失败只记日志)。
+set -euo pipefail
+. /usr/lib/keel/lib.sh
+
+# ---------------------------------------------------------------------------
+# 1) /Volume 骨架自愈
+#
+# cp -a -n(no-clobber):只补缺失的,绝不覆盖已有内容。
+# 这同时是"手贱清空了 volume"和"忘了重建 dbus machine-id 链接"的修复入口
+# (AGENTS.md 已知的坑 #3)。
+# ---------------------------------------------------------------------------
+if [ -d /usr/share/keel/volume-skeleton ]; then
+    cp -a -n /usr/share/keel/volume-skeleton/. /Volume/ || true
+fi
+[ -e "$KEEL_SCHEMA_FILE" ] || echo 1 >"$KEEL_SCHEMA_FILE"
+
+# ---------------------------------------------------------------------------
+# 2) SSH 主机密钥
+#
+# 镜像里刻意不含主机密钥(否则所有装机实例共用同一套,见 mkosi.conf.d/20-packages.conf
+# 里的 RemoveFiles)。这里按需生成,写进 /etc overlay 的 upper ⇒ 换槽和更新都不会丢。
+# ---------------------------------------------------------------------------
+if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
+    if ssh-keygen -A >/dev/null 2>&1; then
+        keel_log "已生成 SSH 主机密钥(每台机器唯一)"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 3) NVRAM 启动项(只做一次)
+#
+# 镜像里的 ESP 已经带 fallback 路径 EFI/BOOT/BOOTX64.EFI,所以即使这一步失败、
+# 或者固件后来清空了 NVRAM,机器仍然能启动(systemd-boot 会自己去 /EFI/Linux 找 UKI)。
+# 只做一次是为了避免每次启动都往 NVRAM 写东西。
+# ---------------------------------------------------------------------------
+if [ ! -e /Volume/keel/.boot-entry-created ]; then
+    if bootctl install >/dev/null 2>&1; then
+        : >/Volume/keel/.boot-entry-created
+        keel_log "已在 ESP 上安装引导器并登记 NVRAM 启动项"
+    else
+        keel_log "bootctl install 失败(稍后可以手动跑 os-rescue --repair-boot)"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 4) 状态文件初始化
+# ---------------------------------------------------------------------------
+if [ -z "$(keel_state_get running_slot)" ]; then
+    keel_state_set running_slot "$(keel_current_slot)"
+fi
+
+# ---------------------------------------------------------------------------
+# 5) 把 volume 扩到整盘
+#
+# repart 是幂等的:分区表已经符合定义时它什么都不做,所以每次启动跑一遍是安全的。
+# 这也是"把镜像 dd 到更大的盘之后"的自愈入口。
+# ---------------------------------------------------------------------------
+vol=$(readlink -f /dev/disk/by-partlabel/volume 2>/dev/null || true)
+if [ -n "$vol" ] && [ -b "$vol" ]; then
+    pk=$(lsblk -ndo PKNAME "$vol" 2>/dev/null | head -n1 || true)
+    if [ -n "$pk" ] && [ -b "/dev/$pk" ]; then
+        if ! systemd-repart --dry-run=no --definitions=/usr/lib/keel/repart.d "/dev/$pk" >/dev/null 2>&1; then
+            keel_log "volume 扩容失败(稍后可以手动跑 os-rescue --grow-volume)"
+        fi
+    fi
+fi

@@ -49,10 +49,15 @@
    这是回滚可靠性的全部基础。因此**不要**用共享内核 + 两个 BLS entry 的方案。
 
 4. **槽切换与回滚只用 systemd 现成机制,不自己发明。**
-   `os-update` 是**门面**:下载/校验/写分区/版本比较交给 `systemd-sysupdate`,
-   "下次启动用哪个槽"用 `bootctl set-preferred`,成功判定用 boot counting +
-   `systemd-bless-boot.service`(它挂在 `boot-complete.target` 上自动把 UKI 改名成 "good")。
-   我们只写策略(迁移、保留、报告)。
+   `os-update` 是**门面**:对外子命令与状态语义稳定,底层可替换(决策 D8)。
+   - 槽切换 = `bootctl set-preferred`(只写 EFI 变量,不碰 ESP 上的 `loader.conf`);
+   - 成功判定 = boot counting + `systemd-bless-boot.service`(它挂在 `boot-complete.target` 上,
+     自动把 `keel-x+2-1.efi` 改名成 `keel-x.efi` 表示 good);
+   - 失败回滚 = 引导器:连续三次到不了 `boot-complete` 就把条目标成 bad,
+     `LoaderEntryPreferred` 会跳过它、退回另一个槽。
+   **v1 的底层是"直接写盘"**(`dd` 进目标分区),不是 `systemd-sysupdate` ——
+   后者的 `Type=partition` 匹配语义还没在真机验证过,而写错分区是不可接受的失败模式。
+   验证通过后再换底层,门面不动。
 
 5. **`/etc` 必须可写,用 overlayfs,不用 bind mount。**
    lower = 只读镜像的 `/etc`,upper/work = `/Volume/overlayfs/etc/{upper,work}`。
@@ -112,10 +117,14 @@
 
 ## 3. 已知的坑(都是踩过的,别重踩)
 
-1. **`mkosi.finalize` 会对默认 initrd 镜像也执行一次。**
-   `FinalizeScripts` 的 scope 是 `inherit`(mkosi v27 `config.py` 确认),而"把 `/var /root /nix`
-   换成符号链接"的脚本会在构建 initrd 时再跑一遍,把 initrd 弄坏,报错还会很莫名其妙。
-   **缓解**:脚本开头 `[ -f /etc/initrd-release ] && exit 0`,并在 `mkosi.initrd.conf` 里清空 `FinalizeScripts=`。
+1. **脚本类设置可能被默认 initrd 镜像继承,必须防两道。**
+   mkosi 的脚本设置(`FinalizeScripts` / `PostInstallationScripts` / …)默认值是按
+   "源目录里有没有 `mkosi.<名字>` 文件"解析的,而默认 initrd 镜像与主镜像**共用同一个源目录**
+   ⇒ 我们的 finalize 有可能被作用到 initrd 上,把它弄坏,报错还会很莫名其妙。
+   两道防护:
+   - `mkosi.initrd.conf` 里清空这些设置 —— **必须写在 `[Content]` 段**。写成 `[Config]` 时
+     mkosi 会报"Setting X should be configured in [Content]"然后**静默不生效**(这个坑真踩过);
+   - 两个脚本开头都 `[ -e "$BUILDROOT/etc/initrd-release" ] && exit 0`。
 
 2. **符号链接必须在最后一步(`mkosi.finalize`)才创建。**
    如果镜像树里 `/var` 提前变成符号链接,包管理器安装、`systemd-sysusers`、`systemd-tmpfiles`、
@@ -166,8 +175,23 @@
     会装 `systemd-ukify`,`systemd-repart.conf` 会装 `systemd-repart` —— 于是"Debian trixie 有没有 ukify"
     这个问题不影响构建:**ukify/repart 由 tools tree 提供,不是由目标镜像提供**。
 
-11. **本容器没法做真实验证**:没有 `/dev/kvm`、没有 loop 设备、ext4 不支持 reflink。
-    这里只能做静态校验,构建和启动验证由人类在别的机器上做。
+11. **不要在 `mkosi.conf` 里给 `Profiles=` 设默认值。**
+    mkosi 的集合型设置是**追加**语义:`Profiles=install` + `--profile slot-b` 会让 install 被解析两次,
+    KernelCommandLine 里同时出现 `root=PARTLABEL=root-a` 和 `root=PARTLABEL=root-b`
+    —— 静默产出一个 cmdline 自相矛盾的 UKI,而且要到真机启动才暴露。
+    两道守卫:`mkosi.finalize` 断言 `$MKOSI_CONFIG` 里恰好一个 `root=PARTLABEL=root-<槽>`;
+    `tools/verify.sh` 逐 profile 检查。
+    (也不能用 `[Assert] Profiles=`:它在 `mkosi.conf` 里是**在 profiles 之前**求值的,永远不满足。)
+
+12. **SSH 主机密钥绝不能烤进镜像。**
+    `openssh-server` 的 postinst 会在构建时生成它们,所以 `mkosi.conf.d/20-packages.conf` 里
+    有 `RemoveFiles=/etc/ssh/ssh_host_*`,首启由 `keel-firstboot` 用 `ssh-keygen -A` 重新生成
+    (写进 `/etc` overlay 的 upper,换槽和更新都不丢)。漏了这一步 = 所有装机实例共用同一套主机密钥。
+
+13. **开发容器里能验证的比想象的多,但仍然有限**:没有 `/dev/kvm`、没有 loop 设备、ext4 不支持 reflink,
+   但是 **systemd-repart 能真跑**(它格式化到临时文件,不需要 loop):
+   分区名、尺寸、类型、`CopyFiles` 全都能在这里验证;加上 mkosi 配置解析、单元语法、shellcheck,
+    就是 `tools/verify.sh` 的全部内容。**跑不了的只有真机构建与启动。**
 
 ---
 
@@ -195,22 +219,21 @@ sudo tools/burn.sh /dev/nvme0n1
 ## 5. 当前状态
 
 - [x] 架构设计与决策固化(`docs/architecture.md`、`docs/decisions.md`)
-- [x] 仓库骨架(README / AGENTS / .gitignore)
-- [ ] `mkosi.conf` + `mkosi.conf.d/`
-- [ ] `mkosi.profiles/{install,slot-a,slot-b}.conf`
-- [ ] `mkosi.repart/` + `mkosi.repart-slot/`
-- [ ] `mkosi.extra/`(静态文件)、`mkosi.postinst`、`mkosi.finalize`、`mkosi.initrd.conf`
-- [ ] 单元:`keel-mounts`、`keel-firstboot`、`keel-confirm`、`keel-swapfile`
-- [ ] `in-image/`:`os-update`、`os-install`、`os-status`、`os-rescue`
-- [ ] `tools/`:`verify.sh`、`build.sh`、`burn.sh`
-- [ ] `docs/`:`architecture.md` ✅、`decisions.md` ✅、`install.md`、`update.md`、`troubleshooting.md`
+- [x] 仓库骨架(README / AGENTS / .gitignore / schema-version)
+- [x] `mkosi.conf` + `mkosi.conf.d/` + `mkosi.initrd.conf`
+- [x] `mkosi.profiles/{install,slot-a,slot-b,test}.conf`
+- [x] `mkosi.repart/` + `mkosi.repart-slot-{a,b}/`
+- [x] `mkosi.extra/`、`mkosi.postinst`、`mkosi.finalize`
+- [x] 单元:`keel-mounts`、`keel-firstboot`、`keel-confirm`、`keel-swapfile` + preset
+- [x] `mkosi.extra/usr/bin/`:`os-status`、`os-update`、`os-rescue`、`os-install`
+- [x] `tools/`:`verify.sh`、`build.sh`、`burn.sh`
+- [x] `docs/`:`architecture.md`、`decisions.md`、`install.md`、`update.md`、`troubleshooting.md`
+- [ ] **第一次真机构建 / 虚拟机启动**(由人类做:见 `docs/install.md` §1)
 - [ ] `desktop` profile(笔记本用)
 - [ ] `server` profile(虚拟化宿主,GPU 直通)
 
-### 开写后第一批要验证的事(结论写进 `docs/decisions.md`)
+### 下一步要验证的事(结论回写到 `docs/architecture.md` §13.1)
 
 1. `root=PARTLABEL=` 与 `systemd.mount-extra=PARTLABEL=...` 在 initrd 里的解析(有把握,但要真跑一次)。
-2. `systemd-sysupdate` 的 `Type=partition` transfer 对双槽布局的匹配语义;不合适就在门面后面换成
-   `systemd-repart --copy-source` + 分区写盘,门面接口不变。
-3. `/usr/lib/modules/<kver>` 挂 overlay 后 `depmod` + 模块加载的实际行为(为"第三方内核模块外置"做准备,
-   main 不做,只预留 `/Volume/modules/`)。
+2. `systemd-sysupdate` 的 `Type=partition` transfer 对双槽布局的匹配语义(验证通过后换掉 v1 的直接写盘)。
+3. `/usr/lib/modules/<kver>` 挂 overlay 后 `depmod` + 模块加载的实际行为(为"第三方内核模块外置"做准备)。

@@ -1,0 +1,15 @@
+keel —— 不可变基座 + A/B 双槽 + nix 用户态
+
+  根文件系统是只读的;可写状态全部在 /Volume
+  (/var、/home、/root、/nix 都落在那里,/etc 通过 overlayfs 做到可写)。
+
+  这个系统上没有可用的发行版包管理器,装软件请用 nix:
+      nix profile install nixpkgs#<包名>
+      nix shell nixpkgs#<包名>
+      nix search nixpkgs <关键词>
+
+  os-status     当前槽 / 版本 / /Volume 使用情况 / 上次更新结果
+  os-update     更新系统(写入非活动槽 → 重启切换 → 失败自动回滚)
+  os-rescue     自救:重建 /Volume 骨架、/etc 恢复出厂、手动扩容、重建引导项
+
+  离线文档在 /usr/share/doc/keel/(README、架构、装机、更新、排障)。

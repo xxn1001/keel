@@ -1,0 +1,112 @@
+#!/bin/bash
+# keel 构建的最后一步:生成 /Volume 骨架,并把 /var /root /nix 换成符号链接
+#
+# 时机至关重要(AGENTS.md 已知的坑 #2):必须在所有会写 /var、/etc 的构建步骤
+# (装包、postinst、systemd-sysusers、systemd-tmpfiles、preset-all、depmod、
+# systemd-firstboot、systemd-hwdb)之后。mkosi 的执行顺序保证 finalize 是最后一步;
+# finalize 之后只剩"生成 UKI"和"用 systemd-repart 生成镜像",它们都不会写 /var。
+set -euo pipefail
+
+R="${BUILDROOT:?BUILDROOT 未设置}"
+SKEL="$R/usr/share/keel/volume-skeleton"
+log() { echo "keel-finalize: $*" >&2; }
+
+# ---------------------------------------------------------------------------
+# 防呆 1:默认 initrd 镜像与主镜像共用源目录,别把 initrd 也改坏
+# ---------------------------------------------------------------------------
+if [ -e "$R/etc/initrd-release" ]; then
+    log "这是 initrd 镜像,跳过"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# 防呆 2:kernel cmdline 里必须恰好有一个 root=PARTLABEL=root-<槽>
+#
+# 背景:mkosi 的集合型设置是"追加"语义。如果不小心同时启用了两个产物 profile
+# (install / slot-a / slot-b),cmdline 里会同时出现 root=PARTLABEL=root-a 和
+# root=PARTLABEL=root-b,产出一个自相矛盾的 UKI —— 而这个问题要到真机启动才暴露。
+# 这里在构建期就大声失败。$MKOSI_CONFIG 是 mkosi 提供的本次构建配置 JSON。
+# ---------------------------------------------------------------------------
+if [ -n "${MKOSI_CONFIG:-}" ] && [ -f "${MKOSI_CONFIG}" ]; then
+    n=$(grep -o 'root=PARTLABEL=root-[ab]' "$MKOSI_CONFIG" | sort -u | wc -l)
+    if [ "$n" -ne 1 ]; then
+        log "致命:kernel cmdline 里 root=PARTLABEL=root-<槽> 匹配到 $n 个(必须恰好 1 个)"
+        log "      install / slot-a / slot-b 只能启用一个。当前构建的配置见:"
+        log "      $MKOSI_CONFIG"
+        exit 1
+    fi
+else
+    log "警告:MKOSI_CONFIG 不可用,跳过 cmdline 一致性检查"
+fi
+
+# ---------------------------------------------------------------------------
+# 1) 生成 /Volume 骨架
+#
+# 骨架 = 镜像 /var 的快照(剔除包管理器状态目录)+ 我们额外需要的目录和链接。
+# 为什么需要它:运行时 /var 是指向 /Volume/var 的符号链接,
+# 镜像里 /var 的内容在运行时**根本看不见**(AGENTS.md 坑 #3),
+# 所以 /Volume 必须被预先填好,否则首启时 journald / dbus / nix 全会出问题。
+# ---------------------------------------------------------------------------
+install -d -m 0755 "$SKEL" "$SKEL/var"
+if [ -d "$R/var" ]; then
+    cp -a "$R/var/." "$SKEL/var/"
+fi
+# 包管理器状态目录与运行时无关,而且很大
+rm -rf "$SKEL/var/lib/dpkg" "$SKEL/var/lib/apt" "$SKEL/var/cache/apt" \
+       "$SKEL/var/cache/debconf" "$SKEL/var/log/apt" "$SKEL/var/lib/systemd/coredump"
+
+# 必须存在的目录
+install -d -m 0755 "$SKEL/var/log/journal"
+install -d -m 0755 "$SKEL/home"
+install -d -m 0700 "$SKEL/home/root"
+install -d -m 0755 "$SKEL/nix"
+for d in store var var/nix var/nix/db var/nix/gcroots var/nix/profiles \
+         var/nix/temproots var/nix/trash var/nix/daemon-socket var/nix/builds; do
+    install -d -m 0755 "$SKEL/nix/$d"
+done
+install -d -m 0755 "$SKEL/overlayfs/etc/upper" "$SKEL/overlayfs/etc/work"
+# 预留:将来"第三方内核模块外置"用(docs/decisions.md D14)
+install -d -m 0755 "$SKEL/modules"
+install -d -m 0755 "$SKEL/ota" "$SKEL/keel"
+
+# dbus 的 machine-id 链接:Debian 是 dbus 包 postinst 建的,而 /var 是全新的,
+# 这个链接会消失 ⇒ 必须显式重建(AGENTS.md 坑 #3)
+install -d -m 0755 "$SKEL/var/lib/dbus"
+ln -sfn /etc/machine-id "$SKEL/var/lib/dbus/machine-id"
+
+# /Volume 布局版本(迁移用,见 docs/update.md)。
+# 单一事实来源是仓库根目录的 schema-version 文件,这里只负责搬进骨架。
+if [ -n "${SRCDIR:-}" ] && [ -r "$SRCDIR/schema-version" ]; then
+    install -m 0644 "$SRCDIR/schema-version" "$SKEL/keel/schema-version"
+else
+    echo 1 >"$SKEL/keel/schema-version"
+fi
+
+# 运行时配置的默认值(首启用 cp -n 播种,用户改过就不会被覆盖)
+if [ ! -e "$SKEL/keel/config" ]; then
+    cat >"$SKEL/keel/config" <<'EOF'
+# keel 运行时配置。改完不需要重启。
+#
+# 更新源:https:// 地址、file:// 路径,或挂载好的 U 盘目录。
+# 换源只需要改这一行,例如:
+#   UPDATE_SOURCE=https://example.com/keel
+UPDATE_SOURCE=
+
+# swapfile 大小。留空 = 取 min(内存, 8G) 且不小于 1G。
+SWAPFILE_SIZE=
+EOF
+fi
+
+# ---------------------------------------------------------------------------
+# 2) 把 /var /root /nix 换成符号链接(不变量 1)
+#
+# /home 是唯一例外:它保持为真实空目录,由 keel-mounts 在启动早期 bind 到
+# /Volume/home —— 符号链接会破坏 ProtectHome= 的沙箱语义。
+# ---------------------------------------------------------------------------
+rm -rf "$R/var"  "$R/root" "$R/nix"
+ln -s /Volume/var        "$R/var"
+ln -s /Volume/home/root  "$R/root"
+ln -s /Volume/nix        "$R/nix"
+install -d -m 0755 "$R/home"
+
+log "完成:/Volume 骨架已生成,/var /root /nix 已改成符号链接"

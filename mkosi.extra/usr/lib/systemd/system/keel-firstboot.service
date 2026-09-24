@@ -1,0 +1,19 @@
+[Unit]
+Description=keel: first boot and self-heal tasks
+Documentation=file:/usr/share/doc/keel/install.md
+# 幂等,每次启动都跑:补 /Volume 骨架、生成 SSH 主机密钥、建 NVRAM 启动项、扩 volume。
+# 放在 sysinit 之前是因为后面几步(tmpfiles、nix、journald)都依赖 /Volume 已经成型。
+DefaultDependencies=no
+Requires=keel-mounts.service
+After=keel-mounts.service
+Before=sysinit.target shutdown.target
+Conflicts=shutdown.target
+ConditionPathIsMountPoint=/Volume
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/keel/firstboot
+
+[Install]
+WantedBy=sysinit.target

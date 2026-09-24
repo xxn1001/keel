@@ -1,0 +1,24 @@
+[Unit]
+Description=keel: bind /home and mount the /etc overlay
+Documentation=file:/usr/share/doc/keel/architecture.md
+# 必须极早运行,并且排在所有会读写 /etc 的单元之前(AGENTS.md 已知的坑 #8):
+# systemd-sysusers / tmpfiles / machine-id-commit 都要读 /etc,
+# 而机器专属的配置只存在于 /Volume 上的 overlay upper 里。
+DefaultDependencies=no
+# /Volume 由 initrd 通过 kernel cmdline 的 systemd.mount-extra 挂好(不变量 2),
+# 这里只是把依赖写清楚,确保顺序。
+RequiresMountsFor=/Volume
+After=systemd-remount-fs.service
+Before=sysinit.target shutdown.target
+Before=systemd-sysusers.service
+Before=systemd-tmpfiles-setup.service
+Before=systemd-machine-id-commit.service
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/keel/mounts
+
+[Install]
+WantedBy=sysinit.target

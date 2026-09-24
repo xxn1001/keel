@@ -1,0 +1,26 @@
+# keel:把本项目需要的单元显式钉成"启用"
+#
+# 为什么必须有这个文件:mkosi 构建时会执行 `systemctl preset-all`,
+# 而 preset 规则是**按文件名排序、第一条匹配的规则生效**。
+# 用 00- 前缀把我们的意图排在最前面,就不会被发行版自带策略覆盖。
+#
+# 只有 [Install] 段落还不够:preset 可能把没有匹配规则的单元判为禁用。
+
+# keel 自己的单元
+enable keel-mounts.service
+enable keel-firstboot.service
+enable keel-confirm.service
+enable keel-swapfile.service
+
+# 网络(main 用 systemd 原生栈,决策 D15;Debian 默认不启用这两个)
+enable systemd-networkd.service
+enable systemd-networkd.socket
+enable systemd-resolved.service
+enable systemd-timesyncd.service
+
+# 远程访问
+enable ssh.service
+
+# nix(Debian 的 nix-setup-systemd 提供;哪个存在就启用哪个)
+enable nix-daemon.service
+enable nix-daemon.socket

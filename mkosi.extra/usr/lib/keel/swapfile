@@ -1,0 +1,63 @@
+#!/bin/bash
+# keel swapfile:在 /Volume 上创建并启用交换文件
+#
+# 决策 D9:根只读 ⇒ swap 只能是文件;不做休眠(swapfile 的物理偏移
+# 在 A/B 布局下不保证稳定,resume_offset 会失效)。
+#
+# 用法:/usr/lib/keel/swapfile {start|stop}
+set -euo pipefail
+. /usr/lib/keel/lib.sh
+
+SWAP=/Volume/keel/swapfile
+
+# 默认大小:min(内存, 8G),但不小于 1G
+default_size_bytes() {
+    local mem min max
+    mem=$(awk '/^MemTotal:/{print $2*1024}' /proc/meminfo)
+    min=$((1024 * 1024 * 1024))
+    max=$((8 * 1024 * 1024 * 1024))
+    [ "$mem" -gt "$max" ] && mem=$max
+    [ "$mem" -lt "$min" ] && mem=$min
+    printf '%s' "$mem"
+}
+
+# 解析 SWAPFILE_SIZE:支持 4G / 4096M / 1048576(字节)
+wanted_size_bytes() {
+    local s
+    s=$(keel_conf SWAPFILE_SIZE "")
+    if [ -z "$s" ]; then default_size_bytes; return 0; fi
+    case "$s" in
+        *[Gg]) printf '%s' "$(( ${s%[Gg]} * 1024 * 1024 * 1024 ))" ;;
+        *[Mm]) printf '%s' "$(( ${s%[Mm]} * 1024 * 1024 ))" ;;
+        *[Kk]) printf '%s' "$(( ${s%[Kk]} * 1024 ))" ;;
+        *[0-9]) printf '%s' "$s" ;;
+        *) return 1 ;;
+    esac
+}
+
+case "${1:-start}" in
+start)
+    sz=$(wanted_size_bytes) || keel_die "SWAPFILE_SIZE 格式不认识(支持 4G / 4096M / 字节数)"
+    if [ ! -e "$SWAP" ]; then
+        keel_log "创建 $SWAP($sz 字节),这一步可能要几十秒"
+        # ext4 上 fallocate 会分配真实块(不是空洞),swapon 才能接受
+        if ! fallocate -l "$sz" "$SWAP" 2>/dev/null; then
+            dd if=/dev/zero of="$SWAP" bs=1M count=$(( sz / 1048576 )) status=none
+        fi
+        chmod 0600 "$SWAP"
+        mkswap "$SWAP" >/dev/null
+    fi
+    if ! swapon --show=NAME --noheadings 2>/dev/null | grep -qx "$SWAP"; then
+        swapon "$SWAP"
+        keel_log "已启用 swap($SWAP)"
+    fi
+    ;;
+stop)
+    if swapon --show=NAME --noheadings 2>/dev/null | grep -qx "$SWAP"; then
+        swapoff "$SWAP" || true
+    fi
+    ;;
+*)
+    keel_die "用法:/usr/lib/keel/swapfile {start|stop}"
+    ;;
+esac

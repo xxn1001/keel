@@ -1,0 +1,18 @@
+[Unit]
+Description=keel: confirm the booted slot / detect a rolled-back update
+Documentation=file:/usr/share/doc/keel/update.md
+# 排序照抄 systemd-bless-boot.service 的模式(它负责把 boot counting 的条目改名成 good):
+# 我们要在它之后跑,这样"正式名字"已经就位。
+DefaultDependencies=no
+Requires=boot-complete.target keel-mounts.service
+After=boot-complete.target systemd-bless-boot.service keel-mounts.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/keel/confirm
+
+[Install]
+WantedBy=boot-complete.target

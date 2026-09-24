@@ -31,3 +31,6 @@ __pycache__/
 .idea/
 .vscode/
 *.swp
+
+# tools/build.sh 的组装产物
+dist/

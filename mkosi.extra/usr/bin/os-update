@@ -1,0 +1,482 @@
+#!/bin/bash
+# os-update —— 更新门面:check / fetch / stage / switch / rollback / gc。
+#
+# 见 docs/architecture.md §5.3(槽切换与回滚的完整时序)、§8(更新流程)、§9(命令集);
+# 用户文档见 docs/update.md。四个子命令对应四件事:
+#   check    只读:问更新源有没有新版本(不下载)
+#   fetch    下载 + sha256/签名/schema 校验到 /Volume/ota/<version>/(不写任何槽)
+#   stage    把载荷写进**非活动槽** + 把 preferred 指向它(§5.3 ①–⑦)
+#   switch   手动把 preferred 指向某个槽的正式条目(切回上一个版本用)
+#   rollback switch 到另一个槽 + 清 pending + 记 failed
+#   gc       清理 /Volume/ota 下过期的载荷
+#
+# 破坏性操作(写分区、改 ESP)都在 stage 里,执行前会打印明确警告。
+set -euo pipefail
+
+# shellcheck source=/usr/lib/keel/lib.sh
+# SC1091:lib.sh 只在镜像里(/usr/lib/keel/lib.sh),仓库里没有这个文件,
+# 静态检查工具追不到它(它不在仓库里)。变量名与函数名以父 agent 给出的接口表为准。
+#
+# shellcheck disable=SC1091  # 注释与 source 行之间不能插别的东西
+. /usr/lib/keel/lib.sh
+
+# 更新源目录里固定的文件名。改了这里就等于改协议,要和 tools/build.sh 一起改。
+readonly ARTIFACTS=(slot-a.root.raw slot-a.uki.efi slot-b.root.raw slot-b.uki.efi)
+readonly MANIFEST="manifest"
+readonly MANIFEST_SIG="manifest.sig"
+readonly PUBKEY="/usr/share/keel/update-key.pub"
+readonly TRIES=3
+
+die_usage() {
+    keel_die "用法:$*"
+}
+
+need_root() {
+    # 写分区、改 ESP、写 /Volume 状态都需要 root;提前失败比写到一半失败干净得多
+    if [ "$(id -u)" != 0 ]; then
+        keel_die "需要 root 权限,请用 sudo 重新执行"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# manifest 解析
+#
+# manifest 是 key=value 文本(**不是 JSON**:镜像里没有 jq,见任务约定)。
+# 刻意不用 `. manifest` 引入:那是"执行"而不是"读取",一个被篡改的 manifest
+# 就能在解析阶段拿到代码执行。这里只用 grep + cut 取值,值原样返回。
+# ---------------------------------------------------------------------------
+manifest_get() {
+    local file="$1" key="$2" line v
+    line="$(grep -m1 -E "^${key}=" "$file" 2>/dev/null)" || line=""
+    if [ -z "$line" ]; then
+        printf '%s\n' ""
+        return 0
+    fi
+    v="${line#*=}"
+    # 去掉可能的 \r(更新源在 FAT 文件系统/U 盘上时很常见)
+    v="${v%$'\r'}"
+    printf '%s\n' "$v"
+}
+
+# 版本号会直接当目录名用,所以必须是单层安全路径分量:
+# 空、以 . 或 - 开头、含 / 或 .. 一律拒绝 —— 否则更新源能借版本号写到 $KEEL_OTA 外面。
+validate_version() {
+    local v="$1"
+    case "$v" in
+        ""|.*|-*) keel_die "manifest 里的 version 不合法:'${v}'(必须是非空的单层路径名)" ;;
+        */*|*..*) keel_die "manifest 里的 version 不合法:'${v}'(不允许含 / 或 ..)" ;;
+        *) : ;;
+    esac
+}
+
+# 本地源 → 拷贝;https:// → curl。更新源允许 file:// 与裸路径(docs/update.md §6)。
+fetch_one() {
+    local rel="$1"
+    case "$SRC" in
+        https://*|http://*)
+            # -f:HTTP 错误码直接失败(否则 404 页面会被当成载荷存下来)
+            curl -fL --retry 2 --connect-timeout 15 -o "$DEST/$rel" "$SRC/$rel"
+            ;;
+        *)
+            cp -- "$LOCAL_SRC/$rel" "$DEST/$rel"
+            ;;
+    esac
+}
+
+# 载荷路径 = $KEEL_OTA/<version>/slot-<槽>.{root.raw,uki.efi}(不检查存在性)
+payload_path() {
+    printf '%s\n' "$KEEL_OTA/$OTA_PAYLOAD_VERSION/slot-$1.root.raw"
+}
+
+uki_payload_path() {
+    printf '%s\n' "$KEEL_OTA/$OTA_PAYLOAD_VERSION/slot-$1.uki.efi"
+}
+
+# /Volume 布局版本;文件缺失当作 0(比任何 manifest 的 schema 都旧 ⇒ 会拒绝)
+volume_schema() {
+    local v
+    v="$(cat /Volume/keel/schema-version 2>/dev/null)" || v=""
+    v="${v//[[:space:]]/}"
+    if [ -z "$v" ]; then
+        printf '0\n'
+    else
+        printf '%s\n' "$v"
+    fi
+}
+
+# 远端版本严格比当前版本新 → 0;否则非 0。
+# 用 sort -V(GNU 版本排序),这样 2025.9.9 < 2025.9.10 也是对的。
+version_is_newer() {
+    local remote="$1" current="$2" top
+    top="$(printf '%s\n%s\n' "$current" "$remote" | LANG=C sort -V | tail -n1)" || return 1
+    [ -n "$remote" ] && [ "$top" = "$remote" ] && [ "$remote" != "$current" ]
+}
+
+# ---------------------------------------------------------------------------
+# check —— 只读,打印远端版本与当前版本,说明有没有更新
+# ---------------------------------------------------------------------------
+cmd_check() {
+    local mf="$SRC/$MANIFEST" rv rs tmp=""
+    case "$SRC" in
+        https://*|http://*) ;;
+        *) [ -e "$LOCAL_SRC/$MANIFEST" ] || keel_die "更新源里找不到 $MANIFEST:${LOCAL_SRC}" ;;
+    esac
+    # https 源先下到临时文件,免得为了看一眼版本就去写 /Volume/ota
+    if [ "$REMOTE" -eq 1 ]; then
+        tmp="$(mktemp -t keel-manifest.XXXXXX)"
+        if ! curl -fL --retry 2 --connect-timeout 15 -o "$tmp" "$SRC/$MANIFEST"; then
+            rm -f "$tmp"
+            keel_die "下载 manifest 失败:${SRC}/${MANIFEST}"
+        fi
+        mf="$tmp"
+    fi
+    rv="$(manifest_get "$mf" version)"
+    rs="$(manifest_get "$mf" schema)"
+    if [ -z "$rv" ]; then
+        [ -n "$tmp" ] && rm -f "$tmp"
+        keel_die "manifest 里没有 version=(格式不对?)"
+    fi
+
+    echo "更新源       : ${SRC}"
+    echo "远端版本     : ${rv}(schema ${rs:-未声明})"
+    echo "当前版本     : ${CURRENT_VERSION}(槽 ${CURRENT_SLOT:-未知})"
+
+    if version_is_newer "$rv" "$CURRENT_VERSION"; then
+        echo "结论         : 有新版本可用 → sudo os-update fetch"
+    elif [ "$rv" = "$CURRENT_VERSION" ]; then
+        echo "结论         : 已经是最新版本(远端与当前相同)"
+    else
+        echo "结论         : 远端版本比当前旧(检查更新源是否指错了目录)"
+    fi
+
+    [ -n "$tmp" ] && rm -f "$tmp"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# fetch —— 下载 + 校验到 $KEEL_OTA/<version>/
+#
+# 这一步不写任何槽,所以失败可以直接重来。三道闸:sha256、签名(可选)、schema。
+# ---------------------------------------------------------------------------
+cmd_fetch() {
+    local rv rs schema h actual tmp=""
+    [ -e "$LOCAL_SRC/$MANIFEST" ] || [ "$REMOTE" -eq 1 ] || keel_die "更新源里找不到 $MANIFEST:${LOCAL_SRC}"
+
+    install -d -m 0755 "$KEEL_OTA"
+    tmp="$(mktemp -d "$KEEL_OTA/.fetch.XXXXXX")"
+    # 任何提前退出都清掉半成品目录;成功路径最后把 tmp 改名成正式目录并摘掉 trap。
+    # 单引号是故意的:延迟到 trap 触发时再展开 $tmp,否则拿到的是空值(SC2064)。
+    trap 'rm -rf "$tmp"' EXIT
+
+    keel_log "从 ${SRC} 取 manifest"
+    fetch_one "$MANIFEST" || keel_die "下载 manifest 失败:${SRC}/${MANIFEST}"
+    # 签名是可选的,所以它的失败不能直接 die
+    if fetch_one "$MANIFEST_SIG" 2>/dev/null; then :; else
+        keel_log "更新源没有分布 $MANIFEST_SIG"
+    fi
+
+    rv="$(manifest_get "$tmp/$MANIFEST" version)"
+    rs="$(manifest_get "$tmp/$MANIFEST" schema)"
+    validate_version "$rv"
+    keel_log "远端版本:${rv}"
+
+    for a in "${ARTIFACTS[@]}"; do
+        keel_log "取 $a"
+        fetch_one "$a" || keel_die "下载失败:${SRC}/${a}"
+    done
+
+    # --- sha256 -----------------------------------------------------------
+    for a in "${ARTIFACTS[@]}"; do
+        h="$(manifest_get "$tmp/$MANIFEST" "sha256_$a")"
+        if [ -z "$h" ]; then
+            keel_die "manifest 里缺少 sha256_$a=,拒绝安装未声明校验和的载荷"
+        fi
+        actual="$(sha256sum "$tmp/$a" | cut -d' ' -f1)" || keel_die "计算 $a 的 sha256 失败"
+        if [ "$actual" != "$h" ]; then
+            keel_die "$a 校验和不匹配:期望 $h,实际 $actual(载荷被截断或改过,重下)"
+        fi
+    done
+    keel_log "sha256 全部匹配(4 个产物)"
+
+    # --- 签名 -------------------------------------------------------------
+    if [ -f "$tmp/$MANIFEST_SIG" ]; then
+        if [ ! -f "$PUBKEY" ]; then
+            keel_die "更新源提供了 $MANIFEST_SIG,但本机没有公钥 $PUBKEY,无法验签"
+        fi
+        if ! openssl dgst -sha256 -verify "$PUBKEY" -signature "$tmp/$MANIFEST_SIG" "$tmp/$MANIFEST"; then
+            keel_die "manifest 验签失败 —— 更新源可能被篡改,已中止(什么都没写进槽)"
+        fi
+        keel_log "manifest 验签通过"
+    else
+        echo "  ************************************************************"
+        echo "  警告:本次更新没有签名保护(更新源没有 $MANIFEST_SIG)"
+        echo "        只靠 sha256 防传输损坏,防不住恶意替换更新源。"
+        echo "        v1 策略:继续,但请只使用自己控制的更新源。"
+        echo "  ************************************************************"
+    fi
+
+    # --- schema 兼容性 ----------------------------------------------------
+    schema="$CURRENT_SCHEMA"
+    if [ -n "$rs" ] && [ "$rs" -gt "$schema" ]; then
+        keel_die "这个更新需要更新的 /Volume 布局(manifest schema=${rs},本机=${schema})。当前系统不认识这个布局,拒绝安装;请先升级到中间版本,或重装。"
+    fi
+
+    # --- 落盘到正式目录 ---------------------------------------------------
+    # 先删旧的同版本目录:上一次 fetch 可能留下半份坏载荷,cp 不清理多余文件。
+    rm -rf "${KEEL_OTA:?}/${rv:?}"
+    mv -- "$tmp" "$KEEL_OTA/$rv"
+    trap - EXIT
+    sync
+    keel_log "载荷已就位:$KEEL_OTA/$rv"
+    echo "下一步:sudo os-update stage"
+}
+
+# ---------------------------------------------------------------------------
+# stage —— 写非活动槽(§5.3 ①–⑦)
+# ---------------------------------------------------------------------------
+cmd_stage() {
+    local target payload uki dev part_bytes payload_bytes pref ukisrc base
+    local reboot=0 force=0
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --reboot) reboot=1 ;;
+            --force) force=1 ;;
+            *) die_usage "os-update stage [--reboot] [--force]" ;;
+        esac
+        shift
+    done
+
+    [ -n "$CURRENT_SLOT" ] || keel_die "解析不出当前槽(/proc/cmdline 里没有 root=PARTLABEL=root-<a|b>);拒绝在不确定当前槽的情况下写分区"
+    target="$(keel_other_slot "$CURRENT_SLOT")"
+
+    # 用哪个版本的载荷:/Volume/ota 下版本号最大的那个目录(和 gc 的保留策略一致)
+    if [ -z "$OTA_PAYLOAD_VERSION" ]; then
+        keel_die "找不到已下载的载荷。先跑:sudo os-update fetch"
+    fi
+    payload="$(payload_path "$target")"
+    uki="$(uki_payload_path "$target")"
+    if [ ! -f "$payload" ] || [ ! -f "$uki" ]; then
+        keel_die "缺少槽 $target 的载荷($KEEL_OTA/$OTA_PAYLOAD_VERSION);先跑:sudo os-update fetch"
+    fi
+
+    # 已经安排过同一个目标槽时,再写一遍没有意义,而且会让 boot counting 的语义变模糊
+    if [ "$force" -eq 0 ] && [ "${PENDING_SLOT:-}" = "$target" ]; then
+        echo "已经安排过:槽 ${target}(版本 ${PENDING_VERSION:-未知})正在等待下次启动确认。" >&2
+        echo "如果确实要重写,用:sudo os-update stage --force" >&2
+        exit 1
+    fi
+
+    dev="$(keel_slot_device "$target")"
+    [ -b "$dev" ] || keel_die "目标分区不存在:${dev}(分区布局不对?)"
+    part_bytes="$(blockdev --getsize64 "$dev")" || keel_die "读不到 $dev 的大小"
+    payload_bytes="$(stat -c %s "$payload")" || keel_die "读不到 $payload 的大小"
+    if [ "$payload_bytes" -gt "$part_bytes" ]; then
+        keel_die "载荷太大:$(basename "$payload") = ${payload_bytes} 字节,目标分区 ${dev} 只有 ${part_bytes} 字节。槽位尺寸是布局常量(不变量 9),装不下只能重装。"
+    fi
+
+    keel_log "当前槽 ${CURRENT_SLOT} → 目标槽 ${target}(版本 ${OTA_PAYLOAD_VERSION})"
+    echo "  ************************************************************"
+    echo "  即将写入非活动槽,正在运行的系统不受影响:"
+    echo "    根分区镜像 → ${dev}(槽 ${target},整个分区会被覆盖)"
+    echo "    内核镜像   → ${KEEL_UKI_DIR}/keel-${target}+${TRIES}.efi"
+    echo "  写完后下次启动会用槽 ${target};启动失败会自动回退(连续 ${TRIES} 次)。"
+    echo "  ************************************************************"
+
+    keel_log "写根分区(可能耗时几分钟;这里没有输出不是卡死)"
+    dd if="$payload" of="$dev" bs=4M conv=fsync status=progress ||
+        keel_die "写 ${dev} 失败(分区被占用或磁盘出错?)"
+    sync
+    keel_log "根分区写入完成"
+
+    # ESP 的 cmdline 是 ro 挂载的,写 UKI 前必须 remount rw(不变量:ESP 由 initrd 挂上)
+    if ! mount -o remount,rw "$KEEL_ESP"; then
+        keel_die "挂载点 ${KEEL_ESP} 无法重新挂载为可写:检查它是否真的挂载了(findmnt ${KEEL_ESP});先执行 sudo os-rescue --repair-boot 或手动 mount ${KEEL_ESP}"
+    fi
+    ukisrc="$KEEL_UKI_DIR/keel-${target}+${TRIES}.efi"
+    cp -- "$uki" "$ukisrc" || keel_die "写入 $ukisrc 失败(ESP 空间不足?)"
+    sync
+    keel_log "UKI 已写入 ${ukisrc}(名字里的 +${TRIES} 是 boot counting 的 tries-left)"
+
+    # 清掉同槽的同族残留(+2-1.efi / .failed 等)。不清的话它们会被算作"更旧的条目"
+    # 参与 boot counting 的排序,失败判定会变得难以解释(§5.3 ⑧)。
+    for stale in "$KEEL_UKI_DIR/keel-${target}.efi.failed" "$KEEL_UKI_DIR/keel-${target}.efi.bad"; do
+        if [ -e "$stale" ]; then
+            rm -f "$stale" || keel_log "警告:删不掉 $stale(留着不影响启动)"
+            keel_log "已清理上次残留:$(basename "$stale")"
+        fi
+    done
+    for stale in "$KEEL_UKI_DIR/keel-${target}"+*.efi; do
+        [ -e "$stale" ] || continue
+        base="${stale##*/}"
+        [ "$base" = "keel-${target}+${TRIES}.efi" ] && continue
+        rm -f "$stale" || keel_log "警告:删不掉 $stale(留着不影响启动)"
+        keel_log "已清理上次残留:${base}"
+    done
+
+    pref="keel-${target}+${TRIES}.efi"
+    if ! bootctl set-preferred "$pref"; then
+        keel_die "bootctl set-preferred ${pref} 失败:引导器不接受这个条目(文件确实在 ESP 上?ESP 是可写的?),或固件拒绝写 EFI 变量(部分主板只读 LoaderEntryPreferred)。可改用开机菜单手动选择槽 ${target}。"
+    fi
+    keel_log "preferred 条目已指向 ${pref}"
+
+    keel_state_set pending_slot "$target"
+    keel_state_set pending_version "$OTA_PAYLOAD_VERSION"
+    keel_state_set running_slot "$CURRENT_SLOT"
+
+    echo "已安排:下次启动使用槽 ${target}(版本 ${OTA_PAYLOAD_VERSION})。"
+    echo "重启后 os-status 会显示 pending 状态;启动成功自动确认,失败自动回退。"
+    if [ "$reboot" -eq 1 ]; then
+        keel_log "3 秒后重启(要取消就按 Ctrl-C)"
+        sleep 3
+        systemctl reboot
+    else
+        echo "重启生效:sudo systemctl reboot(或下次用 os-update stage --reboot)"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# switch / rollback —— 只改 preferred,不写任何分区
+# ---------------------------------------------------------------------------
+cmd_switch() {
+    local slot="${1:-}" pref
+    case "$slot" in
+        a|b) ;;
+        *) die_usage "os-update switch <a|b>" ;;
+    esac
+    pref="keel-${slot}.efi"
+    local existing="" f
+    for f in "$KEEL_UKI_DIR"/*.efi; do
+        [ -e "$f" ] || continue
+        existing="$existing ${f##*/}"
+    done
+    [ -e "$KEEL_UKI_DIR/$pref" ] ||
+        keel_die "ESP 上没有 ${KEEL_UKI_DIR}/${pref}:槽 ${slot} 还没有可用条目(先用 os-update stage 填这个槽)。现有条目:${existing:- 无}"
+    if ! bootctl set-preferred "$pref"; then
+        keel_die "bootctl set-preferred ${pref} 失败(固件拒绝写 EFI 变量?)。可改用开机菜单(space)手动选择槽 ${slot}。"
+    fi
+    if [ "$slot" = "$CURRENT_SLOT" ]; then
+        keel_log "preferred 已指向当前正在运行的槽 ${slot}(无实际变化)"
+    else
+        keel_log "preferred 已指向槽 ${slot};重启后生效"
+    fi
+    echo "重启:sudo systemctl reboot。当前运行的系统没有被修改。"
+}
+
+cmd_rollback() {
+    local cur other
+    cur="$CURRENT_SLOT"
+    [ -n "$cur" ] || keel_die "解析不出当前槽,无法判断要切回哪个槽"
+    other="$(keel_other_slot "$cur")"
+    echo "回滚:把下次启动指向槽 ${other}(当前槽 ${cur},${CURRENT_VERSION})"
+    cmd_switch "$other"
+    # 清 pending:回滚是"放弃这次更新"的明确表达,留着 pending 会让下次启动的
+    # 成功/失败判定把这次回滚误判成更新失败(§5.3 ⑪)。
+    keel_state_set pending_slot ""
+    keel_state_set pending_version ""
+    keel_state_set last_result "failed"
+    keel_state_set last_result_version "$CURRENT_VERSION"
+    keel_state_set last_result_time "$(date +%s)"
+    keel_log "已清空 pending,并把上次结果记为 failed(${CURRENT_VERSION})"
+}
+
+# ---------------------------------------------------------------------------
+# gc —— 保留 pending 版本 + 最新 2 个版本
+# ---------------------------------------------------------------------------
+cmd_gc() {
+    local keep="" v dir newest removed=0
+    keep="$(keel_state_get pending_version 2>/dev/null)" || keep=""
+    # sort -V:版本号按版本语义排序(2025.9.10 > 2025.9.9),取最新两个
+    newest="$(find "$KEEL_OTA" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | LANG=C sort -Vr | head -n 2)" || newest=""
+
+    echo "gc:保留版本 ${newest//$'\n'/ }${keep:+ 与 pending 的 $keep};其余删除。"
+    for dir in "$KEEL_OTA"/*/; do
+        [ -d "$dir" ] || continue
+        v="${dir%/}"
+        v="${v##*/}"
+        case "$v" in .*) continue ;; esac  # 跳过 fetch 的中间目录
+        if printf '%s\n' "$newest" | grep -qxF -- "$v"; then
+            continue
+        fi
+        [ -n "$keep" ] && [ "$v" = "$keep" ] && continue
+        echo "  删除 $dir"
+        rm -rf "$dir" || keel_die "删除 $dir 失败"
+        removed=$((removed + 1))
+    done
+    if [ "$removed" -eq 0 ]; then
+        echo "没有需要清理的版本目录。"
+    else
+        echo "已清理 ${removed} 个版本目录。"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# 参数解析与公共上下文
+# ---------------------------------------------------------------------------
+need_root
+[ "$#" -ge 1 ] || die_usage "os-update <check|fetch|stage|switch|rollback|gc> [选项]"
+
+CMD="$1"
+shift
+
+CURRENT_SLOT="$(keel_current_slot 2>/dev/null)" || CURRENT_SLOT=""
+CURRENT_VERSION="$(keel_version 2>/dev/null)" || CURRENT_VERSION=""
+CURRENT_VERSION="${CURRENT_VERSION:-未知}"
+CURRENT_SCHEMA="$(volume_schema)"
+PENDING_SLOT="$(keel_state_get pending_slot 2>/dev/null)" || PENDING_SLOT=""
+PENDING_VERSION="$(keel_state_get pending_version 2>/dev/null)" || PENDING_VERSION=""
+
+UPDATE_SOURCE="$(keel_conf UPDATE_SOURCE "" 2>/dev/null)" || UPDATE_SOURCE=""
+SRC=""
+LOCAL_SRC=""
+REMOTE=0
+# file:// 与裸路径都当本地目录(挂载好的 U 盘就是裸路径,见 docs/update.md §6)。
+# 末尾的 / 统一去掉,后面拼接时只用一层分隔符。
+normalize_source() {
+    local s="$1"
+    case "$s" in
+        https://*|http://*) printf '%s\n' "${s%/}" ;;
+        file://*) printf '%s\n' "$(dirname "${s#file://}/x")" ;;
+        *) printf '%s\n' "${s%/}" ;;
+    esac
+}
+if [ -n "$UPDATE_SOURCE" ]; then
+    SRC="$(normalize_source "$UPDATE_SOURCE")"
+    LOCAL_SRC="$SRC"
+    case "$SRC" in https://*|http://*) REMOTE=1 ;; *) REMOTE=0 ;; esac
+fi
+
+# stage 用哪个版本的载荷:config 里没有记录"刚 fetch 了哪个版本",所以取 /Volume/ota
+# 下版本号最大的目录(与 gc 的保留策略一致)。空 = 还没有下载过任何载荷。
+OTA_PAYLOAD_VERSION="$(find "$KEEL_OTA" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | grep -v '^\.' | LANG=C sort -Vr | head -n1)" || OTA_PAYLOAD_VERSION=""
+
+case "$CMD" in
+    check)
+        [ -n "$SRC" ] || keel_die "没有配置更新源:请编辑 /Volume/keel/config,把 UPDATE_SOURCE= 设成 https:// 地址、file:// 路径或挂载好的 U 盘目录,然后重试"
+        cmd_check
+        ;;
+    fetch)
+        [ -n "$SRC" ] || keel_die "没有配置更新源:请编辑 /Volume/keel/config,把 UPDATE_SOURCE= 设成 https:// 地址、file:// 路径或挂载好的 U 盘目录,然后重试"
+        cmd_fetch
+        ;;
+    stage) cmd_stage "$@" ;;
+    switch) cmd_switch "$@" ;;
+    rollback) cmd_rollback ;;
+    gc) cmd_gc ;;
+    -h|--help|help)
+        cat <<'EOF'
+用法:os-update <子命令> [选项]
+
+  check                 查询更新源有没有新版本(只读,不下载)
+  fetch                 下载并校验载荷到 /Volume/ota/<版本>/
+  stage [--reboot] [--force]
+                        把载荷写进非活动槽,并把下次启动指向它
+  switch <a|b>          把下次启动指向指定槽的正式条目(keel-<槽>.efi)
+  rollback              切回另一个槽,清空 pending,并记一次 failed
+  gc                    清理 /Volume/ota 下的过期版本(保留 pending + 最新 2 个)
+
+更新源在 /Volume/keel/config 的 UPDATE_SOURCE=。详见 docs/update.md。
+EOF
+        ;;
+    *) die_usage "os-update <check|fetch|stage|switch|rollback|gc> [选项]" ;;
+esac

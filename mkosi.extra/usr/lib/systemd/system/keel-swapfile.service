@@ -1,0 +1,15 @@
+[Unit]
+Description=keel: create and enable the /Volume swapfile
+Documentation=file:/usr/share/doc/keel/architecture.md
+After=keel-mounts.service
+Requires=keel-mounts.service
+ConditionPathIsMountPoint=/Volume
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/keel/swapfile start
+ExecStop=/usr/lib/keel/swapfile stop
+
+[Install]
+WantedBy=multi-user.target

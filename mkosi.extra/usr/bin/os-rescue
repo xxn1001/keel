@@ -1,0 +1,254 @@
+#!/bin/bash
+# os-rescue —— 救援与修复入口:重建 /Volume 骨架、请求重置 /etc、扩展 volume、
+#              标记当前槽为坏、重装引导器。
+#
+# 见 docs/architecture.md §9(命令集)与 §4.2(/Volume 骨架);用户操作见
+# docs/update.md §3.2(回滚/标记坏槽)与 docs/troubleshooting.md §3(/Volume 出问题)。
+#
+# 本脚本只做"幂等且只增不破"的修复:除了 --grow-volume 会改分区表(只扩不缩),
+# 没有别的破坏性动作 —— 清空 /etc 这种不可逆的事由 keel-mounts 在下次启动时做,
+# 本脚本只放一个请求标志。
+set -euo pipefail
+
+# shellcheck source=/usr/lib/keel/lib.sh
+# SC1091:lib.sh 只在镜像里(/usr/lib/keel/lib.sh),仓库里没有这个文件,
+# 静态检查工具追不到它(它不在仓库里)。变量名与函数名以父 agent 给出的接口表为准。
+#
+# shellcheck disable=SC1091  # 注释与 source 行之间不能插别的东西
+. /usr/lib/keel/lib.sh
+
+readonly SKELETON="/usr/share/keel/volume-skeleton"
+readonly REPART_DEFS="/usr/lib/keel/repart.d"
+readonly RESET_FLAG="/Volume/overlayfs/.reset-etc-requested"
+readonly VOLUME_PART="/dev/disk/by-partlabel/volume"
+
+usage() {
+    cat <<'EOF'
+用法:os-rescue <--init-volume|--reset-etc|--grow-volume|--mark-bad|--repair-boot>
+
+  --init-volume   幂等修补 /Volume 骨架:把镜像里的骨架用 no-clobber 方式补进去,
+                  不删除任何已有文件。骨架缺失、/var/lib/dbus/machine-id 链接
+                  丢失(mkosi.finalize 里显式重建过,见 AGENTS.md 坑 #3)都走这里。
+  --reset-etc     请求"下次启动清空 /etc 的可写层"。本命令**不清空**:只写标志文件
+                  /Volume/overlayfs/.reset-etc-requested,由 keel-mounts 在挂载前
+                  先把旧 upper 备份成 etc.bak-<时间戳>,再清空。
+  --grow-volume   用 systemd-repart 把 volume 分区扩到整盘剩余空间(只扩不缩;
+                  文件系统由 repart 的 GrowFileSystem 负责,不需要手动 resize2fs)。
+  --mark-bad      把当前运行的这个槽标记为 bad(systemd-bless-boot bad),
+                  让引导器以后不再选它。仅当另一个槽确实可用时才用。
+  --repair-boot   重装 ESP 上的引导器并重建 NVRAM 启动项(bootctl install)。
+EOF
+}
+
+need_root() {
+    if [ "$(id -u)" != 0 ]; then
+        keel_die "需要 root 权限,请用 sudo 重新执行"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# --init-volume
+#
+# cp -a -n = 归档模式 + no-clobber:已存在的文件一律不动,**不删除任何东西**。
+# 这正是"手贱清空 volume"以及"骨架里少了个目录"两种故障的自愈入口(docs §7.2 ①)。
+# 为什么用 cp 而不是 rsync:镜像里没有 rsync(见任务约束)。
+# ---------------------------------------------------------------------------
+do_init_volume() {
+    if [ ! -d "$SKELETON" ]; then
+        keel_die "镜像里的骨架不存在:${SKELETON}(这个镜像不完整?)"
+    fi
+    if [ ! -d /Volume ]; then
+        keel_die "/Volume 没有挂载。它是 initrd 按 kernel cmdline 的 systemd.mount-extra 挂的,先确认:findmnt /Volume"
+    fi
+    keel_log "把骨架补进 /Volume(已存在的文件不会被覆盖,也不会删除任何东西)"
+    # 末尾的 /. 表示"复制目录内容"而不是目录本身
+    cp -a -n "$SKELETON/." /Volume/ || keel_die "复制骨架失败(磁盘满了?)"
+    sync
+
+    # 两个最常见的"单独丢失"点,直接检查并报告,省得用户去猜。
+    # readlink 对损坏的链接会失败,所以带 || true(set -e 下不能让它中断修复)。
+    if [ -L /Volume/var/lib/dbus/machine-id ]; then
+        keel_log "dbus machine-id 链接存在:$(readlink /Volume/var/lib/dbus/machine-id 2>/dev/null || echo '无法解析')"
+    else
+        install -d -m 0755 /Volume/var/lib/dbus
+        ln -sfn /etc/machine-id /Volume/var/lib/dbus/machine-id
+        keel_log "已重建 /Volume/var/lib/dbus/machine-id -> /etc/machine-id"
+    fi
+    [ -d /Volume/var/log/journal ] || keel_log "注意:/Volume/var/log/journal 仍然缺失,这次启动的日志会是易失的"
+
+    echo "骨架修补完成。已有文件一件没动;缺的目录/文件/链接补上了。"
+}
+
+# ---------------------------------------------------------------------------
+# --reset-etc
+#
+# 刻意**不在这里**清空 upper:清空必须发生在挂载 overlay **之前**,而运行中的系统
+# 早就挂好了。所以本命令只留一个请求标志,真正的动作在 keel-mounts 里做(它会先备份)。
+# ---------------------------------------------------------------------------
+do_reset_etc() {
+    if [ ! -d /Volume ]; then
+        keel_die "/Volume 没有挂载,写不了请求标志;先确认:findmnt /Volume"
+    fi
+    if ! install -d -m 0755 /Volume/overlayfs; then
+        keel_die "创建 /Volume/overlayfs 失败"
+    fi
+    if ! : >"$RESET_FLAG"; then
+        keel_die "写请求标志失败:${RESET_FLAG}"
+    fi
+    sync
+    keel_log "已写入请求标志:${RESET_FLAG}"
+    echo "已登记请求:**下次启动**会把 /etc 的可写层清空,并重新从只读镜像播种。"
+    echo "清空前 keel-mounts 会先把旧内容备份成:"
+    echo "  /Volume/overlayfs/etc.bak-<时间戳>/"
+    echo
+    echo "注意:这样一来下面这些东西会回到出厂状态,而且不会自动恢复 ——"
+    echo "  - 账号与密码(/etc/passwd、/etc/shadow、/etc/group)"
+    echo "  - SSH 主机密钥(/etc/ssh/ssh_host_*)"
+    echo "  - machine-id(/etc/machine-id,以及依赖它的 journal 关联)"
+    echo "  - 网络配置、hostname、你改过的任何 /etc 下的文件"
+    echo "要留的东西先复制到 /Volume/home/ 下面(那不在 overlay 的 upper 里)。"
+    echo "备份不满意还能从上面那个 etc.bak-<时间戳> 目录里找回来。"
+}
+
+# ---------------------------------------------------------------------------
+# --grow-volume
+#
+# repart 按**分区类型**把定义匹配到现有分区,所以 /usr/lib/keel/repart.d 里的定义
+# 必须和装机时的 30-volume.conf 是同一个类型 UUID(见 mkosi.repart/30-volume.conf
+# 的注释:刻意用项目私有 UUID,避免和 linux-generic 的 root-b 撞车)。
+# ---------------------------------------------------------------------------
+do_grow_volume() {
+    local pn rel disk part_bytes dev_bytes
+    if [ ! -e "$VOLUME_PART" ]; then
+        keel_die "找不到 volume 分区:${VOLUME_PART}"
+    fi
+    pn="$(lsblk -no PKNAME "$(readlink -f "$VOLUME_PART")" 2>/dev/null | head -n1)" || pn=""
+    if [ -z "$pn" ]; then
+        keel_die "解析不出 volume 分区所在的磁盘(lsblk -no PKNAME $(readlink -f "$VOLUME_PART") 没输出)"
+    fi
+    # lsblk 给出的 PKNAME 可能是 nvme0n1p2 这种"分区名"而不是磁盘名(不同版本的
+    # lsblk 对 by-partlabel 符号链接的处理不一样),所以递归往上找到真正的整盘。
+    rel="$(lsblk -no TYPE "$(readlink -f "$VOLUME_PART")" 2>/dev/null | head -n1)" || rel=""
+    if [ "$rel" != "disk" ]; then
+        local pn2
+        pn2="$(lsblk -no PKNAME "/dev/$pn" 2>/dev/null | head -n1)" || pn2=""
+        if [ -n "$pn2" ]; then
+            pn="$pn2"
+        fi
+    fi
+    if [ -b "/dev/$pn" ]; then
+        disk="/dev/$pn"
+    elif [ -b "$pn" ]; then
+        disk="$pn"
+    else
+        keel_die "解析出的目标磁盘不存在:/dev/${pn}"
+    fi
+    [ -d "$REPART_DEFS" ] || keel_die "找不到 repart 定义目录:${REPART_DEFS}"
+
+    part_bytes="$(blockdev --getsize64 "$(readlink -f "$VOLUME_PART")" 2>/dev/null)" || part_bytes=""
+    dev_bytes="$(blockdev --getsize64 "$disk" 2>/dev/null)" || dev_bytes=""
+    echo "目标磁盘 : ${disk}(${dev_bytes:-未知} 字节)"
+    echo "volume   : $(readlink -f "$VOLUME_PART")(当前 ${part_bytes:-未知} 字节)"
+    echo "只扩不缩;文件系统扩容由 repart 的 GrowFileSystem 完成(不手动跑 resize2fs)。"
+
+    systemd-repart --dry-run=no --definitions="$REPART_DEFS" "$disk" ||
+        keel_die "systemd-repart 失败。常见原因:目标盘上还有别的分区占着后面的空间、或定义里的类型 UUID 对不上现有 volume 分区。"
+    sync
+    keel_log "完成。用 lsblk 和 df -h /Volume 确认新的大小"
+}
+
+# ---------------------------------------------------------------------------
+# --mark-bad
+#
+# systemd-bless-boot bad 会把当前条目的 tries-left 写成 0(等价于 +0-n.efi),
+# 引导器据此在排序上把它排到最后(UAPI.1 Boot Loader Specification 的 boot counting)。
+# 它依赖 LoaderBootCountPath 这个 EFI 变量,所以只有"带计数启动"的条目才有效。
+# ---------------------------------------------------------------------------
+do_mark_bad() {
+    local slot other
+    slot="$(keel_current_slot 2>/dev/null)" || slot=""
+    if [ -z "$slot" ]; then
+        keel_die "解析不出当前槽,拒绝标记(不确定自己在哪个槽上,标错就麻烦了)"
+    fi
+    other="$(keel_other_slot "$slot")"
+    echo "  ************************************************************"
+    echo "  即将把**当前正在运行**的槽 ${slot} 标记为 bad:"
+    echo "  引导器以后不再优先选它。如果另一个槽并不可用,你会把自己锁在门外。"
+    echo "  ************************************************************"
+
+    if ! command -v systemd-bless-boot >/dev/null 2>&1; then
+        keel_die "找不到 systemd-bless-boot(systemd-boot 包没装?)"
+    fi
+    systemd-bless-boot bad ||
+        keel_die "systemd-bless-boot bad 失败:多半是这次启动没有 boot counting(LoaderBootCountPath 不存在),用 bootctl status 看当前条目名"
+
+    keel_log "槽 ${slot} 已标记为 bad"
+    echo "接下来:"
+    echo "  sudo os-update switch ${other}   # 把 preferred 指向另一个槽的正式条目"
+    echo "  sudo systemctl reboot            # 重启后确认新槽可用"
+    echo "如果另一个槽的正式条目(keel-${other}.efi)不存在,它的条目名可能带计数"
+    echo "(keel-${other}+N.efi):先用 bootctl list 看,再 bootctl set-preferred。"
+}
+
+# ---------------------------------------------------------------------------
+# --repair-boot
+#
+# 主板固件可能清掉 NVRAM 里的启动项(R4),fallback 路径 EFI/BOOT/BOOTX64.EFI 能保证
+# 还能起来;进来了就用这条命令把引导器与启动项重新装好(docs/architecture.md §5.2)。
+# ---------------------------------------------------------------------------
+do_repair_boot() {
+    local slot counted f
+    slot="$(keel_current_slot 2>/dev/null)" || slot=""
+
+    if bootctl install; then
+        keel_log "bootctl install 完成(systemd-boot + fallback BOOTX64.EFI + NVRAM 启动项)"
+    else
+        keel_die "bootctl install 失败。检查:ESP 是否挂在 /efi 且可写(findmnt /efi;mount -o remount,rw /efi)、固件是否允许写 EFI 变量、ESP 上是否有足够的空间。UEFI 下也可以靠 fallback 路径 EFI/BOOT/BOOTX64.EFI 启动。"
+    fi
+    sync
+
+    if [ -z "$slot" ]; then
+        keel_log "解析不出当前槽,跳过条目名检查"
+        return 0
+    fi
+    if [ -e "$KEEL_UKI_DIR/keel-$slot.efi" ]; then
+        keel_log "当前槽的正式条目存在:${KEEL_UKI_DIR}/keel-$slot.efi"
+    else
+        counted=""
+        for f in "$KEEL_UKI_DIR/keel-$slot"+*.efi; do
+            [ -e "$f" ] || continue
+            counted="${f##*/}"
+            break
+        done
+        if [ -n "$counted" ]; then
+            echo "当前槽没有正式条目(keel-$slot.efi),但有带启动计数的条目:${counted}"
+            echo "说明上次启动**没有**走到 boot-complete.target(systemd-bless-boot 没来得及改名)。"
+            echo "如果这个槽其实是好的,可以让引导器继续用它:"
+            echo "  sudo bootctl set-preferred ${counted}"
+            echo "想让引导器认为它已经确认可用(去掉计数),可以:"
+            echo "  sudo systemd-bless-boot good"
+        else
+            echo "当前槽在 ESP 上没有任何条目(keel-$slot.efi 或 keel-$slot+N.efi 都不存在)。"
+            echo "这个槽可能从未被填充:用另一个槽启动,或 sudo os-update stage 重新写一次。"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# 入口
+# ---------------------------------------------------------------------------
+need_root
+[ "$#" -ge 1 ] || {
+    usage
+    exit 1
+}
+
+case "$1" in
+    --init-volume) do_init_volume ;;
+    --reset-etc) do_reset_etc ;;
+    --grow-volume) do_grow_volume ;;
+    --mark-bad) do_mark_bad ;;
+    --repair-boot) do_repair_boot ;;
+    -h|--help|help) usage ;;
+    *) usage; keel_die "未知参数:$1" ;;
+esac

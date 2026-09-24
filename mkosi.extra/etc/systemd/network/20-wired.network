@@ -1,0 +1,10 @@
+# main 的有线网络:DHCP 取地址(决策 D15)
+#
+# 桌面 profile 会换成 NetworkManager(那时才需要 Wi-Fi 与图形化管理)。
+# [Match] 里同名条目之间是"或"的关系,所以这里同时匹配 en* 和 eth*。
+[Match]
+Name=en*
+Name=eth*
+
+[Network]
+DHCP=yes

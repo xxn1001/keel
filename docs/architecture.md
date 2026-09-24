@@ -51,7 +51,7 @@
 | 3 | `root-b` | `linux-generic` | ext4 | **6 GiB** | — | 空槽,首次更新写入 |
 | 4 | `volume` | `linux-generic` | ext4 | 剩余全部 | `/Volume`(rw) | 全部可写状态 |
 
-镜像总大小 ≈ 13 GiB + volume 最小尺寸;`mkosi burn` / `os-install` 会按目标盘容量修正 GPT 并把
+镜像总大小 ≈ 14 GiB + volume 最小尺寸;`mkosi burn` / `os-install` 会按目标盘容量修正 GPT 并把
 `volume` 扩到整盘。
 
 ### 3.2 为什么是 6 GiB / 为什么 B 槽在镜像里就存在
@@ -111,7 +111,7 @@
 ├── ota/                              ← 下载的更新载荷(按版本分目录)
 └── keel/
     ├── schema-version                ← /Volume 布局版本,迁移用
-    ├── state.json                    ← 当前槽、pending 更新、上次结果
+    ├── state                    ← 当前槽、pending 更新、上次结果
     ├── config                        ← 更新源 URL、swapfile 大小等
     └── swapfile                      ← 首启创建
 ```
@@ -174,7 +174,7 @@ os-update stage
  ③ 把 slot-<目标>.root.raw 写进 /dev/disk/by-partlabel/root-<目标>;sync + blockdev --flushbufs
  ④ mount -o remount,rw /efi;把 slot-<目标>.uki.efi 写成 /efi/EFI/Linux/keel-<目标>+3.efi
  ⑤ bootctl set-preferred keel-<目标>+3.efi          (只写 EFI 变量,不动 loader.conf)
- ⑥ 写 /Volume/keel/state.json 的 pending 块
+ ⑥ 写 /Volume/keel/state 的 pending 块
  ⑦ 提示重启(os-update stage --reboot 直接重启)
 
 重启
@@ -183,12 +183,12 @@ os-update stage
 成功路径
  ⑨ 到达 boot-complete.target:
     - systemd-bless-boot.service 自动把 UKI 改名为 keel-<目标>.efi(good)
-    - keel-confirm.service:bootctl set-preferred keel-<目标>.efi;state.json 记 success;清 pending
+    - keel-confirm.service:bootctl set-preferred keel-<目标>.efi;state 记 success;清 pending
 
 失败路径(连续 3 次没到 boot-complete:内核 panic / initrd 失败 / systemd 起不来都算)
  ⑩ tries-left 归零 → 条目标记 bad → LoaderEntryPreferred 感知并跳过 → 回退到旧槽启动
  ⑪ 旧槽起来后 keel-confirm.service 发现"跑在旧槽,但 state 说 pending 新槽" → 判定失败:
-    清空 preferred、把坏 UKI 挪成 keel-<目标>.efi.failed、state.json 记 failed 并 journal 告警
+    清空 preferred、把坏 UKI 挪成 keel-<目标>.efi.failed、state 记 failed 并 journal 告警
 ```
 
 **为什么迁移要由旧系统执行**(不变量 6):如果让新系统在首启时迁移 `/Volume`,而它随后启动失败,
@@ -210,17 +210,22 @@ os-update stage
 
 ```
 dist/keel-<version>/
-├── manifest.json         版本、构建时间、Debian 快照、内核版本、槽位尺寸、
-│                         schema 版本、声明式迁移步骤、每个产物的 sha256
-├── manifest.json.sig     签名(v1 先留接口,只做 sha256)
-├── keel.raw
+├── keel.raw               安装镜像
 ├── keel.raw.sha256
-├── slot-a/{root.raw,uki.efi}
-├── slot-b/{root.raw,uki.efi}
-└── install.md            从 docs/install.md 生成的人类可读说明
+├── slot-a.root.raw        A 槽根分区镜像(→ /dev/disk/by-partlabel/root-a)
+├── slot-a.uki.efi         A 槽 UKI(→ ESP 的 EFI/Linux/keel-a.efi)
+├── slot-b.root.raw
+├── slot-b.uki.efi
+├── manifest               os-update 消费的清单(key=value;含每个产物的 sha256、
+│                          version、schema、声明式迁移步骤)
+├── manifest.sig           可选签名(v1 只做 sha256,验签接口已留)
+├── install.md             从 docs/install.md 复制,离线可读
+└── update.md
 ```
 
-版本号由 `mkosi.version` + 构建时 `-B` 自动 bump 管理。
+**注意**:`keel.raw` / `install.md` / `update.md` 是给人装机和查阅用的;
+更新源目录里只需要 `manifest` + 四个槽载荷(见 docs/update.md §6)。
+版本号由 `mkosi.version` + 第一次构建的 `-B` 自动 bump 管理。
 
 ---
 
@@ -240,8 +245,11 @@ sudo tools/burn.sh /dev/nvme0n1      # 包装 mkosi burn:按目标盘修正 GPT 
 sudo os-install /dev/nvme0n1
 ```
 `os-install` 做的事:用 repart 在目标盘建表 → 把当前运行的根写进目标 `root-a` →
-把当前 UKI 写到目标 ESP → 用镜像里的骨架初始化 `volume` → 可选 `--seed-b` 顺手把当前版本也填进 B 槽。
+挂目标 ESP 并把 live ESP 的内容整体拷过去(引导器 + UKI + `loader.conf` 一起过去;
+UKI 的 cmdline 写的是 `root=PARTLABEL=root-a`,标签一致所以不需要改)→
+格式化 `volume` 并用镜像里的骨架初始化。
 U 盘本身也是一套完整系统,顺便当救援盘。
+**这条路径没有在真机上验证过**,脚本头部有显著标注(§13.2 R8)。
 
 **C. 独立安装器 ISO** —— v1 不做。
 
@@ -251,7 +259,7 @@ U 盘本身也是一套完整系统,顺便当救援盘。
 2. 用 `systemd-repart --dry-run=no` 把 `volume` 扩到整盘剩余空间(定义在 `/usr/lib/keel/repart.d/`);
 3. `bootctl install` 建立本机 NVRAM 启动项(已有则跳过);
 4. 首启创建并启用 swapfile(`/Volume/keel/swapfile`);
-5. 记录 `/Volume/keel/state.json` 与 `schema-version`。
+5. 记录 `/Volume/keel/state` 与 `schema-version`。
 
 ### 7.3 装完之后的预期
 
@@ -282,16 +290,22 @@ os-update gc               # 清理旧载荷(保留最近 2 个版本 + 当前)
 | 命令 | 子命令 | 作用 |
 |---|---|---|
 | `os-status` | — | 当前槽/版本/内核、`/Volume` 用量、schema 版本、pending 状态、上次更新结果、槽位占用 |
-| `os-update` | `check` / `fetch` / `stage` / `rollback` / `gc` | 更新门面(§8) |
-| `os-install` | `<device>` `[--seed-b]` | 从 live 环境装到目标盘(§7.1 B) |
-| `os-rescue` | `--init-volume` | 重建/修复 `/Volume` 骨架(幂等) |
-| | `--reset-etc` | `/etc` 恢复出厂:清空 overlay upper,下次启动重新播种 |
+| `os-update` | `check` / `fetch` / `stage [--reboot] [--force]` | `check` 比对版本,`fetch` 下载并校验 sha256(+ 可选验签),`stage` 写入非活动槽并安排下次启动 |
+| | `switch a\|b` | 手动把"首选条目"指向指定槽(切回上一个版本用) |
+| | `rollback` | 等价于 `switch <另一个槽>`,并清掉 pending、把上次结果记成 failed |
+| | `gc` | 清理 `/Volume/ota/` 里过期的载荷(保留 pending 版本 + 最近 2 个) |
+| `os-install` | `<device> [--yes]` | 从 live 环境装到目标盘(§7.1 B)。**未在真机验证过** |
+| `os-rescue` | `--init-volume` | 把骨架里缺失的目录/链接补回 `/Volume`(幂等,不删已有内容) |
+| | `--reset-etc` | 请求恢复出厂 `/etc`:下次启动时清空 overlay upper(旧内容先整体备份成 `etc.bak-<时间戳>`) |
 | | `--mark-bad` | 把当前槽标记为 bad(`systemd-bless-boot bad`) |
-| | `--grow-volume` | 手动扩展 `volume` 分区 |
-| | `--seed-slot a\|b` | 用当前运行版本填充另一个槽(装完即可测试切换) |
+| | `--grow-volume` | 手动把 `volume` 扩到整盘 |
+| | `--repair-boot` | 重装引导器并重建 NVRAM 启动项 |
 
-`os-update` 是**门面**:下载/验签/版本比较/写分区交给 `systemd-sysupdate`,
-槽切换交给 `bootctl`;我们写的是策略、迁移、保留、报告(决策 D8)。
+`os-update` 是**门面**:对外的子命令与状态语义是稳定的,底层怎么把载荷写进另一个槽是可以替换的
+(决策 D8)。**v1 的底层是"直接写盘"**:校验 sha256 → `dd` 进目标分区 → 拷 UKI 到 ESP →
+`bootctl set-preferred`。之所以先不用 `systemd-sysupdate`,是因为它的 `Type=partition`
+匹配语义还没在真机上验证过(§13.1 #2),而写错分区是不可接受的失败模式;
+等验证通过后只换底层,门面不动。
 
 ---
 
@@ -344,19 +358,30 @@ RemovePackages=
 
 ```
 keel/
-├── AGENTS.md  README.md  .gitignore
+├── AGENTS.md  README.md  .gitignore  schema-version
 ├── docs/{architecture,decisions,install,update,troubleshooting}.md
 ├── mkosi.conf                      mkosi.conf.d/*.conf
-├── mkosi.initrd.conf               ← 只影响默认 initrd(含清空 FinalizeScripts 的补丁)
-├── mkosi.profiles/{install,slot-a,slot-b}.conf
+├── mkosi.initrd.conf               ← 只影响默认 initrd(清空脚本类设置,见坑 #1)
+├── mkosi.profiles/{install,slot-a,slot-b}.conf   产物形态
+├── mkosi.profiles/test.conf       可叠加:仅虚拟机测试用(root 自动登录)
 ├── mkosi.repart/                   ← 安装镜像布局(esp + root-a + root-b + volume)
-├── mkosi.repart-slot/              ← 载荷布局(esp + 目标槽 root)
-├── mkosi.extra/                    ← 静态文件:单元、preset、sysctl、nix.conf、motd、sshd 片段
+├── mkosi.repart-slot-{a,b}/        ← 载荷布局(esp + 目标槽 root)
+├── mkosi.extra/                    ← 进镜像的所有文件:
+│   ├── usr/bin/os-{status,update,rescue,install}  用户命令
+│   ├── usr/lib/keel/{lib.sh,mounts,firstboot,confirm,swapfile}
+│   ├── usr/lib/keel/repart.d/40-volume-grow.conf  首启扩容定义
+│   ├── usr/lib/systemd/system/keel-*.service      四个单元
+│   ├── usr/lib/systemd/system-preset/00-keel.preset
+│   ├── etc/systemd/network/20-wired.network
+│   └── etc/motd
 ├── mkosi.postinst                  mkosi.finalize
 ├── machines/README.md              ← 只放 README,有真实需求再建
-├── in-image/{os-update,os-install,os-status,os-rescue} + lib/
 └── tools/{verify.sh,build.sh,burn.sh}
 ```
+
+> 说明:架构文档早期版本把用户命令放在仓库的 `in-image/` 目录再由构建脚本拷进镜像;
+> 实现时改成直接放 `mkosi.extra/usr/bin/` —— mkosi 本来就会把这些文件装进镜像,
+> 少一层间接、也少一个会漂移的拷贝步骤。
 
 **提交顺序**(每个 commit 都能独立跑 `tools/verify.sh`):
 
@@ -365,7 +390,7 @@ keel/
 | 1 | `mkosi.conf` + `mkosi.conf.d/` + `mkosi.initrd.conf` | `mkosi --profile install summary` 通过 |
 | 2 | `mkosi.repart/` + `mkosi.repart-slot/` + 三个 profile | repart dry-run 报出预期分区表 |
 | 3 | `mkosi.extra/` + `postinst` + `finalize` | `systemd-analyze verify` 全过;finalize 幂等可重入 |
-| 4 | `in-image/os-*` + `/usr/lib/keel/*` | `shellcheck` 全过;`--help` 可用 |
+| 4 | `mkosi.extra/usr/bin/os-*` + `/usr/lib/keel/*` | `shellcheck` 全过;`--help` 可用 |
 | 5 | `tools/{verify,build,burn}.sh` | `tools/verify.sh` 一条命令全绿 |
 | 6 | `docs/{install,update,troubleshooting}.md` + AGENTS TODO 更新 | — |
 | 7 | (等你第一次构建反馈之后)`desktop` profile | — |
@@ -376,13 +401,30 @@ keel/
 
 ### 13.1 开写后立刻要验证的假设
 
+**已经在本地验证掉的**(用本机的 mkosi 27 与 systemd 261 实测):
+
+- ✅ repart 布局真跑通过:分区名精确为 `esp` / `root-a` / `root-b` / `volume`,
+  尺寸 1 GiB / 6 GiB / 6 GiB / 其余全部;`Label=` 同时决定 GPT 分区名与文件系统标签;
+  `CopyFiles=` 能把内容写进 vfat 与 ext4。
+- ✅ 三个 profile 的 `KernelCommandLine` 是**追加**语义,各自恰好一个 `root=PARTLABEL=root-<槽>`
+  (mkosi 的集合型设置"后赋值覆盖前赋值"的例外)。
+- ⚠️ 发现并已修掉一个会**静默产出坏镜像**的陷阱:如果在 `mkosi.conf` 里给 `Profiles=` 设默认值,
+  那么 `--profile slot-b` 会变成"install + slot-b"被解析两次,cmdline 里同时出现
+  `root=PARTLABEL=root-a` 和 `root=PARTLABEL=root-b`。现在改为不给默认值 +
+  在 `mkosi.finalize` 里断言"恰好一个 root="。
+- ⚠️ 发现并已修掉:`mkosi.initrd.conf` 里清空脚本设置必须写在 `[Content]` 段
+  (写成 `[Config]` 会被拒绝且**静默不生效**)。
+
+**仍需真机/虚拟机验证的**:
+
 | # | 假设 | 若不成立的退路 |
 |---|---|---|
 | 1 | `root=PARTLABEL=root-a` 与 `systemd.mount-extra=PARTLABEL=volume:...` 在 initrd 里能被解析 | 改用 mkosi 的 `root=PARTUUID` 自动替换 + 固定 `Seed=` 让 PARTUUID 跨构建稳定 |
-| 2 | `systemd-sysupdate` 的 `Type=partition` transfer 能按我们的双槽布局匹配"当前未使用的那个分区" | 门面后面换成 `systemd-repart --copy-source` + 直接写分区,接口不变 |
+| 2 | `systemd-sysupdate` 的 `Type=partition` transfer 能按双槽布局匹配"当前未使用的那个分区" | **v1 已经绕开**:`os-update` 直接写盘;将来验证通过再换底层,门面接口不变 |
 | 3 | `/usr/lib/firmware/{amd,intel}-ucode` 被 mkosi 正确前置进 UKI | 手工用 `ukify --microcode` 或 `io.mkosi.microcode` 工件目录 |
-| 4 | Debian 上移除 `initramfs-tools` 后内核包不会报错、mkosi 仍能找到 vmlinuz | 保留该包但清掉它的 hook |
-| 5 | `systemd-boot` 的 `e` 键能给 UKI 追加 cmdline(未启用 Secure Boot) | 调试改走备用槽 / live U 盘 / UKI addon |
+| 4 | 移除 `initramfs-tools` / `RemoveFiles=/boot/vmlinuz-*` 之后内核包安装不报错、mkosi 仍能找到 vmlinuz | 保留 `initramfs-tools`,只靠 `RemoveFiles` 清 /boot |
+| 5 | `systemd-boot` 的 `e` 键能给 UKI 追加 cmdline(文档确认未启用 Secure Boot 时可以,但没实测过) | 调试改走备用槽 / live U 盘 / UKI addon |
+| 6 | `/usr/lib/modules/<kver>` 挂 overlay 后 `depmod` 与模块加载正常(为"第三方内核模块外置"做准备,main 不做) | 只外置 `updates/` 子目录或放弃外置,改回把驱动放进槽里 |
 
 ### 13.2 风险(按严重程度)
 
@@ -395,4 +437,4 @@ keel/
 | R5 | **槽位尺寸装机即定死**,将来变体放不下就只能重装 | 首次装机前按最大变体留足(现在 6 GiB);在架构文档里写明这个约束 |
 | R6 | dm-verity + 两个 root 分区时的 roothash 归属问题 | v2 专项设计;`SplitArtifacts=partitions` 文档明确支持"root + verity + UKI"组合,工具链具备 |
 | R7 | 未启用 `non-free-firmware` 会导致微码/固件包找不到 | 构建会直接失败(不会静默),`tools/verify.sh` 里加一条断言 |
-| R8 | **本容器无法验证任何东西**:没 KVM、没 loop 设备、ext4 不支持 reflink | 首次真机构建预计还要 2–3 轮修;每个不确定处都在代码里留注释说明"报错时怎么改" |
+| R8 | **开发容器里跑的验证有限**:没有 KVM、没有 loop 设备、ext4 不支持 reflink。已经能跑的有:mkosi 配置解析、kernel cmdline 一致性、**真实的分区表求解与格式化**(systemd-repart 会格式化到临时文件,不需要 loop)、单元语法、shellcheck。**跑不了的是真机构建与启动** | 首次真机构建预计还要 2–3 轮修;每个不确定处都在代码里留了注释说明"报错时怎么改";`tools/verify.sh` 把能静态查的都查了 |

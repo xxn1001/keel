@@ -1,0 +1,55 @@
+#!/bin/bash
+# keel 启动早期挂载:把 /home 绑到 /Volume/home,并在 /etc 上挂 overlayfs
+#
+# 由 keel-mounts.service 调用,必须极早运行(见 AGENTS.md 不变量 1/5、
+# 已知的坑 #8,docs/architecture.md §4.1 §4.3)。
+set -euo pipefail
+. /usr/lib/keel/lib.sh
+
+if ! mountpoint -q /Volume; then
+    keel_die "/Volume 没有挂载。它必须由 initrd 通过 kernel cmdline 的 systemd.mount-extra 挂好(不变量 2),现在这个前提不成立,系统状态不可信"
+fi
+
+# ---------------------------------------------------------------------------
+# 处理"恢复出厂 /etc"的请求(os-rescue --reset-etc 写下的标志)
+#
+# 必须在挂 overlay 之前做。旧的可写层整体改名保留成备份而不是删除 ——
+# 那里面装着账号、SSH 主机密钥、machine-id、Wi-Fi 密码,直接删掉不可逆。
+# ---------------------------------------------------------------------------
+if [ -e /Volume/overlayfs/.reset-etc-requested ]; then
+    ts=$(date +%Y%m%d-%H%M%S)
+    bak="/Volume/overlayfs/etc.bak-$ts"
+    keel_log "收到恢复出厂 /etc 的请求:旧的可写层备份到 $bak(不会删除)"
+    mv /Volume/overlayfs/etc/upper "$bak"
+    # workdir 里可能残留指向旧 upper 的条目,一并重建,否则 overlayfs 会拒绝挂载
+    rm -rf /Volume/overlayfs/etc/work
+    install -d -m 0755 /Volume/overlayfs/etc/upper /Volume/overlayfs/etc/work
+    rm -f /Volume/overlayfs/.reset-etc-requested
+fi
+
+# ---------------------------------------------------------------------------
+# /home:必须是**真实挂载点**
+#
+# 这是四个目录里唯一的例外:符号链接会让 ProtectHome= 之类的沙箱设置失效
+# (服务仍能通过 /Volume/home 摸到用户数据),所以用 bind mount。
+# ---------------------------------------------------------------------------
+if ! mountpoint -q /home; then
+    mount --bind /Volume/home /home
+    keel_log "已把 /Volume/home 绑定到 /home"
+fi
+
+# ---------------------------------------------------------------------------
+# /etc:overlayfs(lower = 只读镜像,upper/work = /Volume)
+#
+# 为什么不是"把 /Volume/etc 直接 bind 过来":那是一次性快照,
+# 新版本镜像里 /etc 的任何改进都会被旧副本永久遮蔽(AGENTS.md 不变量 5)。
+# ---------------------------------------------------------------------------
+if [ "$(findmnt -no FSTYPE /etc 2>/dev/null || true)" != overlay ]; then
+    mount -t overlay overlay \
+        -o "lowerdir=/etc,upperdir=/Volume/overlayfs/etc/upper,workdir=/Volume/overlayfs/etc/work" \
+        /etc
+    keel_log "已在 /etc 上挂载 overlayfs"
+    # PID1 在启动时只读到过 lower 里的 unit 文件。不 reload 的话,
+    # 只存在于 upper(/Volume)里的 unit 永远不会被加载(坑 #8)。
+    systemctl daemon-reload || keel_log "daemon-reload 失败(已忽略)"
+fi

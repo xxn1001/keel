@@ -1,0 +1,221 @@
+#!/bin/bash
+# keel 静态校验 —— 不需要 root、不需要 loop 设备、不构建镜像
+#
+# 能在这里查的:
+#   1. mkosi 三个 profile 的配置解析
+#   2. kernel cmdline 一致性(每个产物恰好一个 root=PARTLABEL=root-<槽>,且和产物对得上)
+#   3. repart 分区布局(真跑 systemd-repart,用假镜像树喂 CopyFiles)
+#   4. systemd 单元语法(systemd-analyze verify)
+#   5. shell 脚本(shellcheck + bash -n)
+#   6. 几处"改一处忘一处"的一致性断言
+#
+# 查不了的:真实构建与启动。那是 tools/build.sh + 真机/虚拟机的事(docs/architecture.md §13)。
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+
+pass=0; fail=0; skipped=0
+ok()    { printf '  \033[32m✓\033[0m %s\n' "$*"; pass=$((pass+1)); }
+no()    { printf '  \033[31m✗\033[0m %s\n' "$*"; fail=$((fail+1)); }
+warn()  { printf '  \033[33m!\033[0m %s\n' "$*"; }
+skip()  { printf '  \033[33m-\033[0m %s\n' "$*"; skipped=$((skipped+1)); }
+head1() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+have()  { command -v "$1" >/dev/null 2>&1; }
+
+TMPS=()
+cleanup() { local d; for d in ${TMPS[@]+"${TMPS[@]}"}; do rm -rf "$d"; done; }
+trap cleanup EXIT
+tmpd() { local d; d=$(mktemp -d); TMPS+=("$d"); printf '%s' "$d"; }
+
+PROFILES="install slot-a slot-b"
+declare -A WANT_SLOT=([install]=root-a [slot-a]=root-a [slot-b]=root-b)
+
+# ---------------------------------------------------------------------------
+head1 "1. mkosi 配置解析"
+# ---------------------------------------------------------------------------
+if ! have mkosi; then
+    skip "没装 mkosi,跳过"
+else
+    for p in $PROFILES; do
+        out=$(tmpd)
+        if mkosi --profile "$p" summary >"$out/summary" 2>&1; then
+            ok "--profile $p 解析通过"
+        else
+            no "--profile $p 解析失败"
+            grep -E '^‣' "$out/summary" | head -5 | sed 's/^/      /'
+        fi
+    done
+    # 不带 --profile 会解析成功但没有任何 root=(产物形态必须显式选)。
+    # 拦截点在构建期:mkosi.finalize 检查 $MKOSI_CONFIG。这里断言两件事:
+    #   ① 不带 profile 确实没有 root=;② finalize 里的守卫还在。
+    nf=$(tmpd)
+    mkosi summary >"$nf/s" 2>/dev/null || true
+    if grep -q 'root=PARTLABEL=root-' "$nf/s" 2>/dev/null; then
+        no "不带 --profile 竟然也带 root=,产物形态的隔离被破坏了"
+    else
+        ok "不带 --profile 时没有 root=(构建期会被 finalize 守卫拦下)"
+    fi
+    if grep -q 'root=PARTLABEL=root-\[ab\]' mkosi.finalize; then
+        ok "mkosi.finalize 里的 cmdline 守卫存在"
+    else
+        no "mkosi.finalize 里的 cmdline 守卫不见了 —— 两个产物 profile 同时启用会静默产出坏镜像"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+head1 "2. kernel cmdline 一致性"
+# ---------------------------------------------------------------------------
+for p in $PROFILES; do
+    s=$(tmpd)
+    mkosi --profile "$p" summary >"$s/s" 2>/dev/null || { skip "--profile $p 解析失败,跳过"; continue; }
+    found=$(grep -o 'root=PARTLABEL=root-[ab]' "$s/s" | sort -u)
+    n=$(printf '%s\n' "$found" | grep -c . || true)
+    if [ "$n" != 1 ]; then
+        no "--profile $p:cmdline 里 root=PARTLABEL 匹配到 $n 个(必须恰好 1 个)"
+        printf '%s\n' "$found" | sed 's/^/      /'
+    elif [ "$found" != "root=PARTLABEL=${WANT_SLOT[$p]}" ]; then
+        no "--profile $p:cmdline 指向 $found,但期望 root=PARTLABEL=${WANT_SLOT[$p]}"
+    else
+        ok "--profile $p:cmdline 恰好指向 ${WANT_SLOT[$p]}"
+    fi
+    # ro 与两条 mount-extra 是承重墙,不能丢
+    for needle in 'Kernel Command Line: ro' 'PARTLABEL=volume:/Volume' 'PARTLABEL=esp:/efi'; do
+        if grep -qE "$needle" "$s/s"; then :; else no "--profile $p:cmdline 缺少 $needle"; fi
+    done
+done
+
+# ---------------------------------------------------------------------------
+head1 "3. repart 分区布局"
+# ---------------------------------------------------------------------------
+if ! have systemd-repart || ! have sfdisk; then
+    skip "缺 systemd-repart 或 sfdisk,跳过"
+else
+    tree=$(tmpd)
+    mkdir -p "$tree/boot/EFI/Linux" "$tree/efi" "$tree/etc" \
+             "$tree/usr/share/keel/volume-skeleton/keel" \
+             "$tree/usr/share/keel/volume-skeleton/var/lib/dbus"
+    : >"$tree/boot/EFI/Linux/keel-a.efi"
+    echo 1 >"$tree/usr/share/keel/volume-skeleton/keel/schema-version"
+
+    for d in mkosi.repart mkosi.repart-slot-a mkosi.repart-slot-b; do
+        img="$tree/out.raw"; rm -f "$img"
+        if ! systemd-repart --empty=create --size=15G --definitions="$d" \
+                --copy-source="$tree" "$img" >"$tree/log" 2>&1; then
+            no "$d:systemd-repart 执行失败"
+            tail -5 "$tree/log" | sed 's/^/      /'
+            continue
+        fi
+        names=$(sfdisk --dump "$img" 2>/dev/null | sed -n 's/.*name="\([^"]*\)".*/\1/p' | tr '\n' ' ')
+        sizes=$(sfdisk --dump "$img" 2>/dev/null | sed -n 's/.*size= *\([0-9]*\),.*/\1/p' | tr '\n' ' ')
+        case "$d" in
+        mkosi.repart)
+            [ "$names" = "esp root-a root-b volume " ] \
+                && ok "安装镜像分区名 = esp root-a root-b volume" \
+                || no "安装镜像分区名不对:[$names]"
+            # 每个分区的大小(MiB)
+            set -- $sizes
+            [ "$(( $1 * 512 / 1048576 ))" = 1024 ] && ok "esp = 1 GiB" || no "esp 不是 1 GiB(第 1 个分区 $(( $1 * 512 / 1048576 )) MiB)"
+            [ "$(( $2 * 512 / 1048576 ))" = 6144 ] && ok "root-a = 6 GiB" || no "root-a 不是 6 GiB($(( $2 * 512 / 1048576 )) MiB)"
+            [ "$(( $3 * 512 / 1048576 ))" = 6144 ] && ok "root-b = 6 GiB" || no "root-b 不是 6 GiB($(( $3 * 512 / 1048576 )) MiB)"
+            # volume 必须是项目私有类型,否则首启扩容会误配到 root-b
+            voltype=$(sfdisk --dump "$img" 2>/dev/null | grep 'name="volume"' | sed -n 's/.*type=\([0-9A-Fa-f-]*\).*/\1/p')
+            [ "$voltype" = "D605065B-64F9-4A07-A0B8-70963175C6E6" ] \
+                && ok "volume 类型 = 项目私有 UUID" \
+                || no "volume 类型不是私有 UUID(实际 $voltype)"
+            ;;
+        mkosi.repart-slot-a)
+            [ "$names" = "esp root-a " ] && ok "slot-a 载荷分区名 = esp root-a" || no "slot-a 载荷分区名不对:[$names]"
+            ;;
+        mkosi.repart-slot-b)
+            [ "$names" = "esp root-b " ] && ok "slot-b 载荷分区名 = esp root-b" || no "slot-b 载荷分区名不对:[$names]"
+            ;;
+        esac
+    done
+fi
+
+# ---------------------------------------------------------------------------
+head1 "4. systemd 单元语法"
+# ---------------------------------------------------------------------------
+if ! have systemd-analyze; then
+    skip "缺 systemd-analyze,跳过"
+else
+    for u in mkosi.extra/usr/lib/systemd/system/*.service; do
+        [ -e "$u" ] || continue
+        if out=$(systemd-analyze verify --man=no "$u" 2>&1); then
+            ok "$(basename "$u")"
+        else
+            # 引用了尚未安装进宿主机的可执行文件是预期内的告警,不算失败
+            real=$(printf '%s\n' "$out" | grep -viE 'is not executable|command .* not found|Failed to (create|load)|does not exist' | grep -vE '^\s*$' || true)
+            if [ -z "$real" ]; then
+                ok "$(basename "$u")(只有「文件还没装到宿主机」这类预期告警)"
+            else
+                no "$(basename "$u")"
+                printf '%s\n' "$real" | head -5 | sed 's/^/      /'
+            fi
+        fi
+    done
+fi
+
+# ---------------------------------------------------------------------------
+head1 "5. shell 脚本"
+# ---------------------------------------------------------------------------
+scripts=()
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if head -c 2 "$f" 2>/dev/null | grep -q '#!'; then scripts+=("$f"); fi
+done < <(find mkosi.extra/usr/lib/keel mkosi.extra/usr/bin tools -type f 2>/dev/null | sort)
+for f in ${scripts[@]+"${scripts[@]}"}; do
+    if bash -n "$f" 2>/dev/null; then :; else no "bash -n 失败:$f"; fi
+done
+ok "bash -n 通过(${#scripts[@]} 个脚本)"
+if [ "${#scripts[@]}" -gt 0 ] && have shellcheck; then
+    if shellcheck -S warning "${scripts[@]}" >/tmp/keel-shellcheck.log 2>&1; then
+        ok "shellcheck(-S warning)通过"
+    else
+        no "shellcheck 有问题:"
+        grep -E '^In |\^--' /tmp/keel-shellcheck.log | head -20 | sed 's/^/      /'
+    fi
+elif ! have shellcheck; then
+    skip "没装 shellcheck,跳过(建议装上)"
+fi
+
+# ---------------------------------------------------------------------------
+head1 "6. 一致性断言(改一处忘一处的经典位置)"
+# ---------------------------------------------------------------------------
+uuid_repart=$(sed -n 's/^Type=\(.*\)$/\1/p' mkosi.repart/30-volume.conf | head -1)
+uuid_grow=$(sed -n 's/^Type=\(.*\)$/\1/p' mkosi.extra/usr/lib/keel/repart.d/40-volume-grow.conf | head -1)
+[ -n "$uuid_repart" ] && [ "$uuid_repart" = "$uuid_grow" ] \
+    && ok "volume 类型 UUID 在安装镜像与扩容定义里一致" \
+    || no "volume 类型 UUID 不一致:安装=[$uuid_repart] 扩容=[$uuid_grow]"
+
+skel_repart=$(grep -o 'CopyFiles=[^:]*' mkosi.repart/30-volume.conf | head -1 | cut -d= -f2)
+if grep -q "$skel_repart" mkosi.finalize; then
+    ok "骨架路径 $skel_repart 在 finalize 里也出现"
+else
+    no "骨架路径 $skel_repart 只在 repart 定义里出现,finalize 没有生成它"
+fi
+
+if grep -rn 'common-os' --include='*' . 2>/dev/null | grep -v '^\./\.git/' | grep -v '^\./tools/verify\.sh:' | grep -q .; then
+    no "还有残留的旧名字 common-os:"
+    grep -rn 'common-os' --include='*' . 2>/dev/null | grep -v '^\./\.git/' | grep -v '^\./tools/verify\.sh:' | head -5 | sed 's/^/      /'
+else
+    ok "没有残留的旧名字"
+fi
+
+missing=0
+for c in os-status os-update os-rescue os-install; do
+    [ -e "mkosi.extra/usr/bin/$c" ] || { no "缺少命令 $c"; missing=1; }
+done
+[ "$missing" = 0 ] && ok "四个 os-* 命令都在"
+
+# 四个单元的启用项都在 preset 里
+for u in keel-mounts keel-firstboot keel-confirm keel-swapfile; do
+    grep -q "^enable $u.service$" mkosi.extra/usr/lib/systemd/system-preset/00-keel.preset \
+        || no "preset 里没有 enable $u.service"
+done
+ok "preset 覆盖了四个 keel 单元"
+
+# ---------------------------------------------------------------------------
+printf '\n\033[1m结果: %d 通过, %d 失败' "$pass" "$fail"
+[ "$skipped" -gt 0 ] && printf ', %d 跳过' "$skipped"
+printf '\033[0m\n'
+[ "$fail" = 0 ] || exit 1

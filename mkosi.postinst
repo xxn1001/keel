@@ -1,0 +1,69 @@
+#!/bin/bash
+# keel 构建:装完包之后的定制(在主系统上跑,不 chroot;镜像树在 $BUILDROOT)
+#
+# 注意:mkosi 的脚本类设置默认值是按源目录里的 mkosi.<名字> 文件解析的,
+# 而默认 initrd 镜像与主镜像共用同一个源目录,所以这里必须自己做防呆
+# (见 AGENTS.md 已知的坑 #1;mkosi.initrd.conf 里也清空了脚本设置)。
+set -euo pipefail
+
+R="${BUILDROOT:?BUILDROOT 未设置}"
+log() { echo "keel-postinst: $*" >&2; }
+
+if [ -e "$R/etc/initrd-release" ]; then
+    log "这是 initrd 镜像,跳过全部定制"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# /etc/resolv.conf -> systemd-resolved 的 stub
+# (main 用 systemd-networkd + systemd-resolved,决策 D15)
+# ---------------------------------------------------------------------------
+ln -sfn /run/systemd/resolve/stub-resolv.conf "$R/etc/resolv.conf"
+
+# ---------------------------------------------------------------------------
+# nix:打开 flakes 与 nix 命令
+# Debian 的 nix-bin / nix-setup-systemd 不带这个设置,而它是日常使用的刚需。
+# 幂等:已经存在就不重复追加。
+# ---------------------------------------------------------------------------
+install -d -m 0755 "$R/etc/nix"
+if [ -f "$R/etc/nix/nix.conf" ]; then
+    if ! grep -q '^[[:space:]]*experimental-features' "$R/etc/nix/nix.conf"; then
+        cat >>"$R/etc/nix/nix.conf" <<'EOF'
+
+# keel:启用 flakes 与 nix 命令
+experimental-features = nix-command flakes
+EOF
+        log "已向 /etc/nix/nix.conf 追加 experimental-features"
+    fi
+else
+    cat >"$R/etc/nix/nix.conf" <<'EOF'
+build-users-group = nixbld
+experimental-features = nix-command flakes
+EOF
+    log "已创建 /etc/nix/nix.conf"
+fi
+
+# ---------------------------------------------------------------------------
+# 把仓库文档带进镜像:/etc/motd 里指向 /usr/share/doc/keel/,
+# 系统离线时也能查到装机和更新的说明。
+# ---------------------------------------------------------------------------
+if [ -n "${SRCDIR:-}" ] && [ -d "${SRCDIR}/docs" ]; then
+    install -d -m 0755 "$R/usr/share/doc/keel"
+    for f in "$SRCDIR"/docs/*.md "$SRCDIR/README.md"; do
+        [ -f "$f" ] && install -m 0644 "$f" "$R/usr/share/doc/keel/"
+    done
+fi
+
+# ---------------------------------------------------------------------------
+# repart 的 CopyFiles 源必须存在,否则构建到输出阶段才会报错
+# ---------------------------------------------------------------------------
+install -d -m 0755 "$R/efi" "$R/boot"
+
+# /etc/machine-id:mkosi 默认写入 "uninitialized",首启由 systemd 生成真正的 ID。
+# 这里只做断言,防止有人设了 MachineId= 把同一个 ID 烤进所有装机实例。
+if [ -f "$R/etc/machine-id" ] && [ "$(cat "$R/etc/machine-id")" != "uninitialized" ]; then
+    log "警告:/etc/machine-id 不是 uninitialized —— 请确认不是有意为之,"
+    log "      否则所有用这个镜像装出来的机器会共用同一个 machine-id"
+fi
+
+log "完成"

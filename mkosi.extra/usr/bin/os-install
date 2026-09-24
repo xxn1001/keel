@@ -1,0 +1,319 @@
+#!/bin/bash
+# os-install —— 从 live U 盘环境把当前运行的系统装到目标盘(docs/architecture.md §7.1 路径 B)。
+#
+# 见 docs/architecture.md §7(安装流程)、§3(磁盘布局);用户文档见 docs/install.md §2.2。
+#
+# !!! 重要:这条路径**没有在真机上验证过** !!!
+# 本仓库的开发容器没有 loop 设备、没有 /dev/kvm(AGENTS.md 坑 #11),所以下面每一步
+# 都只是按 systemd / util-linux 的文档语义写的。真机第一次跑之前:
+#   1. 先在 QEMU 里走一遍(docs/install.md §1:mkosi --profile install vm);
+#   2. 目标盘先备份 —— 本命令会**整盘擦除**;
+#   3. 出错时按"报错信息 + lsblk -f 现状"定位,不要盲目重试。
+# 标了 TODO(待验证) 的假设见脚本内注释与最后的总结。
+set -euo pipefail
+
+# shellcheck source=/usr/lib/keel/lib.sh
+# SC1091:lib.sh 只在镜像里(/usr/lib/keel/lib.sh),仓库里没有这个文件,
+# 静态检查工具追不到它(它不在仓库里)。变量名与函数名以父 agent 给出的接口表为准。
+#
+# shellcheck disable=SC1091  # 注释与 source 行之间不能插别的东西
+. /usr/lib/keel/lib.sh
+
+readonly SKELETON="/usr/share/keel/volume-skeleton"
+readonly REPART_DEFS="/usr/lib/keel/repart-install.d"
+readonly LIVE_CONFIG="/Volume/keel/config"
+readonly VOLUME_LABEL="volume"
+
+usage() {
+    cat <<'EOF'
+用法:os-install <目标块设备> [--yes] [--seed-b]
+
+  <目标块设备>   整盘设备,例如 /dev/nvme0n1(不是分区)。盘上原有数据会被全部擦除。
+  --yes          跳过交互确认(无人值守用;请自己确保设备名没写错)
+
+做的事(architecture.md §7.1 B):
+  1. systemd-repart 在目标盘建表(esp / root-a / root-b / volume)
+  2. 当前运行的根文件系统 dd 到目标 root-a
+  3. mkfs.ext4 目标 volume,铺上镜像里的 /Volume 骨架 + 当前 config
+  4. 当前 live ESP 的内容整体复制到目标 ESP(引导器 + loader.conf + UKI)
+  5. 打印后续步骤(插到目标机 → UEFI 启动 → 首启自动补骨架/扩 volume/建 NVRAM 项)
+EOF
+}
+
+need_root() {
+    if [ "$(id -u)" != 0 ]; then
+        keel_die "需要 root 权限,请用 sudo 重新执行"
+    fi
+}
+
+confirm() {
+    # 非交互(没有 tty)时不能等输入:直接失败,避免"在管道里静默擦盘"
+    if [ ! -t 0 ]; then
+        keel_die "需要交互确认,但标准输入不是终端。确认设备名无误后用 --yes 重跑。"
+    fi
+    local answer=""
+    printf '确认要擦除 %s(%s)吗?输入 yes 继续:' "$TARGET" "$TARGET_SIZE"
+    read -r answer
+    if [ "$answer" != "yes" ]; then
+        keel_die "已取消,什么都没做"
+    fi
+}
+
+# 找目标盘上 PARTLABEL=<名字> 的分区路径。
+# 为什么靠 lsblk 的父设备关系而不是 /dev/disk/by-partlabel:live 与目标盘的分区
+# **标签同名**(都是 root-a / esp / volume),by-partlabel 只会指向其中一个(通常是
+# live 那个),必须按"父设备等于目标盘"来区分。
+find_part() {
+    local want="$1" name path pk found=""
+    while read -r name path pk; do
+        [ -n "$path" ] || continue
+        if [ "$name" = "$want" ] && [ "$pk" = "$TARGET_NAME" ]; then
+            found="$path"
+            break
+        fi
+    done < <(lsblk -no PARTLABEL,PATH,PKNAME "$TARGET" 2>/dev/null || true)
+    printf '%s\n' "$found"
+}
+
+# ---------------------------------------------------------------------------
+# 参数与校验
+# ---------------------------------------------------------------------------
+need_root
+
+# live 环境自己的槽与版本:装到目标盘后,首启的 pending 判定要知道"装的是哪一版"
+CURRENT_SLOT="$(keel_current_slot 2>/dev/null)" || CURRENT_SLOT=""
+CURRENT_VERSION="$(keel_version 2>/dev/null)" || CURRENT_VERSION=""
+CURRENT_VERSION="${CURRENT_VERSION:-未知}"
+
+TARGET=""
+ASSUME_YES=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --yes|-y) ASSUME_YES=1 ;;
+        --seed-b)
+            # docs/architecture.md §7.1 B 与 docs/install.md §2.2 提到过 --seed-b,
+            # 但 v1 **故意不实现**:B 槽要能独立启动,必须有 cmdline 为
+            # root=PARTLABEL=root-b 的 UKI(不变量 3:内核与根永远配对)。
+            # 我们手上只有 live 的 A 槽 UKI,靠改文件名"造"一个 B 槽 UKI 会做出
+            # "B 的内核 + A 的根"这种自相矛盾的槽 —— 那正是回滚失效的经典成因。
+            # 正确做法:装完首启后 sudo os-update stage --force 用同一版本填 B 槽。
+            keel_die "--seed-b 在 v1 未实现:没有 root=PARTLABEL=root-b 的 UKI,复制 A 槽的 UKI 会造出'B 的内核 + A 的根'的坏槽(不变量 3)。装完首次启动后用 sudo os-update stage --force 填充 B 槽。"
+            ;;
+        -h|--help|help) usage; exit 0 ;;
+        -*) usage; keel_die "未知选项:$1" ;;
+        *)
+            if [ -n "$TARGET" ]; then
+                usage
+                keel_die "只能指定一个目标设备(已经给了 ${TARGET})"
+            fi
+            TARGET="$1"
+            ;;
+    esac
+    shift
+done
+
+[ -n "$TARGET" ] || {
+    usage
+    exit 1
+}
+if [ ! -b "$TARGET" ]; then
+    keel_die "不是块设备:${TARGET}(要传整盘设备,例如 /dev/nvme0n1,不是分区)"
+fi
+
+TARGET_NAME="$(basename "$TARGET")"
+TARGET_TYPE="$(lsblk -dno TYPE "$TARGET" 2>/dev/null)" || TARGET_TYPE=""
+if [ "$TARGET_TYPE" != "disk" ]; then
+    keel_die "${TARGET} 不是整盘设备(lsblk TYPE=${TARGET_TYPE:-未知})。请传磁盘本身,例如 /dev/nvme0n1。"
+fi
+TARGET_SIZE="$(lsblk -dno SIZE "$TARGET" 2>/dev/null)" || TARGET_SIZE="未知"
+
+# 绝不允许装到当前系统所在的那块盘上:那会覆掉正在运行的槽(见 troubleshooting.md §7)
+CUR_ROOT_SRC="$(findmnt -no SOURCE / 2>/dev/null)" || CUR_ROOT_SRC=""
+CUR_ROOT_DISK=""
+if [ -n "$CUR_ROOT_SRC" ]; then
+    CUR_ROOT_DISK="$(lsblk -no PKNAME "$CUR_ROOT_SRC" 2>/dev/null | head -n1)" || CUR_ROOT_DISK=""
+fi
+if [ -n "$CUR_ROOT_DISK" ] && [ "$CUR_ROOT_DISK" = "$TARGET_NAME" ]; then
+    keel_die "目标盘 ${TARGET} 就是当前系统所在的磁盘(根在 ${CUR_ROOT_SRC})。请从 U 盘 live 环境对**另一块盘**执行本命令。"
+fi
+if [ -z "$CUR_ROOT_DISK" ]; then
+    keel_log "警告:解析不出当前根所在的磁盘,跳过'目标盘=当前盘'的检查(自己再确认一次 ${TARGET} 不是启动盘)"
+fi
+
+# /usr/lib/keel/repart-install.d 由父 agent 提供;没有它这条路根本走不下去
+[ -d "$REPART_DEFS" ] || keel_die "找不到 repart 定义目录:${REPART_DEFS}(这个镜像不完整?)"
+
+echo "  ************************************************************"
+echo "  即将把当前运行的系统安装到 ${TARGET}"
+echo "  设备容量:${TARGET_SIZE}"
+echo "  警告:这会**擦除整块磁盘**上的全部分区与数据,包括其它操作系统。"
+echo "  这条安装路径尚未在真机上验证过(见脚本头部注释),请先在 QEMU 里演练。"
+echo "  ************************************************************"
+if [ "$ASSUME_YES" -eq 1 ]; then
+    keel_log "--yes 已给出,跳过交互确认"
+else
+    confirm
+fi
+keel_log "确认完成,开始安装(目标盘 ${TARGET})"
+
+# ---------------------------------------------------------------------------
+# 1) 建表:esp / root-a / root-b / volume
+#
+# --empty=force 是故意的:目标盘上原有的分区表和文件系统全部作废(用户已经确认过)。
+# ---------------------------------------------------------------------------
+keel_log "systemd-repart 建分区表"
+systemd-repart --dry-run=no --empty=force --definitions="$REPART_DEFS" "$TARGET" ||
+    keel_die "systemd-repart 建表失败。检查目标盘是否被占用(swap/挂载点)、是否有别的进程在写它。"
+
+sync
+part_root_a="$(find_part root-a)"
+part_volume="$(find_part volume)"
+part_esp="$(find_part esp)"
+[ -n "$part_root_a" ] || keel_die "建表后找不到目标盘上的 root-a 分区(检查 ${REPART_DEFS} 里的分区名)"
+[ -n "$part_volume" ] || keel_die "建表后找不到目标盘上的 volume 分区"
+[ -n "$part_esp" ] || keel_die "建表后找不到目标盘上的 esp 分区"
+keel_log "目标分区:root-a=${part_root_a} volume=${part_volume} esp=${part_esp}"
+
+# ---------------------------------------------------------------------------
+# 2) 把当前运行系统的根写进目标 root-a
+#
+# live 与目标盘上都有 PARTLABEL=root-a,所以分区名不能用 by-partlabel 定位 ——
+# 上面 find_part 已经按"父设备 = 目标盘"筛过了。
+# 根分区以 ro 挂载(不变量 1),读它没问题。dd 复制的是整个块设备,
+# 目标分区不小于当前根分区是 repart 定义的硬要求(两边都是同一个布局)。
+#
+# TODO(待验证):根文件系统的实际占用大于目标分区时会截断。装机镜像里 root-a 是
+#   6 GiB 常量,但 live 环境长期使用后 /etc 的 overlay upper 会变大 —— 而 upper 在
+#   /Volume 上,不在根分区里,所以正常情况下根分区不会增长。真机上仍应确认
+#   `blockdev --getsize64` 两边接近且 df 用量远小于目标分区。
+# ---------------------------------------------------------------------------
+if [ -z "$CUR_ROOT_SRC" ]; then
+    keel_die "定位不到当前根设备,无法复制根文件系统"
+fi
+cur_root_bytes="$(blockdev --getsize64 "$CUR_ROOT_SRC" 2>/dev/null)" || cur_root_bytes=""
+tgt_root_bytes="$(blockdev --getsize64 "$part_root_a" 2>/dev/null)" || tgt_root_bytes=""
+if [ -n "$cur_root_bytes" ] && [ -n "$tgt_root_bytes" ] && [ "$tgt_root_bytes" -lt "$cur_root_bytes" ]; then
+    keel_die "目标 root-a(${tgt_root_bytes} 字节)比当前根分区(${cur_root_bytes} 字节)小,拒绝复制(会截断文件系统)。"
+fi
+keel_log "复制当前根 $(readlink -f "$CUR_ROOT_SRC") → ${part_root_a}(可能耗时几分钟)"
+dd if="$CUR_ROOT_SRC" of="$part_root_a" bs=4M conv=fsync status=progress ||
+    keel_die "写 ${part_root_a} 失败"
+sync
+keel_log "root-a 写入完成"
+
+# ---------------------------------------------------------------------------
+# 3) volume:mkfs + 骨架 + config
+#
+# repart 的定义里 volume 已经是 ext4(Format=ext4),这里再 mkfs 一次是为了拿到
+# 确定的标签与全新文件系统 —— 骨架必须从零铺,不能有上次安装的残留。
+# ---------------------------------------------------------------------------
+keel_log "格式化 ${part_volume}(ext4,label=${VOLUME_LABEL})"
+mkfs.ext4 -q -L "$VOLUME_LABEL" -F "$part_volume" || keel_die "mkfs.ext4 ${part_volume} 失败"
+
+VOL_MNT="$(mktemp -d /tmp/keel-install.XXXXXX)"
+# 任何提前退出都收尾;成功路径最后会自己 umount + rm -rf 并摘掉 trap
+# shellcheck disable=SC2064
+trap "umount -R '$VOL_MNT' 2>/dev/null || true; rm -rf '$VOL_MNT'" EXIT
+
+mount -t ext4 "$part_volume" "$VOL_MNT" || keel_die "挂载 ${part_volume} 失败"
+if [ -d "$SKELETON" ]; then
+    cp -a "$SKELETON/." "$VOL_MNT/" || keel_die "铺 /Volume 骨架失败"
+    keel_log "骨架已铺入目标 volume(${SKELETON})"
+else
+    keel_log "警告:镜像里没有 ${SKELETON},目标 volume 只有空目录;首启会尝试自愈(os-rescue --init-volume)"
+fi
+if [ -f "$LIVE_CONFIG" ]; then
+    install -d -m 0755 "$VOL_MNT/keel"
+    cp -a "$LIVE_CONFIG" "$VOL_MNT/keel/config" || keel_die "复制 ${LIVE_CONFIG} 失败"
+    keel_log "已把当前 /Volume/keel/config 带到目标(首启就有可用的更新源)"
+fi
+
+# ---------------------------------------------------------------------------
+# 3b) 在目标盘上登记 pending:装完第一次启动就是"槽 a 待确认"
+#
+# 为什么要写:首启时 keel-confirm 需要 pending 来判定新槽是否启动成功(§5.3 ⑨)。
+# 目标盘的 state 文件是新建的,由本脚本直接写(keel_state_set 只能写 live 的那份)。
+# TODO(待验证):keel-confirm 对"pending 存在但没有 running_slot 历史"的处理。
+# ---------------------------------------------------------------------------
+if [ -d "$VOL_MNT/keel" ]; then
+    if ! {
+        echo "pending_slot=a"
+        echo "pending_version=${CURRENT_VERSION}"
+        echo "running_slot="
+        echo "last_result="
+        echo "last_result_version="
+        echo "last_result_time="
+    } >"$VOL_MNT/keel/state"; then
+        keel_log "警告:写目标 /Volume/keel/state 失败(首启的成功判定会退化为'无 pending')"
+    fi
+fi
+sync
+keel_log "volume 初始化完成,卸载 ${VOL_MNT}"
+umount "$VOL_MNT" || keel_die "卸载 ${VOL_MNT} 失败"
+rm -rf "$VOL_MNT"
+trap - EXIT
+
+# ---------------------------------------------------------------------------
+# 4) ESP:把当前 live ESP 的内容整体复制过去
+#
+# 这样 systemd-boot(含 fallback EFI/BOOT/BOOTX64.EFI)、loader/loader.conf 和 UKI
+# 一起过去。**不需要**改 UKI 里的 cmdline:它写的是 root=PARTLABEL=root-a,而目标
+# 盘的 A 槽标签同名(§3.3 / AGENTS.md 坑 #5)。
+# ---------------------------------------------------------------------------
+ESP_MNT="$(mktemp -d /tmp/keel-install.XXXXXX)"
+# shellcheck disable=SC2064
+trap "umount -R '$ESP_MNT' 2>/dev/null || true; rm -rf '$ESP_MNT'" EXIT
+mount -t vfat -o umask=0077 "$part_esp" "$ESP_MNT" || keel_die "挂载 ${part_esp} 失败"
+if [ -d "$KEEL_ESP" ]; then
+    cp -a "$KEEL_ESP/." "$ESP_MNT/" || keel_die "复制 live ESP 内容到目标 ESP 失败"
+    keel_log "ESP 内容已复制(${KEEL_ESP} → ${part_esp})"
+else
+    keel_die "${KEEL_ESP} 不存在:live 环境没有挂载 ESP?先用 findmnt ${KEEL_ESP} 确认"
+fi
+
+# 目标盘上必须有当前槽的条目,否则装完起不来(检查而已,不重命名 —— 改名会破坏
+# boot counting 的状态,首次启动该由 keel-firstboot / keel-confirm 处理)
+target_uki=""
+for f in "$ESP_MNT/EFI/Linux/keel-${CURRENT_SLOT}.efi" "$ESP_MNT/EFI/Linux/keel-${CURRENT_SLOT}"+*.efi; do
+    [ -e "$f" ] || continue
+    target_uki="${f##*/}"
+    break
+done
+if [ -n "$target_uki" ]; then
+    keel_log "目标 ESP 上当前槽的条目:${target_uki}"
+else
+    keel_log "警告:目标 ESP 上没有 keel-${CURRENT_SLOT}.efi 或它的带计数条目;装完可能起不来(先检查 live ESP 里到底有什么:ls -l ${KEEL_UKI_DIR})"
+fi
+
+# 注意:目标盘的 B 槽保持空 ext4,没有可引导条目 —— 见上面 --seed-b 的说明。
+# 首启后要填 B 槽,用 sudo os-update stage --force(它会用真正 root=PARTLABEL=root-b
+# 的 UKI 载荷)。
+
+sync
+umount "$ESP_MNT" || keel_die "卸载 ${ESP_MNT} 失败"
+rm -rf "$ESP_MNT"
+trap - EXIT
+
+# ---------------------------------------------------------------------------
+# 5) 后续步骤
+# ---------------------------------------------------------------------------
+cat <<EOF
+
+安装完成:$(basename "$TARGET") 已经可以拔下来插到目标机上。
+
+接下来:
+  1. 把目标盘装进目标机,固件里确认是 **UEFI 模式**(关掉 CSM/Legacy);
+  2. 首次启动会自动完成(keel-firstboot.service,幂等):
+     - 修补 /Volume 骨架(顺带重建 dbus 的 machine-id 链接)
+     - 把 volume 扩到整盘剩余空间
+     - 跑 bootctl install 建立本机 NVRAM 启动项(装机镜像里不可能带)
+     - 按 /Volume/keel/config 的 SWAPFILE_SIZE 创建并启用 swapfile
+  3. 起来后 os-status 确认:当前槽、/Volume 容量、schema-version 都正常;
+  4. 建普通用户:useradd -m -s /bin/bash <name> + passwd <name>
+     (账号写在 /etc 的 overlay 里,持久化在 /Volume 上)
+  5. 想测槽切换:B 槽是空的,先用 sudo os-update stage --force 填一个真正的
+     root-b 载荷(os-update fetch 下来的载荷里才有 cmdline 正确的 UKI)。
+
+本次安装的版本:${CURRENT_VERSION}(来自 live 环境)
+EOF
+keel_log "完成"

@@ -1,0 +1,221 @@
+#!/bin/bash
+# os-status —— 只读的系统状态报告:当前槽/版本/内核、pending 更新、上次更新结果、
+#              /Volume 用量与布局版本、槽位分区、ESP 上的 UKI、/etc overlay 状态。
+#
+# 见 docs/architecture.md §9(命令集)与 §8(更新流程);更新时序见 §5.3。
+# 出问题时先看这份报告,对应的排查入口见 docs/troubleshooting.md §3/§5。
+#
+# 设计约束:这是给人看的报告,**退出码永远为 0**。任何取不到的信息都写成
+# "未知/不存在",绝不因为读不到某个文件而失败 —— 系统半坏的时候正是最需要它的时候。
+set -euo pipefail
+
+# shellcheck source=/usr/lib/keel/lib.sh
+# SC1091:lib.sh 只在镜像里(/usr/lib/keel/lib.sh),仓库里没有这个文件,
+# 静态检查工具追不到它(它不在仓库里)。变量名与函数名以父 agent 给出的接口表为准。
+#
+# shellcheck disable=SC1091  # 注释与 source 行之间不能插别的东西
+. /usr/lib/keel/lib.sh
+
+# ---------------------------------------------------------------------------
+# 输出助手
+#
+# 把"命令失败"和"命令成功但输出为空"归一化成同一件事:状态报告里两者的结论
+# 都是"未知",分开处理只会让下面每一行都多写一次 if。末尾的 || true 是为了在
+# set -e 下也不让读取失败中断报告。
+# ---------------------------------------------------------------------------
+out_or() {
+    local def="$1"
+    shift
+    local v
+    v="$("$@" 2>/dev/null)" || v=""
+    if [ -n "$v" ]; then
+        printf '%s\n' "$v"
+    else
+        printf '%s\n' "$def"
+    fi
+}
+
+# epoch 秒 → 人类可读。GNU date 对超范围数值会失败,所以退回显示原始秒数。
+epoch_human() {
+    local e="$1" v
+    if [ -z "$e" ]; then
+        printf '%s\n' "未知"
+        return 0
+    fi
+    v="$(date -d "@$e" '+%Y-%m-%d %H:%M:%S %z' 2>/dev/null)" || v=""
+    if [ -n "$v" ]; then
+        printf '%s(epoch %s)\n' "$v" "$e"
+    else
+        printf '%s(原始 epoch 秒,无法解析)\n' "$e"
+    fi
+}
+
+# 读取纯文本状态文件;失败或为空都输出空串
+read_file() {
+    local v
+    v="$(cat "$1" 2>/dev/null)" || v=""
+    printf '%s\n' "$v"
+}
+
+hr() { printf '%s\n' "------------------------------------------------------------"; }
+
+# ---------------------------------------------------------------------------
+# 1) 版本 / 内核 / 当前槽
+# ---------------------------------------------------------------------------
+version="$(keel_version 2>/dev/null)" || version=""
+[ -n "$version" ] || version="$(grep -E '^VERSION_ID=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '"')"
+[ -n "$version" ] || version="未知"
+kernel="$(uname -r 2>/dev/null)" || kernel="未知"
+slot="$(keel_current_slot 2>/dev/null)" || slot=""
+[ -n "$slot" ] || slot="未知"
+
+echo "keel 状态报告"
+hr
+echo "系统版本     : ${version}"
+echo "内核         : ${kernel}"
+echo "当前槽       : ${slot}"
+if [ "$slot" = "未知" ]; then
+    echo "               注意:/proc/cmdline 里没有 root=PARTLABEL=root-<a|b>。"
+    echo "               可能是手动启动(例如 live U 盘),或引导参数被改过。"
+fi
+
+# ---------------------------------------------------------------------------
+# 2) 上次启动结果与 pending 更新
+#
+# 这几个键由 keel-confirm.service 在 boot-complete.target 之后写(§5.3 ⑨⑩⑪),
+# 所以它们是"上一次开机究竟发生了什么"的唯一权威来源。
+# ---------------------------------------------------------------------------
+last_result="$(keel_state_get last_result 2>/dev/null)" || last_result=""
+last_ver="$(keel_state_get last_result_version 2>/dev/null)" || last_ver=""
+last_time="$(keel_state_get last_result_time 2>/dev/null)" || last_time=""
+running="$(keel_state_get running_slot 2>/dev/null)" || running=""
+pending_slot="$(keel_state_get pending_slot 2>/dev/null)" || pending_slot=""
+pending_ver="$(keel_state_get pending_version 2>/dev/null)" || pending_ver=""
+
+echo "上次启动结果 : ${last_result:-无记录}"
+echo "  版本       : ${last_ver:-未知}"
+echo "  时间       : $(epoch_human "$last_time")"
+echo "  观测到的槽 : ${running:-未知}"
+if [ -n "$pending_slot" ]; then
+    echo "待确认更新   : 槽 ${pending_slot},版本 ${pending_ver:-未知}"
+    echo "               下次启动已指向槽 ${pending_slot};启动成功会自动确认,"
+    echo "               连续 3 次没到 boot-complete 则自动回退(§5.3 ⑩⑪)。"
+else
+    echo "待确认更新   : 无"
+fi
+
+# ---------------------------------------------------------------------------
+# 3) /Volume:挂没挂、用量、布局版本、swap
+# ---------------------------------------------------------------------------
+hr
+if [ -d /Volume ]; then
+    echo "/Volume 挂载  : $(out_or "未知(未挂载?)" findmnt -no SOURCE,FSTYPE /Volume)"
+    echo "/Volume 用量  :"
+    df -h /Volume 2>/dev/null | tail -n +2 | sed 's/^/  /' || echo "  未知(读不到 /Volume)"
+else
+    echo "/Volume      : 不存在(/Volume 没挂上,见 troubleshooting.md §3)"
+fi
+
+schema="$(read_file /Volume/keel/schema-version)"
+echo "布局版本     : ${schema:-未知}(/Volume/keel/schema-version;当前镜像骨架是 1)"
+
+# swap:swapon --show 在没有任何 swap 时输出为空且退出 0(不是错误)
+swap_rows="$(swapon --show 2>/dev/null | tail -n +2)" || swap_rows=""
+if [ -n "$swap_rows" ]; then
+    echo "swap         :"
+    printf '%s\n' "$swap_rows" | sed 's/^/  /'
+else
+    echo "swap         : 未启用(swapon --show 没有条目)"
+fi
+
+# ---------------------------------------------------------------------------
+# 4) 两个槽的分区:存在性、大小
+#
+# 用 blockdev 拿精确字节数再换算成 GiB,避免 lsblk 的人类可读单位在不同版本间
+# 格式不一致。分区设备一律走 /dev/disk/by-partlabel(槽的身份就是 PARTLABEL)。
+# ---------------------------------------------------------------------------
+hr
+echo "槽位分区"
+for s in a b; do
+    dev="$(keel_slot_device "$s" 2>/dev/null)" || dev="/dev/disk/by-partlabel/root-$s"
+    if [ -b "$dev" ]; then
+        bytes="$(blockdev --getsize64 "$dev" 2>/dev/null)" || bytes=""
+        if [ -n "$bytes" ]; then
+            gib="$(awk -v b="$bytes" 'BEGIN{printf "%.1f", b/1073741824}')"
+            human="$(lsblk -dn -o SIZE "$dev" 2>/dev/null)" || human=""
+            info="${human:-?}(${gib} GiB)"
+        else
+            info="大小未知"
+        fi
+        mark=""
+        if [ "$slot" = "$s" ]; then
+            mark="  <== 当前运行槽"
+        fi
+        echo "  root-$s : 存在 ${info}${mark}"
+    else
+        echo "  root-$s : 不存在或无权限(${dev})"
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# 5) ESP 上的 UKI
+#
+# 文件名里的计数不是噪音(§5.3 ⑧):keel-b+2-1.efi 表示"新槽已尝试并失败过一次",
+# 计数归零后引导器会跳过它。这里标出当前槽那几条,一眼就能看出是不是在重试。
+# ---------------------------------------------------------------------------
+hr
+echo "ESP 上的 UKI(目录 $KEEL_UKI_DIR)"
+found_uki=0
+if [ -d "$KEEL_UKI_DIR" ]; then
+    for f in "$KEEL_UKI_DIR"/*.efi "$KEEL_UKI_DIR"/*.failed; do
+        # 目录为空或没有匹配时 glob 会原样返回,$f 就不存在,用 -e 过滤掉
+        [ -e "$f" ] || continue
+        found_uki=1
+        base="$(basename "$f")"
+        note=""
+        case "$base" in
+            "keel-$slot.efi") note="  <== 当前槽的正式条目" ;;
+            "keel-$slot"+*.efi) note="  <== 当前槽的带计数条目(尝试中/未确认)" ;;
+            "keel-$slot.efi.failed") note="  <== 当前槽曾启动失败" ;;
+            "keel-$slot.efi.bad") note="  <== 当前槽已被标记为坏" ;;
+            *) : ;;
+        esac
+        echo "  $base${note}"
+    done
+else
+    echo "  目录不存在:$KEEL_UKI_DIR"
+fi
+if [ "$found_uki" -eq 0 ]; then
+    echo "  没有任何 UKI 条目 —— 引导器不会列出 keel 的启动项"
+fi
+
+# ---------------------------------------------------------------------------
+# 6) /etc 是否已经是 overlayfs
+#
+# 必须是 overlay(不变量 5)。不是的话说明 keel-mounts.service 没跑成:此时
+# /etc 就是只读镜像里的目录,改动重启即丢(坑 #8 的排序要求)。
+# ---------------------------------------------------------------------------
+hr
+etc_fstype="$(out_or "未知" findmnt -no FSTYPE /etc)"
+if [ "$etc_fstype" = "overlay" ]; then
+    echo "/etc         : overlayfs(可写层已挂载)"
+else
+    echo "/etc         : ${etc_fstype}"
+    echo "               警告:不是 overlay,keel-mounts.service 可能失败了;"
+    echo "               此时改 /etc 不会持久化:systemctl status keel-mounts.service"
+fi
+
+# ---------------------------------------------------------------------------
+# 7) 更新源配置(只报告,不探测可达性 —— 那要联网,不该由状态报告承担)
+# ---------------------------------------------------------------------------
+hr
+src="$(keel_conf UPDATE_SOURCE "" 2>/dev/null)" || src=""
+if [ -n "$src" ]; then
+    echo "更新源       : ${src}"
+else
+    echo "更新源       : 未配置(改 /Volume/keel/config 的 UPDATE_SOURCE=)"
+fi
+swap_cfg="$(keel_conf SWAPFILE_SIZE "" 2>/dev/null)" || swap_cfg=""
+echo "swapfile 配置: ${swap_cfg:-留空 = min(内存, 8G) 且不小于 1G}"
+
+exit 0
