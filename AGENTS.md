@@ -36,12 +36,18 @@
 改动代码前先确认没有违反下面任何一条。每一条都是有意为之,违反后会在某个不显眼的时刻炸掉。
 
 1. **基础系统只读,状态全在 `/Volume`。**
-   根分区以 `ro` 挂载;`/var`、`/root`、`/nix` 是指向 `/Volume` 的符号链接,`/home` 是真目录 + bind mount
-   (符号链接会破坏 `ProtectHome=` 的沙箱语义,所以 `/home` 是唯一的例外)。
+   根分区以 `ro` 挂载;`/var`、`/root` 是指向 `/Volume` 的符号链接;
+   **`/home` 与 `/nix` 是真目录 + bind mount**(由 `keel-mounts` 在启动早期挂上)。
+   这两个为什么不能是符号链接:
+   - `/home`:符号链接会破坏 `ProtectHome=` 之类的沙箱语义(服务仍能经 `/Volume/home` 摸到用户数据);
+   - `/nix`:`nix` **硬性拒绝**符号链接的 store 路径(坑 #34),而 store 的位置又搬不动 ——
+     二进制与脚本把 `/nix/store/…` 写死在 ELF interpreter 与 RPATH 里。
+   其余目录能符号链接就符号链接 —— 少一层挂载、少一处启动期依赖。
 
 2. **`/Volume` 必须在用户空间刚起来时就已挂好,且挂载过程不能依赖 udev。**
-   符号链接无法参与挂载顺序约束,不能靠"启动后再挂" —— `/var` `/root` `/nix` 都是指向 `/Volume` 的
-   符号链接,挂晚了早期服务(random-seed、journald、tmpfiles)就会往悬空链接上写。
+   符号链接与 bind mount 都无法参与挂载顺序约束,不能靠"启动后再挂" —— `/var` `/root` 是指向
+   `/Volume` 的符号链接,`/home` `/nix` 要 bind 上去;挂晚了早期服务(random-seed、journald、tmpfiles)
+   就会往悬空链接/空目录上写。
    **实现方式(踩过坑 #24,2026-09 真机实测后改的)**:由 `keel-mounts.service`(在 `sysinit` 之前)
    自己扫 `/sys/class/block/*/uevent` 里的 `PARTNAME=volume` 找到分区并 `mount`。
    **不要**改回 kernel cmdline 的 `systemd.mount-extra=PARTLABEL=volume:/Volume:...`:
@@ -537,6 +543,26 @@
     对"刚刚才发生"的设备变化要用 sysfs(`/sys/class/block/*/uevent`)或 `/proc/partitions`。
     (根因未最终确认:也可能是内核当时拒绝了 `BLKRRPART`(比如 repart 的 loop 设备还没放手),
     所以现在额外显式做一次 `blockdev --rereadpt`;真机现场见 `docs/troubleshooting.md` §2.3。)
+
+34. **`/nix` 不能是符号链接 —— nix 硬性拒绝,装好的系统上所有 nix 命令立刻失败。**
+    现象(装机后第一次用 nix):
+    ```
+    # nix-shell -p vim
+    error: the path '/nix' is a symlink; this is not allowed for the Nix store and its parent directories
+    ```
+    这是 nix 的硬性检查(store 及其父目录都不能是符号链接),不是配置能绕过去的;
+    **也不能**改成"把 store 放到 `/Volume/nix`" —— store 里的二进制与脚本把 `/nix/store/…`
+    写死在 ELF interpreter 与 RPATH 里,位置搬不动。
+    ⇒ `/nix` 和 `/home` 一样改成**真实目录 + bind mount**(不变量 1):
+    `mkosi.finalize` 建空目录、`/usr/lib/keel/mounts` 里 `mount --bind /Volume/nix /nix`。
+    `/Volume/nix`(含 `store/` 与 `var/nix/…`)本来就在骨架里,所以 `/Volume` 的 schema 不用动;
+    但**已经装好的旧系统**要等新槽生效(`os-update` 会换掉整个根文件系统)才会拿到真实目录,
+    在那之前可以热修(见 `docs/troubleshooting.md` §4)。
+    `tools/verify.sh` 有断言:finalize 不许 `ln -s …/nix`,且 mounts 里必须有 `/home` 与 `/nix`
+    两条 bind。
+    **教训**:判断"某个路径能不能是符号链接"时别只看 POSIX 语义 —— 具体工具有硬性要求
+    (nix 要 store 是真目录,systemd 的 `ProtectHome=` 要 `/home` 是真挂载点,坑 #26 的 autologin
+    则是 `/bin/login` 得存在)。
 ---
 
 ## 4. 常用命令
@@ -577,7 +603,8 @@ sudo tools/burn.sh /dev/nvme0n1
 - [x] `mkosi.extra/usr/bin/`:`os-status`、`os-update`、`os-rescue`、`os-install`
 - [x] `tools/`:`verify.sh`、`build.sh`、`burn.sh`、`build-container.sh`(给不被 mkosi 支持的宿主用)
 - [x] `docs/`:`architecture.md`、`decisions.md`、`install.md`、`update.md`、`troubleshooting.md`
-- [ ] **第一次真机构建 / 虚拟机启动**(由人类做:见 `docs/install.md` §1)
+- [x] **第一次真机构建 / 虚拟机启动 / 装机**(2026-09,VM:构建 → live 启动 → `os-install` → 目标盘首启 ✓;
+      途中修掉坑 #31–#34。**真机(U 盘 + 笔记本)仍未做过**)
 - [ ] `desktop` profile(笔记本用)
 - [ ] `server` profile(虚拟化宿主,GPU 直通)
 
@@ -589,8 +616,11 @@ sudo tools/burn.sh /dev/nvme0n1
    在主系统里会挂但依赖 udev ⇒ 造成启动死锁。结论已回写到不变量 2 与坑 #24。
 2. `systemd-sysupdate` 的 `Type=partition` transfer 对双槽布局的匹配语义(验证通过后换掉 v1 的直接写盘)。
 3. `/usr/lib/modules/<kver>` 挂 overlay 后 `depmod` + 模块加载的实际行为(为"第三方内核模块外置"做准备)。
-4. **`os-install` 的完整流程**(在 VM 里对第二块盘演练,见 `docs/install.md` §2.2)。
-   2026-09 首次尝试已经踩掉三道坎:镜像里没有 `/usr/lib/keel/repart-install.d`(坑 #31)、
-   镜像里没有 `dosfstools` 导致 repart 格式化 ESP 失败(坑 #32)、
-   建表成功后 `find_part` 立刻查 `lsblk` 的 PARTLABEL 查不到分区(坑 #33,已改成先扫 sysfs + 重试)。
-   **仍未走通全流程**:dd 根分区、mkfs volume、复制 ESP、写 pending 都没有实测过。
+4. ~~**`os-install` 的完整流程**(在 VM 里对第二块盘演练)~~
+   **已实测走通(2026-09,VM)**:repart 建表 → dd 根分区 → mkfs+铺 volume 骨架 → 复制 ESP →
+   写 pending → **目标盘首启成功**。途中修掉坑 #31(镜像里没有 `/usr/lib/keel/repart-install.d`)、
+   #32(镜像里没有 `dosfstools`,repart 格式化 ESP 失败)、#33(建表后 `find_part` 查 `lsblk` 的
+   PARTLABEL 扑空,已改成先扫 sysfs + 重试)。
+5. **装机后 nix 真的能用**(`nix-shell -p vim` 等)—— 第一次跑就撞上坑 #34(`/nix` 是符号链接),
+   已改成「真实目录 + bind mount」。**待复验**:新镜像里 `/nix` 是真目录、bind 生效、
+   `nix-shell -p …` 能装能跑;以及 `df -h /Volume` 确认首启把 volume 扩到了整盘(不变量 14)。

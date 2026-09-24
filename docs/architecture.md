@@ -83,13 +83,17 @@
 ```
 /var   -> /Volume/var           (符号链接)
 /root  -> /Volume/home/root     (符号链接)
-/nix   -> /Volume/nix           (符号链接)
 /home  =  真实空目录,启动早期 bind mount 到 /Volume/home
+/nix   =  真实空目录,启动早期 bind mount 到 /Volume/nix
 /etc   =  overlayfs 挂载点(lower = 镜像 /etc,upper/work = /Volume/overlayfs/etc)
 ```
 
-**这三条符号链接在 `mkosi.finalize`(构建的最后一步)才创建** —— 否则包管理器、
-`systemd-sysusers`、`systemd-tmpfiles` 会顺着链接写到镜像树外面去(`AGENTS.md` 已知的坑 #2)。
+`/home` 与 `/nix` 必须是**真挂载点**而不是符号链接:`/home` 关乎 `ProtectHome=` 的沙箱语义,
+`/nix` 则是 nix 自己硬性拒绝符号链接的 store 路径(决策 D3、`AGENTS.md` 坑 #34)。
+
+**那两条符号链接在 `mkosi.finalize`(构建的最后一步)才创建** —— 否则包管理器、
+`systemd-sysusers`、`systemd-tmpfiles` 会顺着链接写到镜像树外面去(`AGENTS.md` 已知的坑 #2);
+`/home` 与 `/nix` 的空目录也在同一步建出来。
 
 ### 4.2 `/Volume` 骨架
 
@@ -133,7 +137,7 @@ workdir  = /Volume/overlayfs/etc/work
 ```
 装包 → postinst → sysusers → tmpfiles → preset-all → depmod → firstboot → hwdb
      → RemovePackages/RemoveFiles
-     → mkosi.finalize:①快照 /var 生成骨架 ②把 /var /root /nix 换成符号链接
+     → mkosi.finalize:①快照 /var 生成骨架 ②把 /var /root 换成符号链接、给 /home 与 /nix 建空目录
      → 生成 UKI
      → systemd-repart 生成最终镜像(此时骨架才被写进 volume 分区)
 ```

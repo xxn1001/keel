@@ -1,5 +1,5 @@
 #!/bin/bash
-# keel 启动早期挂载:挂 /Volume、在 /etc 上挂 overlayfs、把 /home 绑到 /Volume/home
+# keel 启动早期挂载:挂 /Volume、在 /etc 上挂 overlayfs、把 /home 与 /nix 绑到 /Volume 下
 #
 # 由 keel-mounts.service 调用,必须极早运行(见 AGENTS.md 不变量 1/2/5、
 # 已知的坑 #8/#24,docs/architecture.md §4.1 §4.3)。
@@ -63,12 +63,36 @@ fi
 # ---------------------------------------------------------------------------
 # /home:必须是**真实挂载点**
 #
-# 这是四个目录里唯一的例外:符号链接会让 ProtectHome= 之类的沙箱设置失效
-# (服务仍能通过 /Volume/home 摸到用户数据),所以用 bind mount。
+# 符号链接会让 ProtectHome= 之类的沙箱设置失效(服务仍能通过 /Volume/home
+# 摸到用户数据),所以用 bind mount。
 # ---------------------------------------------------------------------------
 if ! mountpoint -q /home; then
     mount --bind /Volume/home /home
     keel_log "已把 /Volume/home 绑定到 /home"
+fi
+
+# ---------------------------------------------------------------------------
+# /nix:同样必须是**真实挂载点** —— nix 硬性拒绝符号链接的 store 路径
+#
+# 装机后实测(2026-09,坑 #34):
+#   error: the path '/nix' is a symlink; this is not allowed for the Nix store
+#          and its parent directories
+# 也不能改成"把 store 放到 /Volume/nix":store 里的二进制与脚本把 /nix/store/…
+# 写死在 ELF interpreter 与 RPATH 里,位置搬不动。所以 /nix 是镜像里的真实空目录,
+# 启动早期 bind 到 /Volume/nix(骨架里本来就有 store/ 与 var/nix/…)。
+# 本单元排在 sysinit 之前,任何 nix 相关单元都在它后面,顺序上够用。
+# ---------------------------------------------------------------------------
+if ! mountpoint -q /nix; then
+    if [ -d /nix ]; then
+        install -d -m 0755 /Volume/nix
+        mount --bind /Volume/nix /nix
+        keel_log "已把 /Volume/nix 绑定到 /nix"
+    else
+        # 旧镜像里 /nix 是指向 /Volume/nix 的符号链接(根是只读的,这里改不了它),
+        # nix 会拒绝这种 store 路径 —— 说清楚,别让人对着报错猜(坑 #34)
+        keel_log "警告:/nix 不是目录(而是符号链接?)—— nix 会拒绝符号链接的 store 路径,"
+        keel_log "      换到新槽或重装后会修复;临时办法见 docs/troubleshooting.md §4"
+    fi
 fi
 
 # ---------------------------------------------------------------------------

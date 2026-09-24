@@ -26,10 +26,16 @@
 
 ## D3 目录挂载方式
 
-- **决策**:`/var`、`/root`、`/nix` 用**符号链接**指向 `/Volume`;`/home` 用**真目录 + bind mount**。
-- **理由**:尊重"根目录留软链接"的原始设计意图;但 `/home` 用符号链接会破坏 `ProtectHome=` 的沙箱语义
-  (服务仍能通过 `/Volume/home` 摸到用户数据),所以它必须是一个真实的挂载点。
-- **关键约束**:符号链接无法参与挂载顺序约束 ⇒ `/Volume` 必须由 initrd 挂载(见 D4)。
+- **决策**(2026-09 修订):`/var`、`/root` 用**符号链接**指向 `/Volume`;
+  **`/home` 与 `/nix` 用真目录 + bind mount**。
+- **理由**:尊重"根目录留软链接"的原始设计意图,能链接就链接(少一层挂载、少一处启动期依赖);
+  但这两个目录**必须**是真实挂载点:
+  - `/home`:符号链接会让 `ProtectHome=` 这类沙箱设置失效(服务仍能经 `/Volume/home` 摸到用户数据);
+  - `/nix`:`nix` 硬性拒绝符号链接的 store 路径 ——
+    `error: the path '/nix' is a symlink; this is not allowed for the Nix store and its parent directories`
+    (装机后实测,见 `AGENTS.md` 坑 #34);而 store 位置搬不动(二进制与脚本把 `/nix/store/…`
+    写死在 ELF interpreter 与 RPATH 里),只能让 `/nix` 本身是真目录。
+- **关键约束**:符号链接无法参与挂载顺序约束 ⇒ `/Volume` 必须极早挂载(见 D4)。
 
 ## D4 `/Volume` 的挂载时机
 

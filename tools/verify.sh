@@ -498,6 +498,22 @@ else
     no "os-install 与 mkosi.postinst 对 repart 定义目录不一致(os-install 读 '${defs_in_script:-空}')"
 fi
 
+# /nix 与 /home 必须是「真实目录 + bind mount」,不能是符号链接:
+#   nix 硬性拒绝符号链接的 store 路径(坑 #34);
+#   /home 是 ProtectHome= 这类沙箱语义的要求。
+if grep -qE '^[[:space:]]*ln -s .*/nix' mkosi.finalize; then
+    no "mkosi.finalize 把 /nix 做成了符号链接 —— nix 会拒绝(坑 #34)"
+else
+    ok "mkosi.finalize 没有把 /nix 做成符号链接(坑 #34)"
+fi
+if grep -qF 'install -d -m 0755 "$R/home" "$R/nix"' mkosi.finalize \
+   && grep -q -- 'mount --bind /Volume/nix /nix' mkosi.extra/usr/lib/keel/mounts \
+   && grep -q -- 'mount --bind /Volume/home /home' mkosi.extra/usr/lib/keel/mounts; then
+    ok "finalize 建 /home /nix 空目录 + keel-mounts 各 bind 一次(两个都是真挂载点)"
+else
+    no "缺 /home 或 /nix 的「真实目录 + bind mount」:finalize 建目录、mounts 里 mount --bind(坑 #34)"
+fi
+
 # 运行时不能有 dpkg 工具链(决策 D10):apt 用 RemovePackages,dpkg 是 Essential
 # ⇒ 由 mkosi.finalize 显式删 + 断言(RemoveFiles= 的 glob 行为跨 mkosi 版本不一致)
 if grep -q 'dpkg-maintscript-helper' mkosi.finalize && grep -q '仍残留 dpkg 工具链' mkosi.finalize; then

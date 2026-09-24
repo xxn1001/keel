@@ -232,4 +232,4 @@ os-status                     # 起来后:当前槽变成 b,last_result=success
 | 在 U 盘 live 里认错设备名 | `os-install` 写错盘 = 擦掉别人的数据;先 `lsblk -f` 看分区标签再动手 |
 | 首启就没网 | 有线网卡/存储固件在 `firmware-misc-nonfree`;无线网络 main 不做,留给 `desktop` profile |
 | 指望图形界面 | main 没有图形栈,这是范围决定,不是 bug(§2) |
-| `/Volume` 没挂上 | `/var`、`/root`、`/nix` 全是悬空符号链接,系统看起来"到处都是空目录" —— 见 `troubleshooting.md` |
+| `/Volume` 没挂上 | `/var`、`/root` 是悬空符号链接,`/home`、`/nix` 是空目录,系统看起来"到处都是空目录" —— 见 `troubleshooting.md` |

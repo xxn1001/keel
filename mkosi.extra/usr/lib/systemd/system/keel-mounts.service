@@ -1,5 +1,5 @@
 [Unit]
-Description=keel: mount /Volume, mount the /etc overlay, bind /home
+Description=keel: mount /Volume, mount the /etc overlay, bind /home and /nix
 Documentation=file:/usr/share/doc/keel/architecture.md
 # 必须极早运行,并且排在所有会读写 /etc 的单元之前(AGENTS.md 已知的坑 #8):
 # systemd-sysusers / tmpfiles / machine-id-commit 都要读 /etc,

@@ -1,5 +1,5 @@
 #!/bin/bash
-# keel 构建的最后一步:生成 /Volume 骨架,并把 /var /root /nix 换成符号链接
+# keel 构建的最后一步:生成 /Volume 骨架,把 /var /root 换成符号链接,/home 与 /nix 留成真实目录
 #
 # 时机至关重要(AGENTS.md 已知的坑 #2):必须在所有会写 /var、/etc 的构建步骤
 # (装包、postinst、systemd-sysusers、systemd-tmpfiles、preset-all、depmod、
@@ -108,16 +108,22 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# 2) 把 /var /root /nix 换成符号链接(不变量 1)
+# 2) 把 /var /root 换成符号链接;/home 与 /nix 保持**真实目录**(不变量 1)
 #
-# /home 是唯一例外:它保持为真实空目录,由 keel-mounts 在启动早期 bind 到
-# /Volume/home —— 符号链接会破坏 ProtectHome= 的沙箱语义。
+# 有两个"不能是符号链接"的例外,都由 keel-mounts 在启动早期 bind 到 /Volume 下:
+#   * /home —— 符号链接会破坏 ProtectHome= 之类的沙箱语义(服务仍能经 /Volume/home
+#     摸到用户数据);
+#   * /nix  —— nix **硬性拒绝**符号链接的 store 路径(2026-09 装机后实测,坑 #34):
+#       error: the path '/nix' is a symlink; this is not allowed for the Nix store
+#              and its parent directories
+#     换 store 路径是行不通的:store 里的二进制与脚本把 /nix/store/… 写死在 ELF
+#     interpreter 与 RPATH 里,位置搬不动。所以 /nix 本身必须是真目录。
+# 其余目录能符号链接就符号链接 —— 少一层挂载、少一处启动期依赖。
 # ---------------------------------------------------------------------------
-rm -rf "$R/var"  "$R/root" "$R/nix"
+rm -rf "${R:?}/var" "${R:?}/root"
 ln -s /Volume/var        "$R/var"
 ln -s /Volume/home/root  "$R/root"
-ln -s /Volume/nix        "$R/nix"
-install -d -m 0755 "$R/home"
+install -d -m 0755 "$R/home" "$R/nix"
 # /Volume 本身必须有这个空目录当**挂载点**:它是分区,不是镜像内容。
 # 少了它,`mount … /Volume` 会报 "mount point does not exist",而 /var /root /nix
 # 三个符号链接会指向不存在的路径(实测第一版真机启动就踩了:diag 里
@@ -145,4 +151,4 @@ fi
 log "已清掉 dpkg 工具链(镜像里没有 apt/dpkg,决策 D10)"
 
 
-log "完成:/Volume 骨架已生成,/var /root /nix 已改成符号链接"
+log "完成:/Volume 骨架已生成;/var /root 是符号链接;/home 与 /nix 是真实目录(由 keel-mounts bind)"

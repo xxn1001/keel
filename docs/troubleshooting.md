@@ -133,7 +133,7 @@ journalctl -b -u systemd-networkd -u systemd-resolved -p warning
 ## 3. `/Volume` 相关
 
 `/Volume` 由 `keel-mounts.service` 在启动早期挂载(不变量 2:扫 `/sys` 的 `PARTNAME=volume`,
-不依赖 udev)。`/var`、`/root`、`/nix` 都是指向它的符号链接。
+不依赖 udev)。`/var`、`/root` 是指向它的符号链接,`/home`、`/nix` 由它 bind 上来。
 所以 `/Volume` 一出问题,表现就是"到处都是空目录、机器像刚装好一样"。
 
 ```bash
@@ -158,10 +158,44 @@ journalctl --disk-usage                  # journal 占了多少
 | 症状 | 排查 |
 |---|---|
 | `nix` 命令不存在 | 基底包是 `nix-bin` + `nix-setup-systemd`(决策 D7);`command -v nix` 都没有说明镜像不对 |
-| `/nix` 空 / 没挂上 | `ls -ld /nix` 应是指向 `/Volume/nix` 的符号链接;`findmnt /Volume`;`ls /Volume/nix`。`/Volume` 没挂 ⇒ `/nix` 悬空,回到 §3 |
+| `/nix` 空 / 没挂上 | `findmnt /nix` 应该看到一个 bind 挂载(源 `/Volume/nix`);`ls -ld /nix` 必须是**目录**(不能是符号链接,坑 #34);再看 `findmnt /Volume` 与 `ls /Volume/nix`。`/Volume` 没挂 ⇒ 回到 §3 |
+| `error: the path '/nix' is a symlink; this is not allowed for the Nix store and its parent directories` | 这个系统装的是**旧镜像**:那时 `/nix` 还是指向 `/Volume/nix` 的符号链接。nix 硬性拒绝符号链接的 store 路径,改 store 位置也没用(二进制与 RPATH 里写死了 `/nix/store/…`)。新版已改成「真实目录 + bind mount」(`AGENTS.md` 坑 #34) | ① 正路:换到新槽(`os-update`)或重装 —— 新根文件系统里的 `/nix` 就是真目录;② 想马上用,按下面热修 |
 | `nix-daemon` 不工作 | 它的单元带 `ConditionPathIsReadWrite=/nix/var/nix/daemon-socket`,所以 **`/Volume` 没挂好时它根本不会启动**:`systemctl status nix-daemon` 会写 condition 未满足被跳过,而不是失败。先把 `/Volume` 修好,再 `systemctl restart nix-daemon` |
 | `nix` 报数据库 schema 太新 | 回滚造成的:基底升级过 nix,旧槽的 nix 读不了新 DB(§13.2 R3)。见 `update.md` §5 —— 要么回到新槽用新版 nix,要么按 R3 处理,别在旧版上反复跑 nix 试图"修好"它 |
 | 换到另一个槽后 nix 里的包"消失" | 不应该发生:`/nix` 在 `/Volume` 上,两个槽共用同一个 store。真发生了说明 `/Volume` 挂载或符号链接有问题,回到 §3 |
+
+**旧系统的热修**(只在 `error: the path '/nix' is a symlink` 那条上需要;新镜像不需要):
+
+```bash
+# 1. 把根文件系统里的 /nix 从符号链接换成真目录(根是 ro 挂的,先临时放开)
+mount -o remount,rw /
+rm -f /nix && install -d -m 0755 /nix
+mount -o remount,ro /
+
+# 2. 立刻 bind 一次并验证
+mount --bind /Volume/nix /nix
+findmnt /nix && nix --version
+
+# 3. 让每次启动都自动做(单元写在 /etc overlay 里,持久保存在 /Volume 上)
+cat >/etc/systemd/system/keel-nixbind.service <<'EOF'
+[Unit]
+Description=keel:/nix bind mount(hotfix;正式镜像由 keel-mounts 做)
+After=local-fs.target
+RequiresMountsFor=/Volume
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/mount --bind /Volume/nix /nix
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload && systemctl enable --now keel-nixbind.service
+```
+
+> 注意热修只改**当前这一槽**的根文件系统(下一次 `os-update` / 换槽会换成新镜像的根,那时
+> `/nix` 本来就是真目录,`keel-nixbind.service` 留着也无害 —— 它是幂等的 `mount --bind`)。
 
 ```bash
 systemctl status nix-daemon.service
