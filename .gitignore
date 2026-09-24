@@ -1,0 +1,33 @@
+# mkosi 的工作目录与产物
+mkosi.output/
+mkosi.cache/
+mkosi.pkgcache/
+mkosi.builddir/
+mkosi.tools/
+mkosi.workspace/
+
+# 绝对不要提交的密钥与口令
+mkosi.key
+mkosi.crt
+mkosi.rootpw
+mkosi.passphrase
+keys/
+*.key
+*.pem
+
+# 镜像产物
+*.raw
+*.raw.zst
+*.raw.xz
+*.efi
+*.img
+*.vhd
+*.qcow2
+
+# Python / 编辑器杂物
+__pycache__/
+*.pyc
+.venv/
+.idea/
+.vscode/
+*.swp
