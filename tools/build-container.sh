@@ -72,16 +72,31 @@ vm)
     #
     # build 那一步必须带 --force:mkosi 的 `build` 是"没有才建" —— 产物已存在时它只打印一行
     #   ‣ Output path /work/mkosi.output/keel.raw exists already. (Use --force to rebuild.)
-    # 就返回成功、什么都不建。而 --profile test 是**改变了配置**的(打开自动登录),
+    # 就返回成功、什么都不建。而 --profile test 是**改变了配置**的(设 root 测试密码),
     # 少了 -f 就会拿着"上一次构建的、没有登录凭据的"旧镜像去开虚拟机(真机上踩过,坑 #23)。
-    # --profile test 只是给控制台开 root 自动登录(仅虚拟机用,见 mkosi.profiles/test.conf)
+    # --profile test 只给 root 一个已知的测试密码(仅虚拟机用,见 mkosi.profiles/test.conf)
     EXTRA="${EXTRA_MKOSI[*]:-}"
     PAYLOAD="tools/verify.sh \
         && mkosi --profile install --profile test $EXTRA --force build \
         && mkosi --profile install --profile test $EXTRA vm"
     ;;
+# 进一个**已经在跑**的虚拟机。mkosi 的 ssh 走 VSock(不经过 guest 的网络栈),
+# 所以在 guest 里 systemd-networkd 还没配好网络时也能用 —— 虚拟机里那条
+# "Failed to configure DHCPv4 client: Package not installed" 就是这种情况。
+# 前提:
+#   1. 宿主机有 /dev/vsock(没有的话下面会提示,guest 里 sshd-vsock.socket 是 listen 状态);
+#   2. 虚拟机是**同一个 mkosi 状态**起来的 —— mkosi 把 VM 的 SSH 私钥和 CID 记在
+#      mkosi.output/ 里(仓库内、容器之间共享 ✓),但 QEMU 进程必须还活着。
+#      所以别用前台 `vm` 模式开虚拟机,用 vm-bg(它在后台容器里跑,退出终端也不死)。
+ssh) PAYLOAD="mkosi --profile install --profile test ssh" ;;
+# 后台起虚拟机:容器 -d 常驻,于是可以从另一个终端 build-container.sh ssh 进去
+vm-bg)
+    PAYLOAD="tools/verify.sh \
+        && mkosi --profile install --profile test ${EXTRA_MKOSI[*]:-} --force build \
+        && mkosi --profile install --profile test ${EXTRA_MKOSI[*]:-} vm --console=headless"
+    ;;
 shell) PAYLOAD='exec bash' ;;
-*) die "用法:$0 [build|vm|shell] [-- mkosi 的额外参数]" ;;
+*) die "用法:$0 [build|vm|vm-bg|ssh|shell] [-- mkosi 的额外参数]" ;;
 esac
 
 # 容器里的准备工作:只装 mkosi 本体与它必须的伙伴。
@@ -113,6 +128,18 @@ mkdir -p "$WS" && chmod 1777 "$WS" || die "无法创建 $WS"
 
 ARGS=(run --rm -it --privileged -v "$PWD:/work" -v "$WS:/var/tmp" -w /work)
 [ -e /dev/kvm ] && ARGS+=(--device /dev/kvm)
+# VSock:mkosi 的 `ssh` 走它(不经过 guest 的网络栈,所以 guest 里 DHCP 坏着也能进)
+if [ -e /dev/vsock ]; then
+    ARGS+=(--device /dev/vsock)
+else
+    log "提示:宿主机没有 /dev/vsock(加载 vhost_vsock / vmw_vsock_virtio_transport 后会有),ssh 模式可能进不去 —— 用控制台密码登录"
+fi
+# vm-bg:后台常驻容器(不带 --rm/-it)。QEMU 不随终端退出而死,才能从另一个终端用 ssh 模式进去。
+if [ "$MODE" = vm-bg ]; then
+    ARGS=(run -d --name keel-vm --privileged -v "$PWD:/work" -v "$WS:/var/tmp" -w /work)
+    [ -e /dev/kvm ] && ARGS+=(--device /dev/kvm)
+    [ -e /dev/vsock ] && ARGS+=(--device /dev/vsock)
+fi
 
 log "引擎:$ENGINE   镜像:$IMAGE   模式:$MODE"
 [ "$(id -u)" = 0 ] || log "提示:没在用 root 跑。若报权限错误,请加 sudo(mkosi 的沙箱需要 CAP_SYS_ADMIN)"

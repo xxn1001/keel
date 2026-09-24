@@ -347,6 +347,14 @@ else
     warn "build-container.sh 没有把 mkosi.workspace 绑到 /var/tmp —— 构建仍会成功,但收尾会退化成复制 14 GiB"
 fi
 
+# test profile 必须是"已知密码",不能是 Autologin(那条路径在 systemd 257 上会死循环,坑 #26)
+if grep -qE '^[[:space:]]*RootPassword=' mkosi.profiles/test.conf \
+   && ! grep -qE '^[[:space:]]*Autologin=' mkosi.profiles/test.conf; then
+    ok "test profile 用 RootPassword(不用 Autologin —— 那条路径会死循环,坑 #26)"
+else
+    no "mkosi.profiles/test.conf 应该是 RootPassword= 且不设 Autologin=(坑 #26)"
+fi
+
 if grep -rn 'common-os' --include='*' . 2>/dev/null | grep -v '^\./\.git/' | grep -v '^\./tools/verify\.sh:' | grep -q .; then
     no "还有残留的旧名字 common-os:"
     grep -rn 'common-os' --include='*' . 2>/dev/null | grep -v '^\./\.git/' | grep -v '^\./tools/verify\.sh:' | head -5 | sed 's/^/      /'

@@ -379,6 +379,26 @@
     ⇒ 现在:cmdline 不挂 ESP;`lib.sh` 用 `bootctl --print-esp-path` 现问路径并导出
     `KEEL_ESP` / `KEEL_UKI_DIR`,所有脚本只用这两个变量(`tools/verify.sh` 会检查没有脚本
     硬编码 `/efi/EFI`)。
+
+26. **mkosi 的 `Autologin=yes` 在本镜像里会变成"登录成功但 shell 秒退"的死循环。**
+    现象(VM 控制台):`Debian GNU/Linux 13 localhost hvc0` + `localhost login: root (automatic login)`
+    每两秒重复一次,**从来不出现 shell 提示符**,也没有任何报错;`journalctl -p warning` 里
+    没有 pam/logind 告警 ⇒ 认证是成功的,死的是登录之后那个 shell 会话。
+    更麻烦的是这个循环会**顶掉**手动输密码的机会(getty 每两秒重开一次)⇒ 一旦出现,控制台就废了。
+    ⇒ `mkosi.profiles/test.conf` 改用 `RootPassword=keel`(mkosi 的 `passwd.hashed-password.root`
+    credential,由 `systemd-firstboot` 在首启时应用)。这条路径**和真机一模一样**(真机用仓库根目录的
+    `mkosi.rootpw`),所以在虚拟机里验证控制台登录 = 验证真机路径。
+    `tools/verify.sh` 有断言:test profile 必须是密码、不许是 Autologin。
+    (未查清:autologin 那条路径的 shell 为什么秒退。真机不受影响 —— 正式产物不带这个 profile。)
+
+27. **虚拟机的 SSH 走 VSock,不走 guest 的网络。**
+    mkosi 的 `ssh` 动词连的是 guest 里 systemd-ssh-generator 起的 `sshd-vsock.socket`
+    (启动日志里有 `Listening on sshd-vsock.socket … AF_VSOCK`),所以**guest 没有网络也能进** ——
+    而 guest 现在正好有网络问题(`systemd-networkd: Failed to configure DHCPv4 client:
+    Package not installed`,待查)。
+    两个前提:宿主机有 `/dev/vsock`;QEMU 进程还活着(mkosi 把 SSH 私钥/CID 记在 `mkosi.output/`,
+    容器之间共享 ✓,但容器一退 QEMU 就没了)⇒ 用 `tools/build-container.sh vm-bg` 起在后台容器里,
+    再用 `… ssh` 进去。
 ---
 
 ## 4. 常用命令
@@ -393,7 +413,9 @@ tools/build.sh --profile desktop     # 变体
 
 # 宿主不是 mkosi 支持的发行版时(NixOS 等):把构建放进容器(见已知的坑 #15)
 sudo tools/build-container.sh        # 构建
-sudo tools/build-container.sh vm     # 构建并在容器里起 QEMU
+sudo tools/build-container.sh vm     # 构建并在容器里起 QEMU(控制台登录:root / keel)
+sudo tools/build-container.sh vm-bg  # 同上,但虚拟机跑在后台容器里(便于 ssh 进去)
+sudo tools/build-container.sh ssh    # 进已经在跑的虚拟机(VSock,不需要 guest 有网)
 sudo tools/build-container.sh shell  # 进容器手敲 mkosi
 
 # 排错第一步:只看配置解析结果,不构建

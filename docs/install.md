@@ -57,11 +57,19 @@
 ### 1.2 启动、退出与追加 QEMU 参数
 
 ```bash
-# --profile test 打开 root 自动登录:发布镜像里 root 密码是锁的、没有你的公钥,
-# 不加它会在 keel login: 上卡住(见 §2.5)
+# --profile test 给 root 设一个已知的测试密码:控制台用 root / keel 登录。
+# 发布镜像里 root 密码是锁的、也没有你的公钥,不加它会卡在 keel login:(见 §2.5)
 sudo mkosi --profile install --profile test --force build   # 改了 profile 就必须 -f
 sudo mkosi --profile install --profile test vm
 ```
+
+> **进虚拟机的两条路**
+> 1. **控制台**(默认):等 `keel login:`,输 `root` / 密码 `keel`。
+>    (以前用的是 mkosi 的 `Autologin=yes`,在 Debian 13 + systemd 257 上会变成"登录成功但 shell 秒退"的
+>    死循环,见 `AGENTS.md` 坑 #26,所以换成了密码。)
+> 2. **`ssh`(guest 不需要有网络,mkosi 走 VSock)**:先在一个终端
+>    `sudo tools/build-container.sh vm-bg` 把虚拟机起在后台容器里,再另开终端
+>    `sudo tools/build-container.sh ssh`。要求宿主机有 `/dev/vsock`(加载 `vhost_vsock`)。
 
 虚拟机里就是一台完整的 keel:`esp` / `root-a` / `root-b` / `volume` 四个分区都在,
 可以在里面练 `os-update`、`os-rescue`、槽切换,不用等真机。
