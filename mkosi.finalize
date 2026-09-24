@@ -118,5 +118,11 @@ ln -s /Volume/var        "$R/var"
 ln -s /Volume/home/root  "$R/root"
 ln -s /Volume/nix        "$R/nix"
 install -d -m 0755 "$R/home"
+# /Volume 本身必须有这个空目录当**挂载点**:它是分区,不是镜像内容。
+# 少了它,`mount … /Volume` 会报 "mount point does not exist",而 /var /root /nix
+# 三个符号链接会指向不存在的路径(实测第一版真机启动就踩了:diag 里
+# `ls -ld /Volume` → No such file or directory)。keel-mounts 里有 install -d 兜底,
+# 但镜像里本来就该有。
+install -d -m 0755 "$R/Volume"
 
 log "完成:/Volume 骨架已生成,/var /root /nix 已改成符号链接"

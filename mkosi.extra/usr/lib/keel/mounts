@@ -1,13 +1,46 @@
 #!/bin/bash
-# keel 启动早期挂载:把 /home 绑到 /Volume/home,并在 /etc 上挂 overlayfs
+# keel 启动早期挂载:挂 /Volume、在 /etc 上挂 overlayfs、把 /home 绑到 /Volume/home
 #
-# 由 keel-mounts.service 调用,必须极早运行(见 AGENTS.md 不变量 1/5、
-# 已知的坑 #8,docs/architecture.md §4.1 §4.3)。
+# 由 keel-mounts.service 调用,必须极早运行(见 AGENTS.md 不变量 1/2/5、
+# 已知的坑 #8/#24,docs/architecture.md §4.1 §4.3)。
 set -euo pipefail
 . /usr/lib/keel/lib.sh
 
+# ---------------------------------------------------------------------------
+# /Volume:必须在这里挂 —— **不能**交给 kernel cmdline 的 systemd.mount-extra
+#
+# 曾经的写法是 cmdline 里 systemd.mount-extra=PARTLABEL=volume:/Volume:ext4:rw,noatime,
+# 真机(VM)实测会死锁,详见 AGENTS.md 坑 #24:
+#   * 该 cmdline 在主系统里生成 Volume.mount 单元,它 Requires/After
+#     dev-disk-by-partlabel-volume.device —— 要等 udev 建出 by-partlabel 符号链接;
+#   * 主系统 udev 要等 systemd-sysusers,而 sysusers 需要**可写的 /etc**;
+#   * 可写的 /etc 是本脚本挂的 overlay(upper/work 在 /Volume 上)⇒ 回到第一点。
+#   * 表现:systemd 破环时丢掉 local-fs-pre.target,udev 被推到 emergency 之后,
+#     所有 by-partlabel 挂载 90s 超时 ⇒ local-fs.target 失败 ⇒ emergency mode。
+# 所以改成自己挂,而且**不依赖 udev**:内核在 /sys 的 uevent 里直接给出 GPT 分区名
+# (PARTNAME=)。blkid 只是兜底(它直接读文件系统超级块,同样不需要 udev)。
+# ---------------------------------------------------------------------------
+keel_find_volume() {
+    local p dev
+    for p in /sys/class/block/*; do
+        [ -r "$p/uevent" ] || continue
+        if grep -qx 'PARTNAME=volume' "$p/uevent" 2>/dev/null; then
+            printf '/dev/%s' "${p##*/}"
+            return 0
+        fi
+    done
+    if command -v blkid >/dev/null 2>&1; then
+        dev=$(blkid -o device -t LABEL=volume 2>/dev/null | head -n1) || dev=
+        if [ -n "$dev" ]; then printf '%s' "$dev"; return 0; fi
+    fi
+    return 1
+}
+
 if ! mountpoint -q /Volume; then
-    keel_die "/Volume 没有挂载。它必须由 initrd 通过 kernel cmdline 的 systemd.mount-extra 挂好(不变量 2),现在这个前提不成立,系统状态不可信"
+    dev=$(keel_find_volume) || keel_die "找不到 PARTNAME=volume / LABEL=volume 的分区,无法挂载 /Volume。系统状态不可信,请用救援盘(os-rescue)检查分区表"
+    install -d -m 0755 /Volume
+    mount -t ext4 -o rw,noatime "$dev" /Volume
+    keel_log "已把 $dev 挂到 /Volume"
 fi
 
 # ---------------------------------------------------------------------------

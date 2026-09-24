@@ -234,7 +234,7 @@ do_repair_boot() {
     if bootctl install; then
         keel_log "bootctl install 完成(systemd-boot + fallback BOOTX64.EFI + NVRAM 启动项)"
     else
-        keel_die "bootctl install 失败。检查:ESP 是否挂在 /efi 且可写(findmnt /efi;mount -o remount,rw /efi)、固件是否允许写 EFI 变量、ESP 上是否有足够的空间。UEFI 下也可以靠 fallback 路径 EFI/BOOT/BOOTX64.EFI 启动。"
+        keel_die "bootctl install 失败。检查:ESP($KEEL_ESP)是否已挂载且可写(findmnt $KEEL_ESP;mount -o remount,rw $KEEL_ESP)、固件是否允许写 EFI 变量、ESP 上是否有足够的空间。UEFI 下也可以靠 fallback 路径 EFI/BOOT/BOOTX64.EFI 启动。"
     fi
     sync
 

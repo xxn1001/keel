@@ -147,13 +147,17 @@ workdir  = /Volume/overlayfs/etc/work
 ```
 ro
 root=PARTLABEL=root-a
-systemd.mount-extra=PARTLABEL=volume:/Volume:ext4:rw,noatime
-systemd.mount-extra=PARTLABEL=esp:/efi:vfat:ro
 amd_iommu=on intel_iommu=on iommu=pt
 ```
 
-- `ro`:根只读。第二条 `systemd.mount-extra` 让 initrd 在 switch_root 前就挂好 `/Volume`,
-  符号链接从用户空间第一个瞬间起就有效(不变量 2)。
+- `ro`:根只读。
+- **刻意没有 `systemd.mount-extra=`**(2026-09 真机实测后删掉的,`AGENTS.md` 坑 #24):
+  那种写法会在主系统生成依赖 udev 符号链接的 `.mount` 单元,而主系统 udev 要等 `systemd-sysusers`,
+  sysusers 要可写的 `/etc`,可写的 `/etc`(overlay)又在 `/Volume` 上 ⇒ 环形依赖 ⇒
+  systemd 丢掉 `local-fs-pre.target`、udev 被推到 emergency 之后、挂载全部 90s 超时 ⇒ emergency mode。
+  ⇒ `/Volume` 由 `keel-mounts.service` 自己挂(扫 `/sys` 的 `PARTNAME=volume`,不依赖 udev);
+  ESP 交给 `systemd-gpt-auto-generator`(挂到 `/boot`;代码里用 `$KEEL_ESP` / `$KEEL_UKI_DIR`)。
+  实测:`root=PARTLABEL=root-a` 在 initrd 里**有效** ✓;`systemd.mount-extra=` 在 initrd 里**不生效** ✗。
 - `amd_iommu=on` / `intel_iommu=on` / `iommu=pt`:对没有对应硬件的机器**无害**,
   但为将来的 GPU 直通铺好路 —— 这正是"cmdline 机器无关超集"策略的示范(`AGENTS.md` 坑 #4)。
 - v1 **不加 `quiet`**:首次在真机上跑,能看见启动日志比"干净"重要。
@@ -429,7 +433,7 @@ keel/
 
 | # | 假设 | 若不成立的退路 |
 |---|---|---|
-| 1 | `root=PARTLABEL=root-a` 与 `systemd.mount-extra=PARTLABEL=volume:...` 在 initrd 里能被解析 | 改用 mkosi 的 `root=PARTUUID` 自动替换 + 固定 `Seed=` 让 PARTUUID 跨构建稳定 |
+| 1 | ~~`root=PARTLABEL=root-a` 与 `systemd.mount-extra=PARTLABEL=volume:...` 在 initrd 里能被解析~~ **已实测(2026-09,VM)**:前者 ✓ 有效;后者 ✗ 在 initrd 里根本不生效,在主系统里会因 udev 依赖成环而死锁 ⇒ 已改设计(见 §5.1 与 `AGENTS.md` 坑 #24) | 不需要退路:改成了 `keel-mounts` 自己扫 `PARTNAME=` 挂载 |
 | 2 | `systemd-sysupdate` 的 `Type=partition` transfer 能按双槽布局匹配"当前未使用的那个分区" | **v1 已经绕开**:`os-update` 直接写盘;将来验证通过再换底层,门面接口不变 |
 | 3 | `/usr/lib/firmware/{amd,intel}-ucode` 被 mkosi 正确前置进 UKI | 手工用 `ukify --microcode` 或 `io.mkosi.microcode` 工件目录 |
 | 4 | 移除 `initramfs-tools` / `RemoveFiles=/boot/vmlinuz-*` 之后内核包安装不报错、mkosi 仍能找到 vmlinuz | 保留 `initramfs-tools`,只靠 `RemoveFiles` 清 /boot |

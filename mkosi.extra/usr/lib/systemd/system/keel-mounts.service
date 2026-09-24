@@ -1,14 +1,20 @@
 [Unit]
-Description=keel: bind /home and mount the /etc overlay
+Description=keel: mount /Volume, mount the /etc overlay, bind /home
 Documentation=file:/usr/share/doc/keel/architecture.md
 # 必须极早运行,并且排在所有会读写 /etc 的单元之前(AGENTS.md 已知的坑 #8):
 # systemd-sysusers / tmpfiles / machine-id-commit 都要读 /etc,
 # 而机器专属的配置只存在于 /Volume 上的 overlay upper 里。
 DefaultDependencies=no
-# /Volume 由 initrd 通过 kernel cmdline 的 systemd.mount-extra 挂好(不变量 2),
-# 这里只是把依赖写清楚,确保顺序。
-RequiresMountsFor=/Volume
+# **刻意不写 RequiresMountsFor=/Volume**(坑 #24):
+# 那会引入 Volume.mount(它要等 udev 建出 by-partlabel 符号链接),
+# 而 udev 又要等 sysusers —— 而 sysusers 被本单元排在后面(需要可写的 /etc)
+# ⇒ 循环依赖,systemd 会丢掉 local-fs-pre.target,udev 被推迟到 emergency 之后,
+# 所有 by-partlabel 挂载 90s 超时 ⇒ emergency mode(真机实测)。
+# 现在 /Volume 由本单元自己挂(见 /usr/lib/keel/mounts,扫 /sys 的 PARTNAME,不依赖 udev)。
 After=systemd-remount-fs.service
+# random-seed 要读写 /var/lib/systemd/random-seed,而 /var 是指向 /Volume 的符号链接
+# ⇒ 必须排在它前面,否则它会往悬空符号链接上写然后失败(坑 #24 的副作用之一)。
+Before=systemd-random-seed.service
 Before=sysinit.target shutdown.target
 Before=systemd-sysusers.service
 Before=systemd-tmpfiles-setup.service

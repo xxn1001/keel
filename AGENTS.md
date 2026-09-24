@@ -39,10 +39,19 @@
    根分区以 `ro` 挂载;`/var`、`/root`、`/nix` 是指向 `/Volume` 的符号链接,`/home` 是真目录 + bind mount
    (符号链接会破坏 `ProtectHome=` 的沙箱语义,所以 `/home` 是唯一的例外)。
 
-2. **`/Volume` 必须由 initrd 挂载,且早于 switch_root。**
-   符号链接无法参与挂载顺序约束,不能靠"启动后再挂"。做法是写进 UKI 的 kernel cmdline:
-   `systemd.mount-extra=PARTLABEL=volume:/Volume:ext4:rw,noatime`
-   (`systemd-fstab-generator` 在主系统和 initrd 里都会解析它,initrd 里自动加 `/sysroot/` 前缀。)
+2. **`/Volume` 必须在用户空间刚起来时就已挂好,且挂载过程不能依赖 udev。**
+   符号链接无法参与挂载顺序约束,不能靠"启动后再挂" —— `/var` `/root` `/nix` 都是指向 `/Volume` 的
+   符号链接,挂晚了早期服务(random-seed、journald、tmpfiles)就会往悬空链接上写。
+   **实现方式(踩过坑 #24,2026-09 真机实测后改的)**:由 `keel-mounts.service`(在 `sysinit` 之前)
+   自己扫 `/sys/class/block/*/uevent` 里的 `PARTNAME=volume` 找到分区并 `mount`。
+   **不要**改回 kernel cmdline 的 `systemd.mount-extra=PARTLABEL=volume:/Volume:...`:
+   那会在主系统里生成 `Volume.mount`,它要等 udev 建出 `/dev/disk/by-partlabel/*`;
+   而 udev 要等 `systemd-sysusers`,sysusers 要可写的 `/etc`,可写的 `/etc` 又是挂在 `/Volume`
+   上的 overlay ⇒ 环形依赖 ⇒ systemd 丢掉 `local-fs-pre.target`、udev 被推到 emergency 之后、
+   所有 by-partlabel 挂载 90 秒超时 ⇒ emergency mode。
+   (当时的假设是"initrd 会帮忙挂" —— 实测**不会**:initrd 里根本没有我们的文件,也没挂 `/Volume`。)
+   ESP 同理:交给 `systemd-gpt-auto-generator` 自动挂(`/boot` 或 `/efi`,取决于镜像里哪个目录存在),
+   代码里一律用 `$KEEL_ESP` / `$KEEL_UKI_DIR`(`lib.sh` 里用 `bootctl --print-esp-path` 现问,坑 #25)。
 
 3. **每个槽一个完整 UKI,内核与根文件系统永远配对。**
    切换槽 = 换整个 UKI(内核 + initrd + `root=` + 微码都在里面)。绝不允许"新内核 + 旧根"的组合 ——
@@ -196,7 +205,7 @@
 14. **`GrowFileSystem=yes` 只扩分区,不扩文件系统。**
     systemd-repart 从不改动**已存在**分区的文件系统(源码 `context_mkfs()` 对已存在分区直接 continue);
     `GrowFileSystem=` 只是打一个 GPT 标志位,而那个标志只被 `systemd-gpt-auto-generator` 消费 ——
-    我们的 `/Volume` 是 cmdline 里 `systemd.mount-extra=` 显式挂载的,**根本不过 gpt-auto-generator**。
+    我们的 `/Volume` 是自己用 `mount` 挂的(不变量 2),**根本不过 gpt-auto-generator**。
     ⇒ 扩容必须两步:`systemd-repart` 扩分区 + `systemd-growfs /Volume` 扩文件系统
     (两处都已实现:首启的 `keel-firstboot` 与 `os-rescue --grow-volume`)。
     另外 `systemd-growfs` 对 ext4 会调 `resize2fs`,所以 `e2fsprogs` **必须**在包清单里。
@@ -328,6 +337,48 @@
     顺带纠正一个曾经的错误说法:`-f` **不是**"删掉已构建的镜像重来",它只重建输出、
     保留增量缓存(`mkosi.cache/`);要连缓存一起删才是 `-ff`。
     (与坑 #19 的关系:那条说的是"跑 `vm` 前要先 `build`",这条说的是"`build` 得真的建东西"。)
+
+24. **`systemd.mount-extra=PARTLABEL=…` 会让早期启动死锁:它依赖 udev,而 udev 依赖可写的 `/etc`,可写的 `/etc` 又依赖 `/Volume`。**
+    这是**第一次真机(VM)启动**抓到的,整条链是:
+    ```
+    keel-mounts(Before=sysusers,需要可写的 /etc,而 /etc overlay 的 upper 在 /Volume)
+        → RequiresMountsFor=/Volume → Volume.mount
+        → Requires/After dev-disk-by-partlabel-volume.device(要 udev 建符号链接)
+        → systemd-udevd(After=systemd-sysusers)
+        → systemd-sysusers(要写 /etc)
+        → 回到 keel-mounts  ✗ 环
+    ```
+    systemd 破环时丢掉了 `local-fs-pre.target`(启动日志里就是那行
+    `[ SKIP ] Ordering cycle found, skipping local-fs-pre.target`),于是 udev 被推迟到
+    **emergency 之后**才启动,所有 `by-partlabel` 挂载等满 90 秒超时:
+    ```
+    [ TIME ] Timed out waiting for device dev-disk-by-partlabel-volume.device - /dev/disk/by-partlabel/volume.
+    [DEPEND] Dependency failed for Volume.mount - /Volume.
+    [DEPEND] Dependency failed for local-fs.target - Local File Systems.
+    [DEPEND] Dependency failed for keel-mounts.service …
+    ```
+    ⇒ local-fs 失败 ⇒ **emergency mode**;连带 `systemd-random-seed`(往悬空的 `/var` 符号链接写)、
+    `systemd-timesyncd` 一起失败。
+    顺带证伪了两个曾经的假设:
+    - **initrd 并不会帮我们挂 `/Volume`**:cmdline 里的 `systemd.mount-extra` 在 initrd 阶段没有生成
+      `/sysroot/Volume`(把 initrd 从 UKI 里抽出来看,里面根本没有我们的文件,也没有任何 `/Volume` 挂载动作);
+    - 而 `root=PARTLABEL=root-a` 在 initrd 里**是**有效的(`Found device …root-a.device` ✓)。
+    ⇒ 现在的做法见不变量 2:keel-mounts 自己扫 `/sys` 的 `PARTNAME=` 挂 `/Volume`(不经过 udev、
+    不生成 `.mount` 单元),`keel-mounts.service` 里加 `Before=systemd-random-seed.service`,
+    cmdline 里**不再有** `systemd.mount-extra`。`tools/verify.sh` 有正反两条断言守着。
+    **教训**:早期启动里任何"要等 udev"的东西,都要先问一句"udev 自己能不能起来"。
+
+25. **ESP 挂在哪由 gpt-auto 决定,不要硬编码 `/efi`。**
+    ESP 是 Discoverable Partitions 类型,`systemd-gpt-auto-generator` 会自动挂载它 ——
+    挂到 `/boot` 还是 `/efi` 取决于镜像里哪个目录存在(规则是 `/boot` 优先)。
+    我们的镜像里两个空目录都有(构建期 mkosi 用 `/efi`,finalize 又建了 `/boot`),
+    实测 gpt-auto 选了 **`/boot`**(而且它建的是 `boot.automount`,按需挂载、不会拖垮 local-fs ✓)。
+    于是原来 cmdline 里那条 `systemd.mount-extra=PARTLABEL=esp:/efi:vfat:ro` 不但多余,
+    还因为依赖 udev 符号链接而失败(坑 #24 的受害者之一),并且它是 `ro` 的 ——
+    而 boot counting / `bootctl set-preferred` / `os-update` 都需要**可写**的 ESP。
+    ⇒ 现在:cmdline 不挂 ESP;`lib.sh` 用 `bootctl --print-esp-path` 现问路径并导出
+    `KEEL_ESP` / `KEEL_UKI_DIR`,所有脚本只用这两个变量(`tools/verify.sh` 会检查没有脚本
+    硬编码 `/efi/EFI`)。
 ---
 
 ## 4. 常用命令
@@ -374,6 +425,9 @@ sudo tools/burn.sh /dev/nvme0n1
 
 ### 下一步要验证的事(结论回写到 `docs/architecture.md` §13.1)
 
-1. `root=PARTLABEL=` 与 `systemd.mount-extra=PARTLABEL=...` 在 initrd 里的解析(有把握,但要真跑一次)。
+1. ~~`root=PARTLABEL=` 与 `systemd.mount-extra=PARTLABEL=...` 在 initrd 里的解析~~
+   **已实测(2026-09,VM)**:`root=PARTLABEL=` 在 initrd 里有效 ✓;
+   `systemd.mount-extra=PARTLABEL=volume:/Volume:…` 在 initrd 里**不会被挂载** ✗,
+   在主系统里会挂但依赖 udev ⇒ 造成启动死锁。结论已回写到不变量 2 与坑 #24。
 2. `systemd-sysupdate` 的 `Type=partition` transfer 对双槽布局的匹配语义(验证通过后换掉 v1 的直接写盘)。
 3. `/usr/lib/modules/<kver>` 挂 overlay 后 `depmod` + 模块加载的实际行为(为"第三方内核模块外置"做准备)。

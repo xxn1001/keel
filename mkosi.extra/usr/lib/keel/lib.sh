@@ -14,8 +14,28 @@ KEEL_CONFIG="$KEEL_STATE_DIR/config"
 KEEL_STATE="$KEEL_STATE_DIR/state"
 KEEL_SCHEMA_FILE="$KEEL_STATE_DIR/schema-version"
 KEEL_OTA=/Volume/ota
-KEEL_ESP=/efi
-KEEL_UKI_DIR=/efi/EFI/Linux
+
+# ESP 挂载点:**不硬编码 /efi**。
+# ESP 由 systemd-gpt-auto-generator 自动挂载,挂到 /boot 还是 /efi 取决于镜像里
+# 哪个目录存在(DPS 规则:/boot 存在就挂 /boot)—— 实测我们镜像里两个空目录都有,
+# 它选了 /boot。所以现问 bootctl(它自己也按同样的规则找),失败再探测常见路径。
+# 见 AGENTS.md 坑 #25。
+keel_esp() {
+    local p=
+    if command -v bootctl >/dev/null 2>&1; then
+        p=$(bootctl --print-esp-path 2>/dev/null) || p=
+    fi
+    if [ -z "$p" ] || [ ! -d "$p" ]; then
+        for p in /boot /efi /boot/efi; do
+            if [ -d "$p/EFI" ] || mountpoint -q "$p" 2>/dev/null; then break; fi
+            p=
+        done
+    fi
+    printf '%s' "${p:-/boot}"
+}
+
+KEEL_ESP=$(keel_esp)
+KEEL_UKI_DIR="$KEEL_ESP/EFI/Linux"
 
 keel_log() { printf 'keel: %s\n' "$*" >&2; }
 keel_die() { printf 'keel: 错误:%s\n' "$*" >&2; exit 1; }

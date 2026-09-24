@@ -141,10 +141,17 @@ for p in $PROFILES; do
     else
         ok "--profile $p:cmdline 恰好指向 ${WANT_SLOT[$p]}"
     fi
-    # ro 与两条 mount-extra 是承重墙,不能丢
-    for needle in 'Kernel Command Line: ro' 'PARTLABEL=volume:/Volume' 'PARTLABEL=esp:/efi'; do
-        if grep -qE "$needle" "$s/s"; then :; else no "--profile $p:cmdline 缺少 $needle"; fi
-    done
+    # ro 是承重墙,不能丢。
+    grep -qE 'Kernel Command Line: ro' "$s/s" || no "--profile $p:cmdline 缺少 ro"
+    # 反向断言:cmdline 里**不能**再出现 systemd.mount-extra(坑 #24)。
+    # 它会在主系统里生成依赖 udev 符号链接的 .mount 单元,而 udev 要等 sysusers、
+    # sysusers 要等可写的 /etc、/etc overlay 又要等 /Volume ⇒ 循环 ⇒ emergency。
+    # /Volume 现在由 keel-mounts.service 自己挂,ESP 交给 gpt-auto。
+    if grep -qE 'systemd\.mount-extra=' "$s/s"; then
+        no "--profile $p:cmdline 里还有 systemd.mount-extra(会引入 udev 依赖环,坑 #24)"
+    else
+        ok "--profile $p:cmdline 没有 systemd.mount-extra(不会引入 udev 依赖环)"
+    fi
 done
 
 # ---------------------------------------------------------------------------
@@ -262,6 +269,48 @@ if grep -q "$skel_repart" mkosi.finalize; then
     ok "骨架路径 $skel_repart 在 finalize 里也出现"
 else
     no "骨架路径 $skel_repart 只在 repart 定义里出现,finalize 没有生成它"
+fi
+
+# ---- /Volume 与 ESP 的挂载方式(坑 #24 / #25)---------------------------------
+# /Volume 不能再靠 cmdline 的 systemd.mount-extra(依赖 udev 符号链接 ⇒ 与 /etc overlay 成环),
+# 必须由 keel-mounts.service 自己挂,而且不能通过 .mount 单元引入依赖。
+if grep -qE '^[[:space:]]*RequiresMountsFor=/Volume' mkosi.extra/usr/lib/systemd/system/keel-mounts.service; then
+    no "keel-mounts.service 里有 RequiresMountsFor=/Volume —— 会拉进依赖 udev 的 Volume.mount,重新造出依赖环(坑 #24)"
+else
+    ok "keel-mounts.service 没有 RequiresMountsFor=/Volume(不会引入 udev 依赖环)"
+fi
+
+if grep -q 'PARTNAME=volume' mkosi.extra/usr/lib/keel/mounts; then
+    ok "/usr/lib/keel/mounts 用 sysfs 的 PARTNAME 找 volume(不依赖 udev)"
+else
+    no "/usr/lib/keel/mounts 没有 PARTNAME=volume 的查找逻辑 —— /Volume 就挂不上了"
+fi
+
+if grep -q 'Before=systemd-random-seed.service' mkosi.extra/usr/lib/systemd/system/keel-mounts.service; then
+    ok "keel-mounts 排在 systemd-random-seed 之前(/var 符号链接此时已有效)"
+else
+    no "keel-mounts 没有排在 systemd-random-seed 之前 —— 它会往悬空的 /var 符号链接写随机种子然后失败(坑 #24)"
+fi
+
+# /Volume 是分区挂载点,镜像树里必须有这个空目录(否则 mount 报 mount point does not exist)
+if grep -qE '^[[:space:]]*install -d .*"\$R/Volume"' mkosi.finalize; then
+    ok "mkosi.finalize 建了 /Volume 挂载点目录"
+else
+    no "mkosi.finalize 没有建 /Volume 目录 —— 运行时挂载会失败(坑 #24)"
+fi
+
+# ESP 路径不能硬编码:gpt-auto 挂到 /boot 还是 /efi 取决于镜像里哪个目录存在。
+if grep -q 'bootctl --print-esp-path' mkosi.extra/usr/lib/keel/lib.sh; then
+    ok "lib.sh 用 bootctl --print-esp-path 现问 ESP 路径(不硬编码 /efi)"
+else
+    no "lib.sh 没有用 bootctl --print-esp-path 探测 ESP —— gpt-auto 挂到 /boot 时所有 ESP 操作都会失败(坑 #25)"
+fi
+
+if grep -rn '/efi/EFI' mkosi.extra/usr/bin mkosi.extra/usr/lib/keel 2>/dev/null | grep -v 'lib.sh' | grep -q .; then
+    no "有脚本硬编码 /efi/EFI 路径(应该用 \$KEEL_UKI_DIR):"
+    grep -rn '/efi/EFI' mkosi.extra/usr/bin mkosi.extra/usr/lib/keel 2>/dev/null | grep -v 'lib.sh' | head -5 | sed 's/^/      /'
+else
+    ok "没有脚本硬编码 /efi/EFI(都用 \$KEEL_UKI_DIR)"
 fi
 
 # mkosi 不允许 workspace 位于任何 BuildSources 之内,而 BuildSources= 的默认值就是配置目录本身。
