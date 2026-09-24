@@ -9,6 +9,10 @@ set -euo pipefail
 . /usr/lib/keel/lib.sh
 
 SWAP=/Volume/keel/swapfile
+# 先写到 .new 再改名:创建中途失败(空间不够、被 kill)绝不留下一个半截的 $SWAP
+SWAP_NEW="$SWAP.new"
+# 最小可接受的 swap 大小;可用空间连它都放不下就干脆不做(不能失败 —— 见下面注释)
+MIN_SWAP=$((256 * 1024 * 1024))
 
 # 默认大小:min(内存, 8G),但不小于 1G
 default_size_bytes() {
@@ -35,18 +39,67 @@ wanted_size_bytes() {
     esac
 }
 
+# /Volume 上真正可用的字节数(swapfile 与 /etc overlay 的 upper、journal 抢同一块盘)
+volume_avail_bytes() {
+    local v
+    v=$(df -P -B1 /Volume 2>/dev/null | awk 'NR==2 {print $4}') || v=""
+    case "$v" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$v" ;; esac
+}
+
 case "${1:-start}" in
 start)
     sz=$(wanted_size_bytes) || keel_die "SWAPFILE_SIZE 格式不认识(支持 4G / 4096M / 字节数)"
+
+    # -----------------------------------------------------------------------
+    # 上限:最多用掉可用空间的一半
+    #
+    # 为什么必须限:**live 镜像的 volume 分区只有 1 GiB**(14 GiB 的镜像里
+    # esp 1G + root-a 6G + root-b 6G 之后就没剩多少了),而默认大小是按内存算的
+    # (VM 里 1.9G)。实测后果不是"swap 没建成"这么简单:
+    #   swapfile[664]: dd: error writing '/Volume/keel/swapfile': No space left on device
+    # 半个 swapfile 把 /Volume 填满 ⇒ **/etc overlay 的 upper 再也写不进去**
+    # (连往 /etc 里新建一个文件都 ENOSPC)⇒ 首启的机器专属配置、SSH 主机密钥
+    # 全都写不下去。所以在创建之前就按可用空间把大小压下来。
+    # 另外:空间不够**不是**错误(1 GiB 的 live volume 本来就不该有 swap),
+    # 但单元失败会让人以为系统坏了 —— 所以走"记一笔、正常退出"。
+    # -----------------------------------------------------------------------
+    avail=$(volume_avail_bytes)
+    cap=$(( avail / 2 ))
+    if [ "$cap" -lt "$MIN_SWAP" ]; then
+        keel_log "/Volume 可用空间只有 $(( avail / 1048576 )) MiB,放不下最小的 swap($(( MIN_SWAP / 1048576 )) MiB)"
+        keel_log "      ⇒ 本次不创建 swap(这不是故障;装到真机、volume 扩到整盘后会自动建)"
+        exit 0
+    fi
+    if [ "$sz" -gt "$cap" ]; then
+        keel_log "请求的 swap 是 $(( sz / 1048576 )) MiB,但 /Volume 只有 $(( avail / 1048576 )) MiB 可用"
+        keel_log "      ⇒ 按 $(( cap / 1048576 )) MiB 创建(上限=可用空间的一半)"
+        sz=$cap
+    fi
+
+    # 上次跑到一半留下的半截文件(没有 swap 签名)必须先清掉,否则它会一直占着地方
+    if [ -e "$SWAP" ] && ! blkid -p -o value -s TYPE "$SWAP" 2>/dev/null | grep -qx swap; then
+        keel_log "$SWAP 不是有效的 swap(上次创建失败留下的?),删掉重建"
+        rm -f "$SWAP"
+    fi
+
     if [ ! -e "$SWAP" ]; then
         keel_log "创建 $SWAP($sz 字节),这一步可能要几十秒"
-        # ext4 上 fallocate 会分配真实块(不是空洞),swapon 才能接受
-        if ! fallocate -l "$sz" "$SWAP" 2>/dev/null; then
-            dd if=/dev/zero of="$SWAP" bs=1M count=$(( sz / 1048576 )) status=none
+        rm -f "$SWAP_NEW"
+        # 失败就把半截文件删掉再报错 —— 留着它会把 /Volume 填满(上面那段注释)
+        if ! fallocate -l "$sz" "$SWAP_NEW" 2>/dev/null; then
+            if ! dd if=/dev/zero of="$SWAP_NEW" bs=1M count=$(( sz / 1048576 )) status=none; then
+                rm -f "$SWAP_NEW"
+                keel_die "创建 $SWAP 失败(空间不够?)—— 已清掉半截文件"
+            fi
         fi
-        chmod 0600 "$SWAP"
-        mkswap "$SWAP" >/dev/null
+        chmod 0600 "$SWAP_NEW"
+        if ! mkswap "$SWAP_NEW" >/dev/null; then
+            rm -f "$SWAP_NEW"
+            keel_die "mkswap $SWAP 失败(文件系统不支持 swapfile?)"
+        fi
+        mv "$SWAP_NEW" "$SWAP"
     fi
+
     if ! swapon --show=NAME --noheadings 2>/dev/null | grep -qx "$SWAP"; then
         swapon "$SWAP"
         keel_log "已启用 swap($SWAP)"

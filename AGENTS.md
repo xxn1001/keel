@@ -647,6 +647,33 @@
     (必须 **rw**:boot counting / `bootctl set-preferred` / 写新 UKI 都要写),并且 `keel_esp()`
     要验证"这个路径真的是挂载点",不成立就明确报错或自救(`os-rescue --repair-boot`),
     **不要在空目录上静默继续** —— 那是这次最坑的地方:每一步都"成功",结果全落空。
+
+37. **live 镜像的 `/Volume` 只有 1 GiB,而 swapfile 的大小是按内存算的 ⇒ 半个 swapfile 把 `/Volume` 填满,`/etc` overlay 跟着写不进去。**
+    现象(2026-09,VM 自检里看到的):
+    ```
+    swapfile[664]: keel: 创建 /Volume/keel/swapfile(1999101952 字节),这一步可能要几十秒
+    swapfile[696]: dd: error writing '/Volume/keel/swapfile': No space left on device
+    systemd[1]: Failed to start keel-swapfile.service …
+    # 紧接着自检的 /etc 可写性探针也失败:
+    selftest: WRITE_FAIL(/etc 写不进去,keel-mounts 挂的 overlay 有问题)
+    ```
+    原因:14 GiB 的安装镜像里 `esp 1G + root-a 6G + root-b 6G`,留给 `volume` 的只剩 1 GiB,
+    而 `keel-firstboot` 的扩容在 live 环境里没得扩(镜像自己没剩余空间)⇒ `/Volume` 一直 1 GiB。
+    swapfile 默认 `min(内存, 8G)`(VM 里 1.9G)直接写下去,dd 写到一半 ENOSPC,`set -e` 让单元失败,
+    **半截文件留在盘上把 /Volume 占满** —— 而 `/etc` overlay 的 upper 就在同一个文件系统上
+    ⇒ 之后往 `/etc` 写任何东西都 ENOSPC(机器专属配置、SSH 主机密钥全会静默失败)。
+    更糟的是下一轮启动还在这坑里打转:文件已存在 ⇒ 跳过创建 ⇒ 直接 `swapon` 一个没有签名的
+    半截文件 ⇒ 又失败,而且不清理。
+    ⇒ 现在的 `/usr/lib/keel/swapfile`:
+    1. 创建前用 `df -P -B1 /Volume` 取可用空间,**最多用一半**;请求值超过上限就压到上限并记日志;
+    2. 可用空间连 256 MiB 都不到就**正常退出**(只记一笔),不让单元变红 ——
+       1 GiB 的 live volume 本来就不该有 swap,装到真机、volume 扩到整盘后会自动建;
+    3. 先写 `$SWAP.new`、`mkswap` 成功后才 `mv` 成正式文件;任何一步失败都 `rm -f` 半截文件;
+       已存在的文件若没有 swap 签名(上次失败的遗留)先删掉重建。
+    `tools/verify.sh` 有断言。**教训**:① 只读根 + overlay 的系统里 **`/Volume` 写满 = `/etc` 也写不进去**,
+    任何"一次性写一大块"的脚本(swapfile、下载、日志)都必须先问可用空间;
+    ② "创建大文件"要"先写临时文件、成功再改名",否则失败会留下垃圾并且**每次启动都继续坏下去**。
+
 ---
 
 ## 4. 常用命令
@@ -711,8 +738,13 @@ sudo tools/burn.sh /dev/nvme0n1
 6. **ESP 在装机后的系统里没挂上**(`os-status` 报 `/boot/EFI/Linux` 不存在、`上次启动结果: 无记录`,
    而系统确实是从那块盘启动的)。已挂账到坑 #36 —— 后果是"写新 UKI / 切槽 / 启动成功确认"
    这条 A/B 更新的链目前是**断的**。诊断命令与候选修法都写在坑 #36 里,排在 DHCP 之后解决。
-7. **networkd 原生 DHCP 真能拿到租约**(坑 #29 的复验,已随本轮改动一起在 VM 里验)—— 期望:
-   `/etc/machine-id` 是 32 位十六进制(machine-id 补齐生效)、`networkctl status <if>` 的 `State`
-   是 `routable`、DNS 由 networkd 交给 resolved、`os-status` 的「网络」一节有地址;
-   并且镜像里**没有** dhcpcd(`command -v dhcpcd` 无输出)。复验用的自检在 test profile 里
-   (`mkosi.extra-test/`,`keel-selftest.service` 把结果打到控制台)。
+7. ~~**networkd 原生 DHCP 真能拿到租约**~~ **已实测通过(2026-09,VM,坑 #29 修好后)**:
+   `keel-mounts` 日志 `已固化 machine-id(取自 PID1 本次启动使用的 ID)` + `machine-id = f9324ac0…`;
+   `networkctl list` → `enp0s1 ether routable configured`,`networkctl status` →
+   `Address: 10.0.2.15 (DHCPv4 via 10.0.2.2)`、`Gateway: 10.0.2.2`、`DNS: 10.0.2.3`、
+   `DHCPv4 Client ID: IAID:0xf1f5dd7f/DUID`、`DHCPv6 Client DUID: DUID-EN/…`;
+   `resolvectl` → `DNS Servers: 10.0.2.3` + `Default Route: yes`;
+   networkd 日志 `enp0s1: DHCPv4 address 10.0.2.15/24, gateway 10.0.2.2 acquired from 10.0.2.2`,
+   **全程没有 ENOPKG**,连跑 10 轮(200 秒)状态稳定。复验入口就是 test profile 里的
+   `mkosi.extra-test/`(`keel-selftest.service` 把现场打到控制台)。
+   同轮 VM 顺手抓到坑 #37(live 镜像 volume 只有 1 GiB + swapfile 写满 ⇒ `/etc` 也写不进去),已修。

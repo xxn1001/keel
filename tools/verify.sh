@@ -599,6 +599,18 @@ for u in keel-mounts keel-firstboot keel-confirm keel-swapfile; do
 done
 ok "preset 覆盖了四个 keel 单元"
 
+# swapfile:必须按 /Volume 的可用空间给自己设上限,而且不能留下半截文件。
+# 教训(2026-09,VM 实测):live 镜像的 volume 只有 1 GiB,而默认大小按内存算(1.9G)
+# ⇒ dd 写到 ENOSPC,半个 swapfile 把 /Volume 填满 ⇒ /etc overlay 的 upper 再也写不进去。
+if grep -q 'df -P -B1 /Volume' mkosi.extra/usr/lib/keel/swapfile \
+   && grep -q 'SWAP_NEW' mkosi.extra/usr/lib/keel/swapfile \
+   && grep -q 'rm -f "$SWAP_NEW"' mkosi.extra/usr/lib/keel/swapfile \
+   && grep -q 'MIN_SWAP' mkosi.extra/usr/lib/keel/swapfile; then
+    ok "swapfile 按可用空间设上限(一半),中途失败会清掉半截文件、空间不足时不报错"
+else
+    no "swapfile 脚本缺少「按可用空间设上限 / 失败清理半截文件」的逻辑(live 镜像会把 /Volume 写满)"
+fi
+
 # ---------------------------------------------------------------------------
 printf '\n\033[1m结果: %d 通过, %d 失败' "$pass" "$fail"
 [ "$skipped" -gt 0 ] && printf ', %d 跳过' "$skipped"
