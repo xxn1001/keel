@@ -9,7 +9,7 @@
 #   dist/keel-<version>/slot-b.uki.efi
 #   dist/keel-<version>/manifest          os-update 消费的 key=value 清单(含 sha256)
 #
-# 版本号来自 mkosi.version,由第一次构建的 -B 自动 bump(docs/architecture.md §6)。
+# 版本号来自可执行的 mkosi.version(时间戳),见 docs/architecture.md §6。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT=mkosi.output
@@ -26,26 +26,23 @@ if [ -x tools/verify.sh ]; then
     tools/verify.sh || die "静态校验没过,先修好再来构建"
 fi
 
-if [ ! -e mkosi.version ]; then
-    echo 1 >mkosi.version
-    log "已创建 mkosi.version = 1"
-fi
-VERSION_OLD=$(cat mkosi.version)
+# 版本号来自可执行的 mkosi.version(打印时间戳),不用 -B 自动 bump:
+# 那会改写一个被 git 跟踪的文件 ⇒ 工作区变脏、git pull 冲突(真机上踩过)。
+VERSION=$(./mkosi.version 2>/dev/null | head -1)
+[ -n "$VERSION" ] || die "mkosi.version 没有输出(它应该是一个可执行脚本,打印版本号)"
+log "本次版本:$VERSION"
 
 # 缓存目录先建出来:mkosi.conf 里已经显式指定了路径,这里只是保险
 # (mkosi 25.x 在没有缓存目录时会拒绝 Incremental=yes)。
 mkdir -p mkosi.cache mkosi.pkgcache mkosi.output
 
-# 第一个 profile 带 -B:构建成功才把新版本号写回 mkosi.version
-log "构建 install 镜像(会自动 bump 版本)"
-mkosi --profile install -B build
-VERSION=$(cat mkosi.version)
-log "本次版本:$VERSION_OLD → $VERSION"
-
+# 三个 profile 显式传同一个 --image-version,保证 dist/ 目录名和镜像里的 VERSION_ID 一致
+log "构建 install 镜像"
+mkosi --profile install --image-version "$VERSION" build
 log "构建 slot-a 载荷"
-mkosi --profile slot-a build
+mkosi --profile slot-a --image-version "$VERSION" build
 log "构建 slot-b 载荷"
-mkosi --profile slot-b build
+mkosi --profile slot-b --image-version "$VERSION" build
 
 # ---------------------------------------------------------------------------
 # 组装 dist/
