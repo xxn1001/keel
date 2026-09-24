@@ -125,4 +125,24 @@ install -d -m 0755 "$R/home"
 # 但镜像里本来就该有。
 install -d -m 0755 "$R/Volume"
 
+# ---------------------------------------------------------------------------
+# 3) 运行时**彻底**没有包管理器(决策 D10)
+#
+# apt 由 RemovePackages= 拿掉了,但 dpkg 是 Essential:yes,apt 拒绝删;而 RemoveFiles=
+# 对 glob 的处理在不同 mkosi 版本上不一致(实测镜像里仍能看到 dpkg-deb 等)。
+# 所以在最后一步显式删,并且**删不干净就让构建失败** —— 静默残留比构建失败糟得多。
+# ---------------------------------------------------------------------------
+for f in dpkg dpkg-deb dpkg-divert dpkg-maintscript-helper dpkg-query \
+         dpkg-realpath dpkg-split dpkg-statoverride dpkg-trigger; do
+    rm -f "$R/usr/bin/$f"
+done
+rm -rf "$R/usr/share/dpkg" "$R/usr/lib/dpkg" "$R/var/lib/dpkg" "$R/var/log/dpkg.log"
+left=$(ls "$R/usr/bin"/dpkg* 2>/dev/null || true)
+if [ -n "$left" ]; then
+    echo "keel: 错误:仍残留 dpkg 工具链:$left" >&2
+    exit 1
+fi
+log "已清掉 dpkg 工具链(镜像里没有 apt/dpkg,决策 D10)"
+
+
 log "完成:/Volume 骨架已生成,/var /root /nix 已改成符号链接"

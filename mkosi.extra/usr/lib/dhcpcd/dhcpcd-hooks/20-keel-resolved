@@ -1,0 +1,8 @@
+#!/bin/sh
+# keel:把 dhcpcd 拿到的 DNS 交给 systemd-resolved(保持 /etc/resolv.conf → stub)
+# 由 dhcpcd 在绑定/续租时调用,hook 里可用的变量见 dhcpcd-run-hooks(8)。
+if [ -n "${new_domain_name_servers:-}" ]; then
+    resolvectl dns "$interface" $new_domain_name_servers 2>/dev/null || true
+    resolvectl domain "$interface" "~." 2>/dev/null || true
+    resolvectl default-route "$interface" yes 2>/dev/null || true
+fi

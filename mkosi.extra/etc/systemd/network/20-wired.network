@@ -7,4 +7,4 @@ Name=en*
 Name=eth*
 
 [Network]
-DHCP=yes
+DHCP=no                     # DHCP 交给 dhcpcd(坑 #29)

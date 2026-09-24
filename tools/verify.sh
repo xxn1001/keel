@@ -381,12 +381,21 @@ else
     no "包清单缺 login —— agetty exec /bin/login 失败,控制台登录提示会每两秒重开(坑 #28)"
 fi
 
-# 运行时不能有 dpkg 工具链(决策 D10):apt 由 RemovePackages= 删,dpkg 是 Essential
-# 只能靠 RemoveFiles= 删二进制
-if grep -qE '^[[:space:]]*/usr/bin/dpkg' mkosi.conf.d/20-packages.conf; then
-    ok "包清单的 RemoveFiles 里包含 dpkg 工具链(运行时没有包管理器)"
+# 运行时不能有 dpkg 工具链(决策 D10):apt 用 RemovePackages,dpkg 是 Essential
+# ⇒ 由 mkosi.finalize 显式删 + 断言(RemoveFiles= 的 glob 行为跨 mkosi 版本不一致)
+if grep -q 'dpkg-maintscript-helper' mkosi.finalize && grep -q '仍残留 dpkg 工具链' mkosi.finalize; then
+    ok "finalize 会删掉 dpkg 工具链并断言删干净"
 else
-    no "RemoveFiles 里没有 /usr/bin/dpkg* —— 镜像里会残留 dpkg 工具链(决策 D10)"
+    no "finalize 里没有 dpkg 工具链的删除/断言(决策 D10)"
+fi
+
+# DHCP:networkd 的 DHCPv4 在本镜像里起不来(坑 #29)⇒ 必须是 dhcpcd + DHCP=no
+if grep -qE '^[[:space:]]*dhcpcd-base[[:space:]]*$' mkosi.conf.d/20-packages.conf \
+   && grep -qE '^[[:space:]]*DHCP=no' mkosi.extra/etc/systemd/network/20-wired.network \
+   && [ -x mkosi.extra/usr/lib/dhcpcd/dhcpcd-hooks/20-keel-resolved ]; then
+    ok "DHCP 由 dhcpcd 负责(networkd DHCP=no + DNS 交给 resolved 的 hook)"
+else
+    no "DHCP 配置不完整:需要 dhcpcd-base + DHCP=no + dhcpcd-hooks/20-keel-resolved(坑 #29)"
 fi
 
 missing=0

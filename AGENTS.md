@@ -414,7 +414,7 @@
     `openssh-server` 也不会拉它 ⇒ 只装"看起来相关"的包是查不出来的(我们正是这么漏掉的)。
     这也解释了坑 #26 的 autologin 死循环:`--autologin` 同样要经 `/bin/login`。
 
-29. **未解决:guest 里 networkd 的 DHCPv4 客户端起不来(`-ENOPKG` / "Package not installed")。**
+29. **networkd 的 DHCPv4 客户端在本镜像里起不来(`-ENOPKG` / "Package not installed");已用 dhcpcd 顶替。**
     症状(VM 里,`systemd-networkd` 正常启动、接口也认到了):
     ```
     systemd-networkd[556]: enp0s1: Failed to configure DHCPv4 client: Package not installed
@@ -435,6 +435,13 @@
       所以要看它到底在 open 什么。)
     * 备选(不改设计也能先有网):加 `dhcpcd-base`,让 dhcpcd 负责 DHCP,
       网络配置从 networkd 挪过去(代价:DNS 的交接要处理,resolved 的 stub 不能再被覆盖)。
+    * **现状(2026-09)**:走的就是这个备选 —— `dhcpcd-base` + `20-wired.network` 里 `DHCP=no`
+      + `/etc/dhcpcd.conf` 的 `nohook resolv.conf`
+      + `dhcpcd-hooks/20-keel-resolved` 把 DNS 交给 resolved(`resolvectl dns/domain/default-route`),
+      所以 `/etc/resolv.conf` 仍然指向 resolved 的 stub ✓。`tools/verify.sh` 有三条断言守着。
+      **ENOPKG 的根因仍未查清** —— strace 里没有任何 `ENOPKG` 系统调用失败(全是无关 ENOENT),
+      说明是 networkd 内部判定"DHCP 实现不可用"(编译期开关或运行期条件)。哪天要换回 systemd 原生栈,
+      从这里接着查。
 ---
 
 ## 4. 常用命令
