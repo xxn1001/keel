@@ -381,6 +381,14 @@ else
     no "包清单缺 login —— agetty exec /bin/login 失败,控制台登录提示会每两秒重开(坑 #28)"
 fi
 
+# 运行时不能有 dpkg 工具链(决策 D10):apt 由 RemovePackages= 删,dpkg 是 Essential
+# 只能靠 RemoveFiles= 删二进制
+if grep -qE '^[[:space:]]*/usr/bin/dpkg' mkosi.conf.d/20-packages.conf; then
+    ok "包清单的 RemoveFiles 里包含 dpkg 工具链(运行时没有包管理器)"
+else
+    no "RemoveFiles 里没有 /usr/bin/dpkg* —— 镜像里会残留 dpkg 工具链(决策 D10)"
+fi
+
 missing=0
 for c in os-status os-update os-rescue os-install; do
     [ -e "mkosi.extra/usr/bin/$c" ] || { no "缺少命令 $c"; missing=1; }

@@ -63,13 +63,9 @@ sudo mkosi --profile install --profile test --force build   # 改了 profile 就
 sudo mkosi --profile install --profile test vm
 ```
 
-> **进虚拟机的两条路**
-> 1. **控制台**(默认):等 `keel login:`,输 `root` / 密码 `keel`。
->    (以前用的是 mkosi 的 `Autologin=yes`,在 Debian 13 + systemd 257 上会变成"登录成功但 shell 秒退"的
->    死循环,见 `AGENTS.md` 坑 #26,所以换成了密码。)
-> 2. **`ssh`(guest 不需要有网络,mkosi 走 VSock)**:先在一个终端
->    `sudo tools/build-container.sh vm-bg` 把虚拟机起在后台容器里,再另开终端
->    `sudo tools/build-container.sh ssh`。要求宿主机有 `/dev/vsock`(加载 `vhost_vsock`)。
+> **进虚拟机**:等 `keel login:`,输 `root` / 密码 `keel`。
+> (以前用 mkosi 的 `Autologin=yes`,因为镜像里缺 `/bin/login` 而变成死循环,见 `AGENTS.md` 坑 #26/#28;
+> VSock ssh 那条路也去掉了,见坑 #27。)
 
 虚拟机里就是一台完整的 keel:`esp` / `root-a` / `root-b` / `volume` 四个分区都在,
 可以在里面练 `os-update`、`os-rescue`、槽切换,不用等真机。

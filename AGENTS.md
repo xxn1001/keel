@@ -391,14 +391,13 @@
     `tools/verify.sh` 有断言:test profile 必须是密码、不许是 Autologin。
     (未查清:autologin 那条路径的 shell 为什么秒退。真机不受影响 —— 正式产物不带这个 profile。)
 
-27. **虚拟机的 SSH 走 VSock,不走 guest 的网络。**
-    mkosi 的 `ssh` 动词连的是 guest 里 systemd-ssh-generator 起的 `sshd-vsock.socket`
-    (启动日志里有 `Listening on sshd-vsock.socket … AF_VSOCK`),所以**guest 没有网络也能进** ——
-    而 guest 现在正好有网络问题(`systemd-networkd: Failed to configure DHCPv4 client:
-    Package not installed`,待查)。
-    两个前提:宿主机有 `/dev/vsock`;QEMU 进程还活着(mkosi 把 SSH 私钥/CID 记在 `mkosi.output/`,
-    容器之间共享 ✓,但容器一退 QEMU 就没了)⇒ 用 `tools/build-container.sh vm-bg` 起在后台容器里,
-    再用 `… ssh` 进去。
+27. **虚拟机的 SSH(曾用 VSock)已移除 —— 容器里那条路是死的。**
+    背景:mkosi 的 `ssh` 动词用 VSock 连 guest 的 `sshd-vsock.socket`,本意是绕开 guest 网络
+    (guest 里 DHCP 还没修)。实测 mkosi 25.3 的 `run_ssh` 会去 flock
+    `$XDG_RUNTIME_DIR/mkosi/machine`,容器里没有 `/run/mkosi` ⇒ `FileNotFoundError`。
+    既然控制台密码登录已经可用(`mkosi.profiles/test.conf` 的 `RootPassword=`),这条路就不值得维护,
+    已从 `tools/build-container.sh` 移除(vm-bg/ssh 两个模式一起删)。
+    真机的 SSH 是 sshd + 公钥(不变量 7、docs/install.md §2.5),和这里无关。
 
 28. **Debian 13 把 `/bin/login` 拆成独立包 `login`:包清单里少了它,控制台登录完全不可用。**
     现象:VM 控制台上一行行刷 `Debian GNU/Linux 13 localhost hvc0` + `localhost login: …`,
@@ -429,8 +428,6 @@ tools/build.sh --profile desktop     # 变体
 # 宿主不是 mkosi 支持的发行版时(NixOS 等):把构建放进容器(见已知的坑 #15)
 sudo tools/build-container.sh        # 构建
 sudo tools/build-container.sh vm     # 构建并在容器里起 QEMU(控制台登录:root / keel)
-sudo tools/build-container.sh vm-bg  # 同上,但虚拟机跑在后台容器里(便于 ssh 进去)
-sudo tools/build-container.sh ssh    # 进已经在跑的虚拟机(VSock,不需要 guest 有网)
 sudo tools/build-container.sh shell  # 进容器手敲 mkosi
 
 # 排错第一步:只看配置解析结果,不构建
