@@ -10,6 +10,40 @@
 
 **任何真机操作之前,先把镜像在虚拟机里跑起来。** 这一步不碰任何真实磁盘,坏了删掉重来。
 
+> ### ⚠️ 构建宿主不是 mkosi 支持的发行版(例如 NixOS)
+>
+> mkosi 要求**宿主本身**是它支持的发行版(dnf/apt/pacman/zypper 之一)。因为它要先**用宿主的包管理器**
+> 建出一棵 tools tree(`apt`、`ukify`、`repart`、`qemu` 全在那棵树里),再用那棵树去构建 Debian 目标镜像。
+> 在 NixOS 上你会看到:
+>
+> ```
+> ‣ Distribution of your host can't be detected or isn't a supported target. Defaulting to Distribution=custom.
+> ‣ Default tools tree requested but it is out-of-date or has not been built yet
+> ```
+>
+> - 第一行是"镜像 `Distribution=` 的默认值取不到",**可以忽略** —— `mkosi.conf` 已经显式写了 `Distribution=debian`;
+> - 第二行才是真正的拦路虎:**建不出 tools tree,就没法把 Debian 包装进镜像**。
+>   这不是配置能绕过去的(构建 Debian 镜像本质上需要一个 Debian 系的包管理器),
+>   设 `ToolsTreeDistribution=debian` 也没用 —— 建那棵树同样需要宿主上的 `apt`。
+>
+> **解法:把一个受支持发行版的容器当宿主。**
+>
+> ```bash
+> sudo tools/build-container.sh          # 构建(verify + build.sh)
+> sudo tools/build-container.sh vm       # 构建并在容器里起 QEMU(有 /dev/kvm 会自动传进去)
+> sudo tools/build-container.sh shell    # 进容器手敲 mkosi,排错用
+> ```
+>
+> 容器默认是 `debian:trixie`(mkosi 25.3,满足我们的 `MinimumVersion=25`,且与目标同发行版);
+> `qemu`/`OVMF` 不用装 —— mkosi 建 tools tree 时会按需带上。产物落在宿主机的
+> `mkosi.output/` 与 `dist/`(属主是 root)。需要 root,因为 mkosi 的构建沙箱要 `CAP_SYS_ADMIN`。
+>
+> NixOS 上没有容器引擎的话:`nix-shell -p podman`,或者打开 `virtualisation.podman.enable`。
+> 若 Debian 的 mkosi 25.3 不认某个设置,换镜像即可:
+> `KEEL_BUILD_IMAGE=docker.io/library/archlinux:latest sudo tools/build-container.sh`(Arch 的 mkosi 是 27)。
+>
+> 这个脚本**没有在 NixOS 上实测过**(开发环境里没有容器引擎)。出问题把命令与报错贴出来。
+
 ### 1.1 需要什么
 
 | 项 | 说明 |

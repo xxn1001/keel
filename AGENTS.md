@@ -202,6 +202,15 @@
     另外 `systemd-growfs` 对 ext4 会调 `resize2fs`,所以 `e2fsprogs` **必须**在包清单里。
     首次真机启动后请用 `df -h /Volume` 复核这一点。
 
+15. **宿主必须是一个 mkosi 支持的发行版,否则连 tools tree 都建不出来。**
+    mkosi 要先**用宿主的包管理器**建一棵 tools tree(`apt`/`ukify`/`repart`/`qemu` 都在那里面),
+    再用那棵树构建 Debian 目标镜像。NixOS 不在支持列表里(它只认 dnf/apt/pacman/zypper),于是报:
+    "Distribution of your host can't be detected … Defaulting to Distribution=custom"
+    + "Default tools tree requested but it is out-of-date or has not been built yet"。
+    第一行可以忽略(`mkosi.conf` 已显式写了 `Distribution=debian`);
+    第二行是真问题,而且**配置绕不过去**(设 `ToolsTreeDistribution=debian` 也得先有宿主上的 `apt`)。
+    ⇒ 解法是把构建放进受支持发行版的容器:`tools/build-container.sh`(默认 `debian:trixie`)。
+
 ---
 
 ## 4. 常用命令
@@ -213,6 +222,11 @@ tools/verify.sh
 # 产物构建(建议 ToolsTree=default;宿主机只需要 mkosi + bubblewrap + 一个包管理器)
 tools/build.sh                       # 一次产出:安装镜像 + A/B 载荷 + manifest → dist/
 tools/build.sh --profile desktop     # 变体
+
+# 宿主不是 mkosi 支持的发行版时(NixOS 等):把构建放进容器(见已知的坑 #15)
+sudo tools/build-container.sh        # 构建
+sudo tools/build-container.sh vm     # 构建并在容器里起 QEMU
+sudo tools/build-container.sh shell  # 进容器手敲 mkosi
 
 # 排错第一步:只看配置解析结果,不构建
 mkosi --profile install summary
@@ -235,7 +249,7 @@ sudo tools/burn.sh /dev/nvme0n1
 - [x] `mkosi.extra/`、`mkosi.postinst`、`mkosi.finalize`
 - [x] 单元:`keel-mounts`、`keel-firstboot`、`keel-confirm`、`keel-swapfile` + preset
 - [x] `mkosi.extra/usr/bin/`:`os-status`、`os-update`、`os-rescue`、`os-install`
-- [x] `tools/`:`verify.sh`、`build.sh`、`burn.sh`
+- [x] `tools/`:`verify.sh`、`build.sh`、`burn.sh`、`build-container.sh`(给不被 mkosi 支持的宿主用)
 - [x] `docs/`:`architecture.md`、`decisions.md`、`install.md`、`update.md`、`troubleshooting.md`
 - [ ] **第一次真机构建 / 虚拟机启动**(由人类做:见 `docs/install.md` §1)
 - [ ] `desktop` profile(笔记本用)
