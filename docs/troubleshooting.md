@@ -68,6 +68,32 @@
 
 在菜单里选另一个槽能起来 ⇒ 这就是自动回滚已经发生过(或即将发生),按 §5 收集证据。
 
+### 1.1 落到 `emergency mode`(而且换槽也一样)
+
+先看**是哪条依赖先断的**——第一行 `[DEPEND] Dependency failed for …` 通常就是根因,
+后面的失败都是它的连锁反应:
+
+```bash
+systemctl --failed                        # 失败的单元清单
+journalctl -b -p warning --no-pager | tail -40
+journalctl -b | grep -E 'Dependency failed|Timed out|Ordering cycle'
+findmnt -o TARGET,SOURCE,FSTYPE,OPTIONS   # /Volume 到底挂上没有
+lsblk -o NAME,SIZE,TYPE,PARTLABEL,FSTYPE  # 分区标签对不对
+```
+
+两个已经踩过、**已在 2026-09 修掉**的早期启动连环故障(供对照,见 `AGENTS.md` 坑 #24/#25):
+
+| 症状 | 原因 |
+|---|---|
+| `Timed out waiting for device dev-disk-by-partlabel-volume.device` → `Volume.mount` / `efi.mount` 依赖失败 → `local-fs.target` 失败 | cmdline 的 `systemd.mount-extra=PARTLABEL=…` 需要 udev 建符号链接,而 udev 又要等可写的 `/etc`,`/etc` overlay 又要等 `/Volume` ⇒ 环形依赖。日志里会有一行 `[ SKIP ] Ordering cycle found, skipping local-fs-pre.target` |
+| `systemd-random-seed.service` / `systemd-timesyncd.service` 失败 | 它们是往 `/var`(→ `/Volume`)写的,而 `/Volume` 那时还没挂上 |
+
+现在 `/Volume` 由 `keel-mounts.service` 自己挂(不依赖 udev),ESP 由 gpt-auto 按需挂载。
+如果你在别的机器上看到这两类失败,先确认跑的是不是 2026-09 之后的镜像(`os-status` 里的版本号)。
+
+> **VM 测试的一个坑**:`mkosi vm` 会往 cmdline 追加 `rw`,所以虚拟机里根分区是**可写**的 ——
+> 只读根相关的 bug(以及 `/etc` overlay 没挂上时的写入行为)在虚拟机里**看不见**,真机才会暴露。
+
 ## 2. 能进系统,但行为不对
 
 ### 2.1 没有图形界面 / 登录不了
@@ -94,15 +120,16 @@ journalctl -b -u systemd-networkd -u systemd-resolved -p warning
 
 ## 3. `/Volume` 相关
 
-`/Volume` 由 initrd 挂载(不变量 2),`/var`、`/root`、`/nix` 都是指向它的符号链接。
+`/Volume` 由 `keel-mounts.service` 在启动早期挂载(不变量 2:扫 `/sys` 的 `PARTNAME=volume`,
+不依赖 udev)。`/var`、`/root`、`/nix` 都是指向它的符号链接。
 所以 `/Volume` 一出问题,表现就是"到处都是空目录、机器像刚装好一样"。
 
 ```bash
-findmnt /Volume                          # 挂上了吗(该挂载由 cmdline 的 systemd.mount-extra 产生,§5.1)
+findmnt /Volume                          # 挂上了吗(由 keel-mounts 挂,见 AGENTS.md 坑 #24)
 ls /Volume                               # var home nix overlayfs ota keel ...
-systemctl status Volume.mount            # 挂载单元本身的状态(§10)
-systemctl status keel-mounts.service     # bind /home + 挂 /etc overlay(§10)
+systemctl status keel-mounts.service     # 挂 /Volume + bind /home + 挂 /etc overlay
 systemctl status keel-firstboot.service  # 首启五件事:骨架 / 扩容 / NVRAM / swapfile / state
+lsblk -o NAME,SIZE,TYPE,PARTLABEL,FSTYPE,LABEL   # PARTLABEL=volume 的分区在不在
 du -xh -d1 /Volume | sort -h             # 空间去哪了
 journalctl --disk-usage                  # journal 占了多少
 ```
@@ -143,7 +170,7 @@ journalctl -b -u nix-daemon -p warning
 ```bash
 os-status
 bootctl list
-ls -l /efi/EFI/Linux/
+ls -l "$(bootctl --print-esp-path)/EFI/Linux/"
 journalctl -b -u keel-confirm.service -u keel-firstboot.service -p warning
 ```
 
@@ -160,7 +187,7 @@ lsblk -f                      # 分区标签 esp/root-a/root-b/volume、文件�
 |---|---|
 | `/Volume/keel/state` | 机器可读的状态(pending、上次结果) |
 | `/proc/cmdline` | 当前槽由 `root=PARTLABEL=root-<x>` 体现 |
-| `/efi/EFI/Linux/` 目录列表 | UKI 的实际名字与计数,以及有没有 `.failed` |
+| `$(bootctl --print-esp-path)/EFI/Linux/` 目录列表 | UKI 的实际名字与计数,以及有没有 `.failed` |
 
 发问题时把这些贴出来,并说明:是不是刚更新过、是不是刚回滚过、有没有手动改过 `/etc`。
 
@@ -173,7 +200,7 @@ lsblk -f                      # 分区标签 esp/root-a/root-b/volume、文件�
 |---|---|
 | `mount -o remount,rw /` 然后改 `/usr`、往里装东西 | 装软件用 **nix**;改系统行为用 `/etc`(overlay,可写且持久) |
 | 直接 `dd` 或 `mount` 去写 `/dev/disk/by-partlabel/root-a` / `root-b` | `os-update`:它只写非活动槽,并记 pending |
-| 手改 `/efi/EFI/Linux/keel-*.efi` 的文件名来"手动回滚" | `os-update rollback`,或 `bootctl set-preferred keel-<槽>.efi`(§5.3 ⑤) |
+| 手改 `$(bootctl --print-esp-path)/EFI/Linux/keel-*.efi` 的文件名来"手动回滚" | `os-update rollback`,或 `bootctl set-preferred keel-<槽>.efi`(§5.3 ⑤) |
 | 在正跑着的那块盘上执行 `os-install /dev/<自己>` | 会覆盖正在运行的槽;`os-install` 只在 U 盘 live 环境里对**目标盘**执行(§7.1 B) |
 
 真的需要改根文件系统的内容(例如加一个基底包),正确路径是改仓库里的 mkosi 配置 →

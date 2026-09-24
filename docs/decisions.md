@@ -33,11 +33,19 @@
 
 ## D4 `/Volume` 的挂载时机
 
-- **决策**:写进 UKI 的 kernel cmdline:`systemd.mount-extra=PARTLABEL=volume:/Volume:ext4:rw,noatime`。
-- **理由**:`systemd-fstab-generator` 在主系统和 initrd 里都会解析它,initrd 里自动加 `/sysroot/` 前缀,
-  于是 `/Volume` 在 switch_root **之前**就已挂好,符号链接从用户空间第一个瞬间起就有效。
-- **否决**:靠 `/etc/fstab` + `x-initrd.mount`(需要把 fstab 注入 initrd 树,多一层构建魔法);
-  靠普通 systemd 单元(太晚,journald/machine-id/random-seed 会先撞上悬空链接)。
+- **决策(2026-09 修订)**:由 `keel-mounts.service`(initrd 之后、`sysinit` 之前)自己扫
+  `/sys/class/block/*/uevent` 的 `PARTNAME=volume` 找到分区并挂载,`blkid -t LABEL=volume` 兜底。
+  不经过 udev、不生成 `.mount` 单元。
+- **原决策(已推翻)**:写进 UKI 的 kernel cmdline:
+  `systemd.mount-extra=PARTLABEL=volume:/Volume:ext4:rw,noatime`。
+  当时的理由是"`systemd-fstab-generator` 在主系统和 initrd 里都会解析它,initrd 里自动加 `/sysroot/` 前缀"。
+- **推翻原因(真机 VM 实测,`AGENTS.md` 坑 #24)**:这两条理由都不成立 ——
+  initrd 阶段根本没有生成 `/sysroot/Volume`(initrd 里连我们的文件都没有);
+  主系统阶段它生成的 `Volume.mount` 要等 udev 建 `by-partlabel` 符号链接,而 udev 要等
+  `systemd-sysusers`、sysusers 要可写的 `/etc`、可写的 `/etc` 又挂在 `/Volume` 上 ⇒ 环形依赖 ⇒
+  systemd 丢掉 `local-fs-pre.target`、udev 被推到 emergency 之后、挂载 90 秒超时 ⇒ emergency mode。
+- **仍然否决**:靠 `/etc/fstab` + `x-initrd.mount`(需要把 fstab 注入 initrd 树,多一层构建魔法);
+  靠普通 systemd `.mount` 单元(依赖 udev,同一个环)。
 
 ## D5 `/etc` 必须可写,用 overlayfs
 

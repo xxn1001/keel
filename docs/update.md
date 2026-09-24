@@ -36,7 +36,7 @@ sudo os-update stage --reboot  # 同上,并立即重启
 | ① | 读 `/proc/cmdline` 判断当前槽,目标槽 = 另一个 | 绝不会写正在运行的那个槽 |
 | ② | **迁移 `/Volume`**,成功后 bump schema-version | 由**旧系统**执行,声明式,只增不破 —— 见 §4 |
 | ③ | 把 `slot-<目标>.root.raw` 写进 `/dev/disk/by-partlabel/root-<目标>`,再 `sync` + `blockdev --flushbufs` | 新根落盘 |
-| ④ | `mount -o remount,rw /efi`,把 `slot-<目标>.uki.efi` 写成 `/efi/EFI/Linux/keel-<目标>+3.efi` | 新 UKI + 启动计数 |
+| ④ | 把 `slot-<目标>.uki.efi` 写成 `$KEEL_ESP/EFI/Linux/keel-<目标>+3.efi`(`KEEL_ESP` 由 `bootctl --print-esp-path` 得到,通常是 `/boot`) | 新 UKI + 启动计数 |
 | ⑤ | `bootctl set-preferred keel-<目标>+3.efi` | 只写 EFI 变量,不动 `loader.conf` |
 | ⑥ | 写 `/Volume/keel/state` 的 pending 块 | 供下次启动判定成功/失败 |
 | ⑦ | 提示重启(`--reboot` 直接重启) | — |
@@ -52,7 +52,7 @@ v1 **没有自动更新定时器**(§8):手动触发,便于在笔记本上边用
 | 证据 | 在哪看 |
 |---|---|
 | 重启后槽和版本**都没变**(还是旧槽、旧版本) | `os-status` |
-| ESP 上出现 `keel-<目标>.efi.failed` | `ls -l /efi/EFI/Linux/` |
+| ESP 上出现 `keel-<目标>.efi.failed` | `ls -l "$(bootctl --print-esp-path)/EFI/Linux/"` |
 | `state` 里 pending 被清空、记了 failed | `os-status`;`/Volume/keel/state` |
 | journal 里有 `keel-confirm.service` 的告警 | `journalctl -b -u keel-confirm.service` |
 | 条目名带递减的计数 | `bootctl list`,例如 `keel-b+2-1.efi` |
