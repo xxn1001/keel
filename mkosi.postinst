@@ -67,3 +67,21 @@ if [ -f "$R/etc/machine-id" ] && [ "$(cat "$R/etc/machine-id")" != "uninitialize
 fi
 
 log "完成"
+
+# ---------------------------------------------------------------------------
+# os-release:发行版标识改成 keel(基底仍标在 ID_LIKE 里,工具链照常识别 Debian)
+# ---------------------------------------------------------------------------
+R="${BUILDROOT:-/}"
+if [ -f "$R/usr/lib/os-release" ]; then
+    sed -i -e 's/^NAME=.*/NAME="keel"/' \
+           -e "s/^PRETTY_NAME=.*/PRETTY_NAME=\"keel ${IMAGE_VERSION:-}\"(Debian trixie 基底)\"/" \
+           -e 's/^ID=.*/ID=keel/' \
+           -e 's/^ID_LIKE=.*/ID_LIKE="debian"/' \
+           -e 's|^HOME_URL=.*|HOME_URL="https://github.com/xxn1001/keel"|' \
+        "$R/usr/lib/os-release"
+    for kv in 'ID_LIKE="debian"' 'IMAGE_ID=keel'; do
+        key=${kv%%=*}
+        grep -q "^${key}=" "$R/usr/lib/os-release" || echo "$kv" >>"$R/usr/lib/os-release"
+    done
+    log "os-release 已改成 keel(ID_LIKE=debian)"
+fi
