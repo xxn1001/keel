@@ -537,15 +537,16 @@ fi
 # 反过来也要断言:不许再出现 dhcpcd —— 两个 DHCP 客户端抢一块网卡只会互相打架。
 if grep -qE '^[[:space:]]*DHCP=yes' mkosi.extra/etc/systemd/network/20-wired.network \
    && ! grep -rqE '^[[:space:]]*DHCP=no' mkosi.extra/etc/systemd/network/ \
+   && grep -q 'run/machine-id >/etc/machine-id' mkosi.extra/usr/lib/keel/mounts \
    && grep -q 'systemd-machine-id-setup' mkosi.extra/usr/lib/keel/mounts \
    && ! grep -qE '^[[:space:]]*dhcpcd' mkosi.conf.d/20-packages.conf \
    && [ ! -e mkosi.extra/etc/dhcpcd.conf ] \
    && [ ! -e mkosi.extra/usr/lib/systemd/system/keel-dhcpcd.service ] \
    && [ ! -d mkosi.extra/usr/lib/dhcpcd ] \
    && ! grep -q 'keel-dhcpcd' mkosi.extra/usr/lib/systemd/system-preset/00-keel.preset; then
-    ok "DHCP 由 systemd-networkd 负责(DHCP=yes + mounts 里补 machine-id,没有 dhcpcd 残留)"
+    ok "DHCP 由 systemd-networkd 负责(DHCP=yes + mounts 里固化 machine-id,没有 dhcpcd 残留)"
 else
-    no "DHCP 配置不对:需要 DHCP=yes + mounts 里的 systemd-machine-id-setup,且不能再有 dhcpcd 的包/单元/hook/配置(坑 #29)"
+    no "DHCP 配置不对:需要 DHCP=yes + mounts 里固化 machine-id(首选 /run/machine-id,退路 systemd-machine-id-setup),且不能再有 dhcpcd 的包/单元/hook/配置(坑 #29)"
 fi
 
 # machine-id 必须在 /etc overlay **挂好之后**才补:在它之前 /etc 还是只读的 lower,

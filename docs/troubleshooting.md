@@ -127,14 +127,20 @@ journalctl -b -u systemd-networkd | grep -iE 'DHCP|ENOPKG'
 ```
 
 `/etc/machine-id` 是 `uninitialized`/空时,networkd 生成 DUID(默认 `DUIDType=uuid`)会拿到
-`-ENOPKG`,日志里的文字是误导性的 `Failed to configure DHCPv4 client: Package not installed`;
+`-ENOPKG`,日志里的文字是误导性的 `Failed to configure DHCPv4 client: Package not installed`
+(新版本报的是 `Failed to start DHCPv4 client: …`,同一个 errno);
 同一个原因还会让 IPv6 稳定隐私地址、resolved 的 DNSSEC 密钥一起失效。
-正常流程由 `keel-mounts` 在挂完 `/etc` overlay 之后立刻 `systemd-machine-id-setup` 补一个真 ID
-(写进 overlay 的 upper ⇒ 在 `/Volume` 上,换槽/更新都不丢)。手动修:
+正常流程由 `keel-mounts` 在挂完 `/etc` overlay 之后立刻**把 PID1 本次启动的
+`/run/machine-id` 固化进 `/etc/machine-id`**(写进 overlay 的 upper ⇒ 在 `/Volume` 上,
+换槽/更新都不丢)。手动修:
 
 ```bash
-systemd-machine-id-setup          # 幂等:已有合法 ID 时什么都不做
-systemctl restart systemd-networkd
+# ⚠ 光跑 systemd-machine-id-setup 是**没用的**:文件内容是 "uninitialized" 时它故意什么都不做
+#   (而且返回 0)。先清空,再让它生成:
+: > /etc/machine-id
+systemd-machine-id-setup
+cat /etc/machine-id                  # 应该是 32 位十六进制
+systemctl restart systemd-networkd   # 让 networkd 重新配 DUID/DHCP
 ```
 
 > 历史教训(别再走回头路):我们一度用 `dhcpcd-base` + `DHCP=no` 绕过它 ——

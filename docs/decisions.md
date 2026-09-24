@@ -158,7 +158,9 @@
   (= `-ENOPKG`),当时的临时办法是装 `dhcpcd-base` 顶替;根因已查清 —— 镜像里
   `/etc/machine-id` 是 mkosi 写的占位符 `uninitialized`,而 PID1 首启用的 transient bind mount
   又被我们随后挂的 `/etc` overlay 盖住,于是 machine-id 永远是空的,networkd 生成 DUID 时拿到 `-ENOPKG`。
-  现在由 `keel-mounts` 在挂完 overlay 后立刻 `systemd-machine-id-setup` 补上,`DHCP=yes` 交回 networkd,
+  现在由 `keel-mounts` 在挂完 overlay 后立刻把 PID1 本次启动的 `/run/machine-id` 固化进
+  `/etc/machine-id`(不能只调 `systemd-machine-id-setup`:它对 `uninitialized` 内容是**故意空转**的),
+  `DHCP=yes` 交回 networkd,
   dhcpcd 已从镜像里彻底移除(它同时也会喂 DNS 给 resolved,现在这一步由 networkd 直接做)。
 
 ## D16 命令命名

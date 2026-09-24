@@ -451,17 +451,41 @@
       `systemd-machine-id-commit.service` 也救不了:它要求 `/etc/machine-id` 是**挂载点**
       (已被盖掉),而 `/etc` 可写那条路又依赖我们的 overlay。
     * 影响面不止 DHCP:IPv6 稳定隐私地址、resolved 的 DNSSEC 密钥、任何 `%m` 展开一起废。
-    ⇒ **修法**:`/usr/lib/keel/mounts` 在挂完 `/etc` overlay 之后**立刻**
-      `systemd-machine-id-setup`(幂等;首启会复用 `/run/machine-id` 里 PID1 刚生成的那个 ID,
-      所以本次启动前后拿到的是同一个),ID 落进 overlay 的 upper ⇒ 在 `/Volume` 上、每台机器唯一、
-      换槽与更新都不丢(`docs/architecture.md` §4.3)。`DHCP=yes` 交回 networkd,
-      `dhcpcd-base` / `keel-dhcpcd.service` / dhcpcd hook / `/etc/dhcpcd.conf` 全部删除。
-      `tools/verify.sh` 三条断言守着它(DHCP=yes;mounts 里的补齐且在挂 overlay 之后;没有 dhcpcd 残留)。
+    ⇒ **修法**:`/usr/lib/keel/mounts` 在挂完 `/etc` overlay 之后**立刻**把 PID1 本次启动
+      **已经在用**的那个 ID(`/run/machine-id`)原样写进 `/etc/machine-id` —— 此时 `/etc` 已经是
+      overlay,内容落进 upper ⇒ 在 `/Volume` 上、每台机器唯一、换槽与更新都不丢
+      (`docs/architecture.md` §4.3);`/run/machine-id` 不可用时才清空文件、让
+      `systemd-machine-id-setup` 生成一个。写完回读校验,不对就大声报。
+      `DHCP=yes` 交回 networkd,`dhcpcd-base` / `keel-dhcpcd.service` / dhcpcd hook /
+      `/etc/dhcpcd.conf` 全部删除。`tools/verify.sh` 三条断言守着它(DHCP=yes;mounts 里的固化
+      且在挂 overlay 之后;没有 dhcpcd 残留)。
+    **⚠ 这个坑有第二层,第一版就栽在这里**:`systemd-machine-id-setup` **不能直接用**。它的 `main()`:
+      ```c
+      } else if (id128_get_machine(arg_root, NULL) == -ENOPKG) {
+              if (arg_print) puts("uninitialized");     // ← 什么都不做,返回 0
+      } else { ... machine_id_setup(...) ... }
+      ```
+      也就是**内容恰好是 `uninitialized` 时它故意空转**(那被当成"首启标记",留给 PID1 的 transient
+      机制),而且**退出码是 0** ⇒ "调用成功"什么也证明不了。第一版就写了这一句,VM 里日志打出
+      `已生成 machine-id(uninitialized)`,一轮构建白跑。要它干活必须**先把文件清空**
+      (空文件是 `-ENOMEDIUM` 而不是 `-ENOPKG`,它才会走生成路径)。它还有 `--print`
+      (只打印自己眼里的 ID、不改动),排查时比 `cat` 更能说明问题。
     **教训**:① `-ENOPKG` 别按字面理解成"缺包" —— systemd 里它表示"功能需要的东西没配好",
       machine-id 未初始化是最常见的一种;② **PID1 在挂我们的 overlay 之前对 `/etc` 做的任何写入
-      都会被盖掉**(它写的是 lower 那份),凡是 PID1 早期写 /etc 的东西,重启后都要问一句"它还在吗"。
+      都会被盖掉**(它写的是 lower 那份),凡是 PID1 早期写 /etc 的东西,重启后都要问一句"它还在吗";
+      ③ **"退出码 0" ≠ "事情做成了"** —— systemd 里那些"先看状态再决定动不动手"的工具
+      (`systemd-machine-id-setup`、`systemd-firstboot`、`preset-all`…)**把"我什么都没干"也当成功**。
+      对它们要么回读校验,要么用 `--print`/`-v` 确认,别只看返回值。
+    **已知残留(不影响功能,先记着)**:PID1 每次启动读到的都是只读 lower 里那句 `uninitialized`,
+      所以它会一次次生成新的 transient ID 放进 `/run/machine-id` —— **PID1 内存里的 ID ≠
+      `/etc/machine-id`**;而真正去读文件的功能(networkd、resolved、journald、tmpfiles)拿到的
+      都是固化的那个,稳定。要彻底消除只有两条路:把 `/etc` overlay 提到 initrd 里挂(PID1 一开始
+      就读到持久化的 ID),或者 cmdline 加 `systemd.machine_id=firmware`(用硬件 UUID;代价是
+      依赖 DMI 可靠)。**两条都先别动** —— 改 cmdline = 动承重墙(`mkosi.conf.d/30-content.conf`)。
     (当时的诊断弯路:用 drop-in 把 networkd 的 `ExecStart` 换成 `strace …` —— 单元沙箱让 `/tmp`
-      只读、还拒绝 ptrace,networkd 直接 crash-loop;要在 VM 里手工停掉服务再跑 strace 才行。)
+      只读、还拒绝 ptrace,networkd 直接 crash-loop;要在 VM 里手工停掉服务再跑 strace 才行。
+      另外现在有个现成的诊断口子:`mkosi.extra-test/` 里的 `keel-selftest.service`,
+      它会把 machine-id 现场、`/etc` 可写性探针、networkd 日志、失败单元全打到 VM 控制台上。)
 
 30. **`mkosi vm`(以及 `shell`/`boot` 这类"操作已构建镜像"的动作)不解析配置文件,它读上一次 build 的 history;与 history 不同的 CLI 设置只警告、不生效。**
     mkosi 25.3 的 `parse_config`(27 同):

@@ -140,9 +140,18 @@ workdir  = /Volume/overlayfs/etc/work
 ⇒ 一切读 machine-id 的东西拿到 `-ENOPKG`:networkd 的 DHCPv4(DUID 默认是 uuid,
 报错文字却是误导性的 `Package not installed`)、IPv6 稳定隐私地址、resolved 的 DNSSEC 密钥全废。
 `systemd-machine-id-commit.service` 也救不了 —— 它的条件是 `/etc/machine-id` 是挂载点。
-所以 `keel-mounts` 挂完 overlay 就 `systemd-machine-id-setup`(幂等;首启会复用
-`/run/machine-id` 里 PID1 刚生成的那个 ID,所以本次启动前后一致),ID 落在 overlay 的 upper
-⇒ 存在 `/Volume` 上,换槽/更新都不丢、每台机器唯一。
+所以 `keel-mounts` 挂完 overlay 就**自己把 ID 固化下来**:把 PID1 本次启动已经在用的
+`/run/machine-id` 原样写进 `/etc/machine-id`(此时是 overlay ⇒ 落进 upper ⇒ 存在 `/Volume` 上,
+换槽/更新都不丢、每台机器唯一);`/run/machine-id` 不可用时才清空文件、让
+`systemd-machine-id-setup` 生成一个。
+
+> 注意**不要**直接用 `systemd-machine-id-setup` 了事:文件内容恰好是 `uninitialized` 时它
+> **什么都不做就返回 0**(源码 `machine-id-setup-main.c` 里专门判断 `== -ENOPKG`)——
+> 第一版就是这么写的,VM 实测日志打出 `已生成 machine-id(uninitialized)`,白折腾一轮。
+> 已知残留:PID1 每次启动仍会另生成一个 transient ID(它读的是只读 lower),所以
+> **PID1 内存里的 ID ≠ `/etc/machine-id`**;真正读文件的功能(networkd/resolved/journald/tmpfiles)
+> 拿到的都是固化的那个。要彻底一致得把 `/etc` overlay 提到 initrd 里挂,或 cmdline 加
+> `systemd.machine_id=firmware`(见 `AGENTS.md` 坑 #29)。
 
 ### 4.4 构建顺序上的硬约束
 

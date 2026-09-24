@@ -134,16 +134,47 @@ fi
 # 影响面不止 DHCP:IPv6 稳定隐私地址、resolved 的 DNSSEC 密钥、任何 `%m` 展开
 # 都要 machine-id(顺手也解释了为什么这些功能一直"没反应")。
 #
-# 现在 /etc 已经可写,直接把 ID 落到 overlay 的 upper(=/Volume,换槽和更新都不丢):
-#   * 幂等:已经是 32 位十六进制就什么都不做;
-#   * 首启时 systemd-machine-id-setup 会**复用** /run/machine-id 里 PID1 刚生成的那个 ID
-#     (acquire_machine_id() 第一件事就是读它),所以本次启动前后拿到的是同一个 ID。
+# ⚠ 第一版这里写的是 `systemd-machine-id-setup`,**VM 实测完全无效**(日志打出
+#   `已生成 machine-id(uninitialized)`,退出码还是 0)。原因在它的 main() 里:
+#       } else if (id128_get_machine(arg_root, NULL) == -ENOPKG) {
+#               if (arg_print) puts("uninitialized");     // ← 什么都不做就返回 0
+#       } else { ... machine_id_setup(...) ... }
+#   也就是说**内容恰好是 "uninitialized" 时它故意不动**(那是"首启标记",留给 PID1 的
+#   transient 机制),而且**退出码 0 什么也证明不了**。所以这里自己动手:
+#
+#   ① 首选:把 PID1 本次启动**已经在用**的那个 ID(/run/machine-id)写进 /etc ——
+#      它就是 PID1 内存里那个 ID(首启 PID1 把真 ID 写这儿、再 bind 到 /etc/machine-id),
+#      固化它 ⇒ 本次启动前后一致。
+#   ② 退路:/run/machine-id 不可用时,先把文件清空再交给 systemd-machine-id-setup ——
+#      空文件不是 ENOPKG,它会走正常的 machine_id_setup() 生成一个随机 ID 写进去。
+#
+# 写的时候 /etc 已经是 overlay ⇒ 内容落在 upper ⇒ 持久化在 /Volume 上,换槽/更新都不丢。
+# 每一步都回读校验,失败就大声报(这个文件无效会让 DHCP/IPv6/DNSSEC 一起静默失效)。
+#
+# 已知的残留不一致(不影响功能,记在这里免得以后有人当成 bug):
+# 从第二次启动起,PID1 读到的仍是**只读 lower** 里那句 "uninitialized" ⇒ 它每次启动都会
+# 另生成一个 transient ID 放在 /run/machine-id(PID1 内存里的 ID ≠ /etc/machine-id)。
+# 真正读文件的功能(networkd、resolved、journald、tmpfiles…)拿到的都是我们固化的那个,
+# 稳定的;只有 PID1 自己展开 `%m` 时用的是它内存里那个。要彻底消除,只有两条路:
+# 把 /etc overlay 提前到 initrd 里挂(PID1 一开始就读到持久化的 ID),
+# 或者 cmdline 里加 `systemd.machine_id=firmware`(用硬件 UUID,代价是依赖 DMI 可靠)。
 # ---------------------------------------------------------------------------
 if ! grep -qxE '[0-9a-f]{32}' /etc/machine-id 2>/dev/null; then
-    if systemd-machine-id-setup >/dev/null 2>&1; then
-        keel_log "已生成 machine-id($(cat /etc/machine-id 2>/dev/null))"
+    # ① PID1 本次启动的 ID(它是首启时写到 /run 的,不是垃圾文件:/run 是 tmpfs)
+    if grep -qxE '[0-9a-f]{32}' /run/machine-id 2>/dev/null && cat /run/machine-id >/etc/machine-id 2>/dev/null; then
+        keel_log "已固化 machine-id(取自 PID1 本次启动使用的 ID)"
     else
-        keel_log "警告:systemd-machine-id-setup 失败 —— DHCP 的 DUID、IPv6 稳定地址、"
-        keel_log "      resolved 的 DNSSEC 密钥都会拿到 -ENOPKG;进系统后手动跑一遍它(坑 #29)"
+        # ② 清空 + 让官方工具生成(空文件时它才会真的干活)
+        : >/etc/machine-id 2>/dev/null || true
+        systemd-machine-id-setup >/dev/null 2>&1 || true
+    fi
+    chmod 0444 /etc/machine-id 2>/dev/null || true
+
+    if grep -qxE '[0-9a-f]{32}' /etc/machine-id 2>/dev/null; then
+        keel_log "machine-id = $(cat /etc/machine-id)"
+    else
+        keel_log "警告:/etc/machine-id 仍然不是有效 ID(内容:$(cat /etc/machine-id 2>/dev/null))——"
+        keel_log "      networkd 的 DHCP、IPv6 稳定地址、resolved 的 DNSSEC 都会拿到 -ENOPKG(坑 #29);"
+        keel_log "      手动修:systemd-machine-id-setup(先清空该文件),然后 systemctl restart systemd-networkd"
     fi
 fi

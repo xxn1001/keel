@@ -223,7 +223,9 @@ if printf '%s' "$mid" | grep -qxE '[0-9a-f]{32}'; then
 else
     echo "  机器 ID    : 无效或缺失(${mid:-空})"
     echo "               警告:依赖 machine-id 的功能都会拿到 -ENOPKG —— 最典型的是"
-    echo "               networkd 的 DHCPv4(坑 #29)。手动修:systemd-machine-id-setup"
+    echo "               networkd 的 DHCPv4(坑 #29)。手动修(注意光跑 systemd-machine-id-setup"
+    echo "               没用,它对 uninitialized 是空转的):"
+    echo "                 : > /etc/machine-id && systemd-machine-id-setup && systemctl restart systemd-networkd"
 fi
 
 links="$(networkctl list --no-pager --lines=0 2>/dev/null \

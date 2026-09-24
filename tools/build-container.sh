@@ -51,6 +51,11 @@
 #     --privileged 同时会把宿主机的 /dev 暴露进容器,于是 repart 看得见 loop 设备;
 #     mkosi 默认走 offline 模式不会碰它们(我们在 mkosi.conf 里也显式写了 RepartOffline=yes)。
 #   * NixOS 上若没有容器引擎:`nix-shell -p podman` 或开 virtualisation.podman。
+#   * **NixOS 上要用 `sudo bash tools/build-container.sh …` 调用**(别直接 `sudo tools/build-container.sh`):
+#     NixOS 没有 `/bin/bash`(只有 `/bin/sh`),而本仓库脚本的 shebang 是 `#!/bin/bash`
+#     ⇒ 内核会报 `bad interpreter: No such file or directory`,sudo 则报
+#     `unable to execute tools/build-container.sh: No such file or directory` ——
+#     看起来像"文件不存在",其实是解释器不存在。脚本内部会 `cd` 到仓库根目录,所以用 bash 显式跑没问题。
 #   * 这个脚本**没有在 NixOS 上实测过**(开发环境里没有容器引擎)。
 #     如果它在你的机器上出问题,把命令与报错贴出来即可。
 set -euo pipefail
