@@ -53,40 +53,27 @@ else
     # (这也是把三个目录改名成 repart/{install,slot-a,slot-b} 的原因 —— 消灭那个隐式默认值。)
     for p in $PROFILES; do
         n=$(mkosi --profile "$p" summary --json 2>/dev/null | python3 -c '
-import json, sys
-# mkosi 的 --json 输出是 JSON-SEQ,而且真正的配置嵌在每条记录的 "Images": [...] 里
-# (tools tree、initrd、主镜像各一份),所以要先把 Images 摊平,再挑主镜像那一份。
+import json, re, sys
+# 不用固定结构去解析:mkosi 27 把每个镜像嵌在 "Images": [...] 里,
+# 而 25.x 的 --json 大概率是"一条记录一个镜像"(平铺)。所以直接按 key 名扫,
+# 取最后一个非空的 RepartDirectories —— 本项目只有主镜像会设它。
 raw = sys.stdin.read()
-dec = json.JSONDecoder()
-objs = []
-i = 0
-while True:
-    j = raw.find("{", i)
-    if j < 0:
-        break
+best = []
+for m in re.finditer(r"\"RepartDirectories\"\s*:\s*(\[[^]]*\])", raw):
     try:
-        o, i = dec.raw_decode(raw, j)
-        objs.append(o)
+        v = json.loads(m.group(1))
     except ValueError:
-        i = j + 1
-imgs = []
-for o in objs:
-    v = o.get("Images")
-    if isinstance(v, list):
-        imgs.extend(x for x in v if isinstance(x, dict))
-cands = [x for x in imgs if isinstance(x.get("RepartDirectories"), list)]
-pick = None
-for c in cands:
-    if str(c.get("Output", "")).startswith("keel"):
-        pick = c
-if pick is None and cands:
-    pick = cands[-1]
-print(len(pick["RepartDirectories"]) if pick else -1)
-' 2>/dev/null) || n=-1
+        continue
+    if isinstance(v, list) and v:
+        best = v
+print(len(best))
+' 2>/dev/null) || n=parse-failed
         if [ "$n" = 1 ]; then
             ok "--profile $p:RepartDirectories 恰好一个"
         else
             no "--profile $p:RepartDirectories 解析出 $n 个(必须恰好 1 个;源码树里不能有名为 mkosi.repart 的目录)"
+            echo "      想确认是解析问题还是真的配错了,跑这条看看 mkosi 实际报了什么:" >&2
+            echo "        mkosi --profile $p summary --json | head -40" >&2
         fi
     done
 
