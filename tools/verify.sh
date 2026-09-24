@@ -44,6 +44,16 @@ else
             grep -E '^‣' "$out/summary" | head -5 | sed 's/^/      /'
         fi
     done
+    # 虚拟机测试用的组合(install + test)也要能解析。它不在上面的 PROFILES 里,但正是
+    # docs/install.md §1 让人跑的命令 —— 漏检的话"新增一个 profile 导致组合解析失败"要等到
+    # 真机上才发现。
+    out=$(tmpd)
+    if mkosi --profile install --profile test summary >"$out/summary" 2>&1; then
+        ok "--profile install --profile test 解析通过(虚拟机测试用的组合)"
+    else
+        no "--profile install --profile test 解析失败"
+        grep -E '^‣' "$out/summary" | head -5 | sed 's/^/      /'
+    fi
     # RepartDirectories 的守卫。**刻意不解析 mkosi 的输出**:那条路已被证明是版本相关的
     # (25.x 与 27 的 --json 结构不同;而 verify.sh 开了 pipefail,mkosi 一旦不支持 --json
     #  整条管道就失败,断言会误报),而且它只是"症状"。
@@ -252,6 +262,40 @@ if grep -q "$skel_repart" mkosi.finalize; then
     ok "骨架路径 $skel_repart 在 finalize 里也出现"
 else
     no "骨架路径 $skel_repart 只在 repart 定义里出现,finalize 没有生成它"
+fi
+
+# mkosi 不允许 workspace 位于任何 BuildSources 之内,而 BuildSources= 的默认值就是配置目录本身。
+# 真机表现(坑 #22):
+#   ‣ The workspace directory (/work/mkosi.workspace) cannot be a subdirectory of any source
+#     directory (/work)
+# 连 `mkosi vm` 都跑不起来。所以仓库里不能设 WorkspaceDirectory=;要"同文件系统"就用
+# tools/build-container.sh 里那个把 mkosi.workspace 绑到 /var/tmp 的做法。
+if grep -qE '^[[:space:]]*WorkspaceDirectory=' mkosi.conf; then
+    no "mkosi.conf 里设了 WorkspaceDirectory= —— 指向仓库内会触发 mkosi 的 source 目录校验(坑 #22)"
+else
+    ok "mkosi.conf 没有设 WorkspaceDirectory=(不会触发 source 目录校验)"
+fi
+
+# mkosi 的 `build` 是"没有才建":产物已存在时它只打印一行 info 就返回 0,静默复用旧镜像(坑 #23)。
+# 所以构建脚本里的每一次构建都必须带 --force。
+n_build=$(grep -cE '^[[:space:]]*mkosi .* build$' tools/build.sh)
+n_force=$(grep -cE '^[[:space:]]*mkosi .*--force build$' tools/build.sh)
+if [ "$n_build" -ge 3 ] && [ "$n_build" = "$n_force" ]; then
+    ok "tools/build.sh 的 $n_build 次构建都带 --force(不会静默复用旧产物)"
+else
+    no "tools/build.sh 有 $n_build 次构建,只有 $n_force 次带 --force(坑 #23:mkosi 的 build 是'没有才建')"
+fi
+
+if grep -q -- '--force build' tools/build-container.sh; then
+    ok "tools/build-container.sh 的 build 步骤带 --force"
+else
+    no "tools/build-container.sh 的 build 步骤没带 --force(--profile test 改变了配置,不 -f 就会拿旧镜像开虚拟机,坑 #23)"
+fi
+
+if grep -q -- '-v "$WS:/var/tmp"' tools/build-container.sh; then
+    ok "build-container.sh 把 mkosi.workspace 绑到容器的 /var/tmp(产物与缓存不跨设备)"
+else
+    warn "build-container.sh 没有把 mkosi.workspace 绑到 /var/tmp —— 构建仍会成功,但收尾会退化成复制 14 GiB"
 fi
 
 if grep -rn 'common-os' --include='*' . 2>/dev/null | grep -v '^\./\.git/' | grep -v '^\./tools/verify\.sh:' | grep -q .; then

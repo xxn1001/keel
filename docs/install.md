@@ -49,14 +49,18 @@
 | 项 | 说明 |
 |---|---|
 | 构建产物 | `tools/verify.sh && tools/build.sh` → `dist/keel-<version>/keel.raw` |
-| **第一次要先 build** | `ToolsTree=default` 的 tools tree **只在 `build` 动作里**自动构建。tools tree 还没建时直接跑 `vm`,mkosi 会拒绝并提示你先 build(`AGENTS.md` 已知的坑 #19)。所以第一次是两条命令:`mkosi --profile install --profile test build`,成功之后 `mkosi --profile install --profile test vm`。`tools/build-container.sh vm` 已经替你做了这两步。**不要**图省事加 `--force`:`-f` 会把已构建的镜像删掉重来 |
+| **第一次要先 build** | `ToolsTree=default` 的 tools tree **只在 `build` 动作里**自动构建。tools tree 还没建时直接跑 `vm`,mkosi 会拒绝并提示你先 build(`AGENTS.md` 已知的坑 #19)。所以第一次是两条命令:`mkosi --profile install --profile test build`,成功之后 `mkosi --profile install --profile test vm`。`tools/build-container.sh vm` 已经替你做了这两步 |
+| **`--force` 不是可选项** | mkosi 的 `build` 是"**没有才建**":`mkosi.output/keel.raw` 已存在时它只打印 `‣ Output path … exists already. (Use --force to rebuild.)` 然后**返回成功、什么都不建**。版本号只写在镜像内部(文件名里没有版本),所以不加 `-f` 的结果是"版本号是新的、内容是旧的",你会拿着一份旧镜像去开机/装机(`AGENTS.md` 坑 #23)。`-f` 只重建输出、不动增量缓存;连缓存一起删是 `-ff`,我们不用 |
 | QEMU + OVMF | **不用手动装**:`ToolsTree=default`(推荐,`AGENTS.md` 坑 #10)时由 mkosi 的 tools tree 提供;mkosi 27 的 Debian runtime profile 里就是 `qemu-system` + `ovmf` |
 | `/dev/kvm` | 有才快;没有会极慢,见 §1.2 |
 
 ### 1.2 启动、退出与追加 QEMU 参数
 
 ```bash
-sudo mkosi --profile install vm
+# --profile test 打开 root 自动登录:发布镜像里 root 密码是锁的、没有你的公钥,
+# 不加它会在 keel login: 上卡住(见 §2.5)
+sudo mkosi --profile install --profile test --force build   # 改了 profile 就必须 -f
+sudo mkosi --profile install --profile test vm
 ```
 
 虚拟机里就是一台完整的 keel:`esp` / `root-a` / `root-b` / `volume` 四个分区都在,
@@ -67,7 +71,7 @@ sudo mkosi --profile install vm
 | 退出(nographic 串口控制台,默认) | 先按 `Ctrl-a`,再按 `x` |
 | 退出(图形窗口,`--console=gui`) | 关掉窗口 |
 | 进 QEMU 监控台 / 切回 | `Ctrl-a` 然后 `c`(监控台里 `quit` 也能退出) |
-| 追加 QEMU 参数 | `sudo mkosi --profile install vm -- -m 4G -smp 4`(`vm` 后面 `--` 起的都交给 QEMU) |
+| 追加 QEMU 参数 | `sudo mkosi --profile install --profile test vm -- -m 4G -smp 4`(`vm` 后面 `--` 起的都交给 QEMU) |
 | 换控制台模式 | `--console=gui` / `--console=headless`(默认 `native`:串口接在当前终端) |
 
 **没有 `/dev/kvm` 时 QEMU 退化成纯软件模拟(TCG)**:启动要几分钟到十几分钟,`os-update stage`

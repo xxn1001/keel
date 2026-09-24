@@ -7,6 +7,7 @@
 
 | 症状 | 去哪节 |
 |---|---|
+| **构建就失败了 / 开虚拟机起不来** | **§0** |
 | 完全进不了系统(看不到引导、控制台没反应) | §1 |
 | 起来了,但某些功能不对 | §2 |
 | `/Volume` / 持久状态有问题 | §3 |
@@ -14,6 +15,44 @@
 | 更新之后不对 | §5 |
 | 要找人求助 | §6 |
 | 想"手工修一下根分区" | §7(先读,别做) |
+
+## 0. 构建期(还没到真机)
+
+### 0.1 `The workspace directory (…) cannot be a subdirectory of any source directory (…)`
+
+完整形态:
+
+```
+‣ Output path /work/mkosi.output/keel.raw exists already. (Use --force to rebuild.)
+‣ The workspace directory (/work/mkosi.workspace) cannot be a subdirectory of any source directory (/work)
+‣ (Set BuildSources= to the empty string or use WorkspaceDirectory= to configure a different workspace directory)
+```
+
+| 项 | 说明 |
+|---|---|
+| 含义 | mkosi 不允许 workspace 位于任何 `BuildSources=` 之内,而 `BuildSources=` 的默认值**就是配置目录**(`/work`) |
+| 原因 | `mkosi.conf` 里设了 `WorkspaceDirectory=mkosi.workspace`(仓库内的路径)。现在已改成不设该设置,原因写在 `mkosi.conf` 的注释里 |
+| 修 | `mkosi.conf` 里**不要**设 `WorkspaceDirectory=`;容器场景由 `tools/build-container.sh` 把 `mkosi.workspace/` 绑到容器的 `/var/tmp`(`AGENTS.md` 坑 #22) |
+| 注意 | 第一行不是错误:它是 `build` 那一步"产物已存在、直接跳过"的提示(坑 #23),三条来自两次 mkosi 调用 |
+
+### 0.2 `Output path … exists already. (Use --force to rebuild.)` 之后什么都没发生
+
+| 项 | 说明 |
+|---|---|
+| 含义 | mkosi 的 `build` 是"**没有才建**":产物已存在 → 打印这行 → **返回 0**,不构建 |
+| 后果 | 版本号只写在镜像内部,所以你会拿到"版本号是新的、内容是旧的"镜像,而且没有任何报错 |
+| 修 | 改了配置/换了 profile(例如加 `--profile test`)之后必须 `mkosi … --force build`;`tools/build.sh` 与 `tools/build-container.sh` 已经带上 |
+| 怎么确认拿到的是新镜像 | `mkosi.output/keel.manifest` 里的时间戳,或进系统后 `os-status`(`AGENTS.md` 坑 #23) |
+
+### 0.3 其它构建期报错
+
+| 报错 | 去哪 |
+|---|---|
+| `Default tools tree requested but it is out-of-date or has not been built yet` | `AGENTS.md` 坑 #19:先 `build` 再 `vm` |
+| `A cache directory must be configured in order to use --incremental` | 坑 #16:mkosi 25.x 必须显式配 `CacheDirectory=`(已配好) |
+| `systemd-stub not found at /usr/lib/systemd/boot/efi/linuxx64.efi.stub` | 坑 #18:缺 `systemd-boot-efi` |
+| `Failed to make loopback device …: Device or resource busy` | 坑 #17:容器里 repart 要 `--offline=yes` |
+| `Distribution of your host can't be detected …` | 坑 #15:宿主不受支持,用 `tools/build-container.sh` |
 
 ## 1. 完全进不了系统
 

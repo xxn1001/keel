@@ -265,7 +265,8 @@
     第一次接触这个项目很容易在这里卡住(看起来像错误,其实只是顺序问题)。
     ⇒ `tools/build-container.sh vm` 已经改成"先 build 再 vm";手动跑的话就是两条命令:
     `mkosi --profile install --profile test build` → `mkosi --profile install --profile test vm`。
-    别用 `--force` 图省事:`-f` 会把已构建的镜像删掉重来。
+    (这里曾经写着"别用 `--force` 图省事",**那是错的**:`-f` 不删增量缓存,而且换了 profile
+    之后不加 `-f` 反而会静默复用旧镜像 —— 见坑 #23。)
 
 20. **`RepartDirectories=` 会被 mkosi 的隐式默认值"追加",光在 profile 里覆盖是不够的。**
     mkosi 把"源目录里存在 `mkosi.repart/`"当作 `RepartDirectories=` 的默认值,而这个设置是
@@ -291,6 +292,42 @@
     `tools/build.sh` 不再用 `-B`,而是把同一个 `--image-version` 显式传给三个 profile。
     排查提示:**在别人机器上"改完再让人测"之前,先确认对面真的拉到了新代码**
     (`git pull` 的输出 + `git log --oneline -1`),否则可能白折腾两轮。
+
+22. **`WorkspaceDirectory=` 不能指向任何 `BuildSources=` 之内,而 `BuildSources=` 的默认值就是配置目录。**
+    为了让 workspace 和 `mkosi.output/` 落在同一个文件系统上(避免跨设备 rename 降级成复制 14 GiB),
+    曾经在 `mkosi.conf` 里写 `WorkspaceDirectory=mkosi.workspace`。结果真机上**连构建都起不来**:
+    ```
+    ‣ Output path /work/mkosi.output/keel.raw exists already. (Use --force to rebuild.)
+    ‣ The workspace directory (/work/mkosi.workspace) cannot be a subdirectory of any source directory (/work)
+    ‣ (Set BuildSources= to the empty string or use WorkspaceDirectory= to configure a different workspace directory)
+    ```
+    (`build` 那次因为坑 #23 直接返回了,所以三条是两次调用拼起来的:`build` 打印第一条,
+    随后 `vm` 撞上后两条。)mkosi 的检查是纯词法的:`wd.is_relative_to(tree.source)`,
+    而 `build_sources` 的默认值是 `[ConfigTree(<配置目录>)]` ⇒ 只要 workspace 在仓库里就必然踩中。
+    两个选项的代价:
+    - `BuildSources=`(空):`$SRCDIR`(`/work/src`)不再挂载 ⇒ `mkosi.postinst` 装文档、
+      `mkosi.finalize` 装 `schema-version` / `authorized_keys` 全部**静默降级**(它有 `-f` 守卫,
+      不报错,只是不干活)。用一个路径换三个静默失败,不划算。
+    - `WorkspaceDirectory=` 别处:默认 `/var/tmp`;在容器里那是容器自己的文件系统 ⇒ 产物只能复制。
+    ⇒ 现在的做法:仓库里**不设** `WorkspaceDirectory=`(保持默认 `/var/tmp`),由
+    `tools/build-container.sh` 把宿主机仓库里的 `mkosi.workspace/` **绑到容器的 `/var/tmp`** ——
+    workspace 仍在宿主机的文件系统上(rename + reflink 都能用),而 mkosi 看到的路径是
+    `/var/tmp/…`,不触发那条校验。`tools/verify.sh` 断言 `mkosi.conf` 里没有这个设置。
+
+23. **mkosi 的 `build` 是"没有才建":少了 `--force` 会静默复用旧产物。**
+    产物路径已存在时,mkosi 只打印一行 info 然后**返回 0**:
+    ```
+    ‣ Output path /work/mkosi.output/keel.raw exists already. (Use --force to rebuild.)
+    ```
+    版本号(`mkosi.version` 的时间戳)只写在镜像**内部**,产物文件名里没有它 ⇒
+    拿到的是"版本号是新的、内容是旧的"镜像,而且**没有任何错误**。
+    真机上已因此白测一轮:`build-container.sh vm` 里那步 `--profile install --profile test build`
+    因为没带 `-f` 被跳过,随后 `vm` 开的是**上一次构建的、没有自动登录**的旧镜像。
+    ⇒ 规则:**任何"要产生新产物"的地方都必须写 `--force`**(`tools/build.sh` 三次构建、
+    `tools/build-container.sh` 的 build 步骤),`tools/verify.sh` 里有对应断言。
+    顺带纠正一个曾经的错误说法:`-f` **不是**"删掉已构建的镜像重来",它只重建输出、
+    保留增量缓存(`mkosi.cache/`);要连缓存一起删才是 `-ff`。
+    (与坑 #19 的关系:那条说的是"跑 `vm` 前要先 `build`",这条说的是"`build` 得真的建东西"。)
 ---
 
 ## 4. 常用命令

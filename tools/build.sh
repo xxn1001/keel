@@ -36,13 +36,20 @@ log "本次版本:$VERSION"
 # (mkosi 25.x 在没有缓存目录时会拒绝 Incremental=yes)。
 mkdir -p mkosi.cache mkosi.pkgcache mkosi.output
 
-# 三个 profile 显式传同一个 --image-version,保证 dist/ 目录名和镜像里的 VERSION_ID 一致
+# 三个 profile 显式传同一个 --image-version,保证 dist/ 目录名和镜像里的 VERSION_ID 一致。
+#
+# **必须带 --force。** mkosi 的 `build` 语义是"没有才建":产物路径已存在时它只打印一行
+#   ‣ Output path /work/mkosi.output/keel.raw exists already. (Use --force to rebuild.)
+# 然后**返回 0**,什么都不做。而版本号只写在镜像内部(文件名里没有版本号),所以少了 -f
+# 就会静默复用上一次的产物 —— 你会拿着一份"版本号是新的、内容是旧的"镜像去装机(真机上
+# 已经这么白测过一轮,见 AGENTS.md 坑 #23)。
+# -f 只重建输出,不动增量缓存(mkosi.cache/);要连缓存一起删是 -ff,我们不用。
 log "构建 install 镜像"
-mkosi --profile install --image-version "$VERSION" build
+mkosi --profile install --image-version "$VERSION" --force build
 log "构建 slot-a 载荷"
-mkosi --profile slot-a --image-version "$VERSION" build
+mkosi --profile slot-a --image-version "$VERSION" --force build
 log "构建 slot-b 载荷"
-mkosi --profile slot-b --image-version "$VERSION" build
+mkosi --profile slot-b --image-version "$VERSION" --force build
 
 # ---------------------------------------------------------------------------
 # 组装 dist/
@@ -98,5 +105,5 @@ SCHEMA=$(cat schema-version 2>/dev/null || echo 1)
 log "完成:$D"
 log "下一步:"
 log "  装到机器上        sudo tools/burn.sh /dev/nvme0n1"
-log "  先在虚拟机里试    sudo mkosi --profile install --profile test vm"
+log "  先在虚拟机里试    sudo mkosi --profile install --profile test --force build && sudo mkosi --profile install --profile test vm"
 log "  发布更新          把 $D 里除 keel.raw/install.md/update.md 之外的文件放到更新源目录"

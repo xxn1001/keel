@@ -69,10 +69,15 @@ vm)
     # 也就是说:**只有 build 这个动作会自动把 tools tree 建出来**;
     # 用 vm 而 tools tree 还没建时,mkosi 直接拒绝(而不是顺手帮你建)。
     # 第一次会慢(tools tree + 全部软件包),之后两步都会命中缓存。
+    #
+    # build 那一步必须带 --force:mkosi 的 `build` 是"没有才建" —— 产物已存在时它只打印一行
+    #   ‣ Output path /work/mkosi.output/keel.raw exists already. (Use --force to rebuild.)
+    # 就返回成功、什么都不建。而 --profile test 是**改变了配置**的(打开自动登录),
+    # 少了 -f 就会拿着"上一次构建的、没有登录凭据的"旧镜像去开虚拟机(真机上踩过,坑 #23)。
     # --profile test 只是给控制台开 root 自动登录(仅虚拟机用,见 mkosi.profiles/test.conf)
     EXTRA="${EXTRA_MKOSI[*]:-}"
     PAYLOAD="tools/verify.sh \
-        && mkosi --profile install --profile test $EXTRA build \
+        && mkosi --profile install --profile test $EXTRA --force build \
         && mkosi --profile install --profile test $EXTRA vm"
     ;;
 shell) PAYLOAD='exec bash' ;;
@@ -94,7 +99,19 @@ if ! command -v mkosi >/dev/null 2>&1; then
 fi
 '
 
-ARGS=(run --rm -it --privileged -v "$PWD:/work" -w /work)
+# 把宿主机仓库里的 mkosi.workspace/ 绑到容器的 /var/tmp 上。
+# mkosi 的默认 workspace 是 /var/tmp/mkosi-workspace-*(见 config.workspace_dir_or_default),而
+# 容器自己的 /var/tmp 与 bind 进来的 mkosi.output/ 不是同一个文件系统 ⇒ 收尾时 rename 失败,
+# 降级成"复制"(日志里一堆 "Could not rename ... falling back to copying"),增量缓存也只能复制、
+# 不能 reflink/hardlink。绑过来之后 workspace、产物、缓存都在宿主机的同一个文件系统上。
+#
+# 为什么不用 mkosi.conf 里的 WorkspaceDirectory= 达到同样目的(曾经那么写,构建直接失败):
+# mkosi 不允许 workspace 位于任何 BuildSources 之内,而 BuildSources 的默认值就是配置目录本身。
+# 详见 mkosi.conf 里那段注释和 AGENTS.md 坑 #22。
+WS="$PWD/mkosi.workspace"
+mkdir -p "$WS" && chmod 1777 "$WS" || die "无法创建 $WS"
+
+ARGS=(run --rm -it --privileged -v "$PWD:/work" -v "$WS:/var/tmp" -w /work)
 [ -e /dev/kvm ] && ARGS+=(--device /dev/kvm)
 
 log "引擎:$ENGINE   镜像:$IMAGE   模式:$MODE"
