@@ -374,6 +374,13 @@ for pkg in systemd-boot systemd-boot-efi systemd-boot-tools; do
 done
 [ "$missing_pkgs" = 0 ] && ok "包清单包含 systemd-boot 三件套"
 
+# Debian 13 把 /bin/login 拆成独立包:缺了它控制台登录提示会每两秒重开(坑 #28)
+if grep -qE "^[[:space:]]*login[[:space:]]*$" mkosi.conf.d/20-packages.conf; then
+    ok "包清单包含 login(控制台登录 agetty → /bin/login 可用;libpam-runtime 是它的依赖)"
+else
+    no "包清单缺 login —— agetty exec /bin/login 失败,控制台登录提示会每两秒重开(坑 #28)"
+fi
+
 missing=0
 for c in os-status os-update os-rescue os-install; do
     [ -e "mkosi.extra/usr/bin/$c" ] || { no "缺少命令 $c"; missing=1; }

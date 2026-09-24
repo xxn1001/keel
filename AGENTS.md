@@ -399,6 +399,21 @@
     两个前提:宿主机有 `/dev/vsock`;QEMU 进程还活着(mkosi 把 SSH 私钥/CID 记在 `mkosi.output/`,
     容器之间共享 ✓,但容器一退 QEMU 就没了)⇒ 用 `tools/build-container.sh vm-bg` 起在后台容器里,
     再用 `… ssh` 进去。
+
+28. **Debian 13 把 `/bin/login` 拆成独立包 `login`:包清单里少了它,控制台登录完全不可用。**
+    现象:VM 控制台上一行行刷 `Debian GNU/Linux 13 localhost hvc0` + `localhost login: …`,
+    **每两秒重开一次,没有任何报错**,换密码登录也一样(`agetty` exec `/bin/login` 失败后退出,
+    报错只进 journal,不进控制台)。诊断证据(用一次性诊断单元打到控制台):
+    ```
+    ls: cannot access '/bin/login': No such file or directory
+    grep: /etc/pam.d/login: No such file or directory
+    login rc=127                     ← timeout: failed to run command '/bin/login'
+    BASH_OK  uid=0(root)             ← tty/会话/shell 都是好的,只差 login 这个二进制
+    ```
+    ⇒ `mkosi.conf.d/20-packages.conf` 里加 `login`(它会把 `libpam-runtime` 一起带进来);
+    `tools/verify.sh` 加了断言。**注意**:`util-linux` 不再提供 `/bin/login`,
+    `openssh-server` 也不会拉它 ⇒ 只装"看起来相关"的包是查不出来的(我们正是这么漏掉的)。
+    这也解释了坑 #26 的 autologin 死循环:`--autologin` 同样要经 `/bin/login`。
 ---
 
 ## 4. 常用命令
