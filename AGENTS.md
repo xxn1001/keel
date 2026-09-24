@@ -58,6 +58,9 @@
    (当时的假设是"initrd 会帮忙挂" —— 实测**不会**:initrd 里根本没有我们的文件,也没挂 `/Volume`。)
    ESP 同理:交给 `systemd-gpt-auto-generator` 自动挂(`/boot` 或 `/efi`,取决于镜像里哪个目录存在),
    代码里一律用 `$KEEL_ESP` / `$KEEL_UKI_DIR`(`lib.sh` 里用 `bootctl --print-esp-path` 现问,坑 #25)。
+   **⚠ 这条在"装机后的系统"里实测是坏的**(ESP 压根没挂上,而 `keel_esp()` 只是"猜"路径、
+   不验证挂载点)⇒ 见坑 #36:诊断命令、gpt-auto 的静默跳过条件、候选修法都在那里,
+   在修好之前**不要**假设 `$KEEL_ESP` 下面的东西是真的。
 
 3. **每个槽一个完整 UKI,内核与根文件系统永远配对。**
    切换槽 = 换整个 UKI(内核 + initrd + `root=` + 微码都在里面)。绝不允许"新内核 + 旧根"的组合 ——
@@ -576,6 +579,44 @@
     `tools/verify.sh` 有断言。**教训**:基底发行版的 os-release 字段(`VERSION_ID`/`ID`)描述的是
     **基底**,不是我们的产品 —— 凡是"我们自己的版本/标识"都要用 mkosi 注入的 `IMAGE_ID`/`IMAGE_VERSION`,
     或者干脆自己写一份文件。
+
+36. **装机后的系统里 ESP 没挂上:`os-status` 看不到 UKI,`keel-confirm` 也确认不了槽(2026-09 发现,先挂账,未解决)。**
+    现象(VM 里 `os-install /dev/vda` 装出来的系统,`os-status` 输出):
+    ```
+    ESP 上的 UKI(目录 /boot/EFI/Linux)
+      目录不存在:/boot/EFI/Linux            ← 一个 UKI 条目都没有
+    上次启动结果: 无记录
+    ```
+    但**这台机器确实是从那块盘启动起来的**(当前槽 a,pending 也是装机时写的)⇒ ESP 上的
+    loader 与 UKI 一定都在。所以"看不见"不是 ESP 空了,而是**它根本没挂到 `/boot`**:
+    `lib.sh` 的 `keel_esp()` 先问 `bootctl --print-esp-path`,而 bootctl 只按 gpt-auto 的规则
+    **猜**一个路径(镜像里 `/boot` 目录存在就报 `/boot`),**从不检查它是不是真的挂载点**
+    ⇒ 之后所有 `$KEEL_UKI_DIR` / bootctl 操作都落在一个空目录上。
+    后果都是静默的:`os-update` 写不进新 UKI、`bootctl set-preferred` 切不了槽、
+    boot counting 的 blessed 改名做不了 ⇒ **A/B 更新与"槽启动成功确认"这条链现在是断的**。
+    `systemd-gpt-auto-generator` 决定挂不挂 ESP 的条件(源码 `process_loader_partitions()` /
+    `add_partition_esp()`;注意与"ESP 里有没有文件"无关,而且**全都会静默跳过**):
+    1. `/etc/fstab` 里但凡有 `/boot` 或 `/efi` 下的条目 ⇒ 整个 ESP/XBOOTLDR 逻辑不生成;
+    2. `/boot` 必须是"没被占用"的目录(`path_is_busy()`:是挂载点、或**目录里有文件**都算占用)
+       —— 否则退到 `/efi`;`/efi` 也被占用就什么都不挂;
+    3. 固件这次启动的**必须就是这块 ESP**:它读 EFI 变量 `LoaderDevicePartUUID`
+       (`efi_loader_get_device_part_uuid()`,要求 efivarfs 已挂载)。变量读不到时打印
+       `EFI loader partition unknown, skipping ESP and XBOOTLDR mounts.` 就放弃;
+       变量指向的分区 UUID 与磁盘上的 ESP 不一致时同样放弃。
+    ⇒ 下次进那个系统先跑这几条(结论回填本节 + `docs/troubleshooting.md`):
+    ```bash
+    findmnt /boot /efi; ls -la /boot /efi
+    systemctl status boot.automount boot.mount efi.automount efi.mount --no-pager
+    ls /sys/firmware/efi/efivars | grep -i loader        # LoaderDevicePartUUID-… 在不在
+    lsblk -o NAME,SIZE,PARTLABEL,PARTUUID /dev/vda
+    cat /etc/fstab
+    journalctl -b | grep -iE 'gpt-auto|LoaderDevicePartUUID|ESP' | tail -20
+    ```
+    倾向的修法(等诊断出来再定,别急着改):**不要把 ESP 交给 gpt-auto** —— `keel-mounts` 里像挂
+    `/Volume` 那样扫 `/sys/class/block/*/uevent` 的 `PARTNAME=esp` 自己挂到 `/boot`
+    (必须 **rw**:boot counting / `bootctl set-preferred` / 写新 UKI 都要写),并且 `keel_esp()`
+    要验证"这个路径真的是挂载点",不成立就明确报错或自救(`os-rescue --repair-boot`),
+    **不要在空目录上静默继续** —— 那是这次最坑的地方:每一步都"成功",结果全落空。
 ---
 
 ## 4. 常用命令
@@ -637,3 +678,6 @@ sudo tools/burn.sh /dev/nvme0n1
 5. **装机后 nix 真的能用**(`nix-shell -p vim` 等)—— 第一次跑就撞上坑 #34(`/nix` 是符号链接),
    已改成「真实目录 + bind mount」。**待复验**:新镜像里 `/nix` 是真目录、bind 生效、
    `nix-shell -p …` 能装能跑;以及 `df -h /Volume` 确认首启把 volume 扩到了整盘(不变量 14)。
+6. **ESP 在装机后的系统里没挂上**(`os-status` 报 `/boot/EFI/Linux` 不存在、`上次启动结果: 无记录`,
+   而系统确实是从那块盘启动的)。已挂账到坑 #36 —— 后果是"写新 UKI / 切槽 / 启动成功确认"
+   这条 A/B 更新的链目前是**断的**。诊断命令与候选修法都写在坑 #36 里,排在 DHCP 之后解决。
