@@ -76,7 +76,9 @@ export DEBIAN_FRONTEND=noninteractive
 if ! command -v mkosi >/dev/null 2>&1; then
     echo "keel-container: 容器内安装 mkosi ..." >&2
     apt-get update -qq
-    apt-get install -y -qq --no-install-recommends mkosi bubblewrap ca-certificates git
+    # shellcheck 也装上:tools/verify.sh 第 5 项要用它,不然那项会被跳过
+    apt-get install -y -qq --no-install-recommends \
+        mkosi bubblewrap ca-certificates git shellcheck
 fi
 '
 

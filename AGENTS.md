@@ -211,6 +211,17 @@
     第二行是真问题,而且**配置绕不过去**(设 `ToolsTreeDistribution=debian` 也得先有宿主上的 `apt`)。
     ⇒ 解法是把构建放进受支持发行版的容器:`tools/build-container.sh`(默认 `debian:trixie`)。
 
+16. **mkosi 25.x 要求显式配置缓存/产物目录,27.x 有内建默认值。**
+    同一份 `mkosi.conf`,在 27 上 `mkosi summary` 一路通过,在 Debian trixie 的 mkosi 25.3 上直接失败:
+    `A cache directory must be configured in order to use --incremental`
+    —— 因为 25.x 的规则是"`mkosi.cache/` 存在才拿它当缓存目录",而 git 仓库里不可能有一个空目录。
+    同类还有 `OutputDirectory=`(不写就是"`mkosi.output/` 存在才用它,否则写当前目录",
+    于是产物落在哪取决于一个目录恰不存在)。
+    ⇒ `mkosi.conf` 里现在把 `OutputDirectory=` / `CacheDirectory=` / `PackageCacheDirectory=` 全部写死。
+    **教训**:`tools/verify.sh` 的覆盖范围受限于你用的那个 mkosi 版本 ——
+    本地 27 全绿不等于容器里的 25.3 也能跑。所以两边的版本差异要么用同一个容器固定下来,
+    要么在两边都跑一遍 verify。
+
 ---
 
 ## 4. 常用命令

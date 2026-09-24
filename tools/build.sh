@@ -32,6 +32,10 @@ if [ ! -e mkosi.version ]; then
 fi
 VERSION_OLD=$(cat mkosi.version)
 
+# 缓存目录先建出来:mkosi.conf 里已经显式指定了路径,这里只是保险
+# (mkosi 25.x 在没有缓存目录时会拒绝 Incremental=yes)。
+mkdir -p mkosi.cache mkosi.pkgcache mkosi.output
+
 # 第一个 profile 带 -B:构建成功才把新版本号写回 mkosi.version
 log "构建 install 镜像(会自动 bump 版本)"
 mkosi --profile install -B build
