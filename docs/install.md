@@ -114,6 +114,20 @@ sudo os-install /dev/nvme0n1
 
 U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)。路径 C(独立安装器 ISO)v1 不做。
 
+### 2.5 让新装好的系统能登录(必做)
+
+新镜像里**没有任何可用的登录凭据**:root 密码是锁的、没有普通用户、也没有你的 SSH 公钥。
+所以第一次装机前,至少做下面一件事,否则装完只能看着登录提示发呆:
+
+| 方式 | 做法 | 效果 |
+|---|---|---|
+| **首启 SSH 公钥(推荐)** | 把你的公钥放到仓库根目录的 `authorized_keys`(该文件已被 `.gitignore` 排除)。`mkosi.finalize` 会把它放进 `/Volume` 骨架的 `root/.ssh/authorized_keys` | 装完开机就能 `ssh root@<ip>`(sshd 默认已启用、`PermitRootLogin prohibit-password` 允许密钥登录) |
+| root 控制台密码 | 在仓库根目录建 `mkosi.rootpw`,内容写密码(mkosi 原生支持,同样已被 gitignore 排除) | 可以在文本控制台以 root 登录 |
+| 仅本地测试 | 构建时叠加 `--profile test`(root 自动登录) | 只适合虚拟机;真机上等于没有密码 |
+
+> 公钥文件放在仓库根目录而不是 `mkosi.extra/` 里:因为镜像里的 `/root` 是指向 `/Volume` 的符号链接,
+> 往 `mkosi.extra/root/...` 放的东西会在 finalize 换符号链接时丢掉(见 `AGENTS.md` 坑 #2/#3)。
+
 ## 3. 装之前必须确认
 
 | 项 | 要求 | 不满足会怎样 |

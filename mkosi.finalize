@@ -59,6 +59,16 @@ rm -rf "$SKEL/var/lib/dpkg" "$SKEL/var/lib/apt" "$SKEL/var/cache/apt" \
 install -d -m 0755 "$SKEL/var/log/journal"
 install -d -m 0755 "$SKEL/home"
 install -d -m 0700 "$SKEL/home/root"
+
+# 首启的 SSH 公钥:如果仓库根目录有 authorized_keys,就把它放进 /Volume 骨架的 root 家目录。
+# 为什么必须放在骨架里:镜像里的 /root 是指向 /Volume/home/root 的符号链接,
+# 构建期往镜像的 /root 放东西会在 finalize 换符号链接时被丢掉(AGENTS.md 坑 #2/#3)。
+# 没有这一步,新装好的系统是**进不去**的 —— root 密码是锁的、没有普通用户、也没有你的公钥。
+if [ -n "${SRCDIR:-}" ] && [ -f "$SRCDIR/authorized_keys" ]; then
+    install -d -m 0700 "$SKEL/home/root/.ssh"
+    install -m 0600 "$SRCDIR/authorized_keys" "$SKEL/home/root/.ssh/authorized_keys"
+    log "已把 authorized_keys 放进 /Volume 骨架(首启即可用该密钥以 root 身份 SSH 登录)"
+fi
 install -d -m 0755 "$SKEL/nix"
 for d in store var var/nix var/nix/db var/nix/gcroots var/nix/profiles \
          var/nix/temproots var/nix/trash var/nix/daemon-socket var/nix/builds; do

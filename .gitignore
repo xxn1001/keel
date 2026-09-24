@@ -34,3 +34,6 @@ __pycache__/
 
 # tools/build.sh 的组装产物
 dist/
+
+# 个人的首启 SSH 公钥(不要提交)
+authorized_keys
