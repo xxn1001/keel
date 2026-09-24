@@ -22,7 +22,7 @@ enable systemd-timesyncd.service
 enable ssh.service
 
 # DHCP(dhcpcd 顶替 networkd 的 DHCP 客户端,坑 #29)
-enable dhcpcd.service
+enable keel-dhcpcd.service
 
 # nix(Debian 的 nix-setup-systemd 提供;哪个存在就启用哪个)
 enable nix-daemon.service

@@ -392,8 +392,10 @@ fi
 # DHCP:networkd 的 DHCPv4 在本镜像里起不来(坑 #29)⇒ 必须是 dhcpcd + DHCP=no
 if grep -qE '^[[:space:]]*dhcpcd-base[[:space:]]*$' mkosi.conf.d/20-packages.conf \
    && grep -qE '^[[:space:]]*DHCP=no' mkosi.extra/etc/systemd/network/20-wired.network \
-   && [ -x mkosi.extra/usr/lib/dhcpcd/dhcpcd-hooks/20-keel-resolved ]; then
-    ok "DHCP 由 dhcpcd 负责(networkd DHCP=no + DNS 交给 resolved 的 hook)"
+   && [ -x mkosi.extra/usr/lib/dhcpcd/dhcpcd-hooks/20-keel-resolved ] \
+   && [ -f mkosi.extra/usr/lib/systemd/system/keel-dhcpcd.service ] \
+   && grep -q '^enable keel-dhcpcd.service$' mkosi.extra/usr/lib/systemd/system-preset/00-keel.preset; then
+    ok "DHCP 由 dhcpcd 负责(networkd DHCP=no + 自带 keel-dhcpcd 单元 + DNS hook)"
 else
     no "DHCP 配置不完整:需要 dhcpcd-base + DHCP=no + dhcpcd-hooks/20-keel-resolved(坑 #29)"
 fi
