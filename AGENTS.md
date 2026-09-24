@@ -492,6 +492,29 @@
     尺寸/volume 类型,并断言运行时那份里没有残留的 `CopyFiles=`。
     **教训**:凡是"构建脚本产出的文件还会在运行时被消费一遍"的东西,都要多问一句
     "里面的路径和默认值在运行时还成立吗"。
+
+32. **repart 在目标盘上格式化分区要用 `mkfs.<类型>`,而缺了它只会在"真要格式化"那一刻炸 —— 构建时那次 repart 用的是 tools tree,镜像里没有也照样全绿。**
+    真机(VM)装机走到 `os-install` 建表那一步才出现:
+    ```
+    Formatting future partition 0.
+    mkfs binary for vfat is not available.
+    keel: 错误:systemd-repart 建表失败。…
+    ```
+    注意**分区表本身是对的**(日志上方那张 `esp 1G / root-a 6G / root-b 6G / volume 剩余` 的表
+    与设计一致),失败的只是"把 ESP 格式化成 vfat"这一步 —— `mkfs.vfat` 在 Debian 里属于
+    **dosfstools**,而我们只装了提供 `mkfs.ext4`/`resize2fs` 的 e2fsprogs。
+    ⇒ 包清单里补 `dosfstools`;`tools/verify.sh` 现在成对断言 `dosfstools` + `e2fsprogs`。
+    **通用做法:凡是"只在运行时才被调用"的工具(格式化 / 挂载 / dd / 压缩 …),都要拿运行时
+    脚本里实际用到的命令去核对镜像里到底有没有。** 最省事的核对入口是 mkosi 写出的 manifest:
+    ```bash
+    python3 - <<'PY'
+    import json; d = json.load(open("mkosi.output/keel.manifest"))
+    print(len(d["packages"]), sorted(p["name"] for p in d["packages"]))
+    PY
+    ```
+    再对着 `mkosi.extra/usr/bin/os-*` 与 `mkosi.extra/usr/lib/keel/*` 里出现的命令逐个点名。
+    (2026-09 用这个办法过了 30 个候选命令:只有 `dosfstools` 一个真缺 —— 但就是它把装机卡住了。
+    `passwd`(useradd/passwd)、`mawk`(awk)、`hostname`、`systemd-repart` 都在,不用再补。)
 ---
 
 ## 4. 常用命令
@@ -545,5 +568,6 @@ sudo tools/burn.sh /dev/nvme0n1
 2. `systemd-sysupdate` 的 `Type=partition` transfer 对双槽布局的匹配语义(验证通过后换掉 v1 的直接写盘)。
 3. `/usr/lib/modules/<kver>` 挂 overlay 后 `depmod` + 模块加载的实际行为(为"第三方内核模块外置"做准备)。
 4. **`os-install` 的完整流程**(在 VM 里对第二块盘演练,见 `docs/install.md` §2.2)。
-   2026-09 第一次尝试就卡在"镜像里没有 `/usr/lib/keel/repart-install.d`"(已修,见坑 #31);
-   修完**还没有**走通过全流程 —— dd 根分区、mkfs volume、复制 ESP、写 pending 都未实测。
+   2026-09 首次尝试的两道坎都已修:镜像里没有 `/usr/lib/keel/repart-install.d`(坑 #31)、
+   镜像里没有 `dosfstools` 导致 repart 格式化 ESP 失败(坑 #32)。
+   **仍未走通全流程**:dd 根分区、mkfs volume、复制 ESP、写 pending 都没有实测过。

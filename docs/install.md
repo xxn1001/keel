@@ -126,8 +126,12 @@ sudo os-install /dev/nvme0n1
 > 原因见 `AGENTS.md` 坑 #31)。早于这个改动的产物没有它,敲 `os-install` 会直接报
 > 「找不到 repart 定义目录」—— 重新构建即可。
 >
-> 这条路径 **尚未在真机/虚拟机上走通过**:2026-09 第一次在 VM 里演练就卡在上面那个缺目录的
-> 问题上,修完还需要完整跑一遍(见 `AGENTS.md` §5 的待验证清单)。
+> live 镜像里还必须带上格式化工具:`dosfstools`(`mkfs.vfat`,repart 格式化 ESP 用)与
+> `e2fsprogs`(`mkfs.ext4`,repart 与 `os-install` 都用)—— 它们只在建表那一刻才被调用,
+> 少了不会在构建期报错(见 `AGENTS.md` 坑 #32)。
+>
+> 这条路径 **尚未在真机/虚拟机上走通过**:2026-09 第一次在 VM 里演练,先后卡在上面那个缺目录、
+> 以及镜像缺 `dosfstools` 两处(都已修),完整流程还需要再跑一遍(见 `AGENTS.md` §5 的待验证清单)。
 
 > **没有 `--seed-b`**:live 手上只有 A 槽的 UKI,它的 cmdline 写死了 `root=PARTLABEL=root-a`,
 > 复制一份改名成 `keel-b.efi` 会造出"B 的内核 + A 的根"的坏槽(违反不变量 3)。

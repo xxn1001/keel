@@ -123,6 +123,7 @@ journalctl -b -u systemd-networkd -u systemd-resolved -p warning
 | 现象 | 原因 | 修 |
 |---|---|---|
 | `找不到 repart 定义目录:/usr/lib/keel/repart-install.d(这个镜像不完整?)` | 这个产物里没装安装用的 repart 定义:`os-install` 要靠镜像内的 `/usr/lib/keel/repart-install.d` 在目标盘上建表,它由 `mkosi.postinst` 在构建时从 `repart/install/` 拷进去(`AGENTS.md` 坑 #31)。2026-09 之前的产物都没有这个目录 | 重新构建(`sudo tools/build-container.sh -p <临时密码>`)并重写 U 盘/虚拟盘 |
+| 建表阶段:`mkfs binary for vfat is not available.` | 镜像里缺 `dosfstools`(`mkfs.vfat`)—— repart 要在目标盘上把 ESP 格式化成 vfat,而构建时那次 repart 用的是 tools tree,所以构建全绿(`AGENTS.md` 坑 #32) | 重新构建(包清单已补 `dosfstools`) |
 | 建表成功但后面的步骤报错 | `os-install` 这条路径 **尚未在真机上验证过**(脚本头部的声明) | 把报错原文 + `lsblk -f` 现状贴出来,不要盲目重试 |
 
 > 注意:`os-install` 会**擦除整块目标盘**。在 VM 里演练时,目标盘要是另一块盘

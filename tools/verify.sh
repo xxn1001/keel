@@ -433,6 +433,18 @@ else
     no "包清单缺 login —— agetty exec /bin/login 失败,控制台登录提示会每两秒重开(坑 #28)"
 fi
 
+# systemd-repart 在目标盘上要自己调 mkfs:vfat 归 dosfstools,ext4 归 e2fsprogs。
+# 构建时那次 repart 用的是 mkosi 的 tools tree(里面两个都有),所以镜像里缺了不会报错,
+# 只有真机装机、repart 真的去格式化那一刻才炸(坑 #32)。
+missing_fmt=0
+for pkg in dosfstools e2fsprogs; do
+    if grep -qE "^[[:space:]]*${pkg}[[:space:]]*$" mkosi.conf.d/20-packages.conf; then :; else
+        no "包清单缺 $pkg —— repart 在目标盘上格式化分区时要用它(坑 #32)"
+        missing_fmt=1
+    fi
+done
+[ "$missing_fmt" = 0 ] && ok "包清单包含 dosfstools + e2fsprogs(repart 在目标盘上格式化 ESP / ext4 要用)"
+
 # os-install 在**运行时**要调 systemd-repart(不是构建时那棵 tools tree 里的),
 # 所以它必须在包清单里;少了它 U 盘里敲 os-install 会报 "command not found"。
 if grep -qE "^[[:space:]]*systemd-repart[[:space:]]*$" mkosi.conf.d/20-packages.conf; then
