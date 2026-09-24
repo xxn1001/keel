@@ -413,6 +413,28 @@
     `tools/verify.sh` 加了断言。**注意**:`util-linux` 不再提供 `/bin/login`,
     `openssh-server` 也不会拉它 ⇒ 只装"看起来相关"的包是查不出来的(我们正是这么漏掉的)。
     这也解释了坑 #26 的 autologin 死循环:`--autologin` 同样要经 `/bin/login`。
+
+29. **未解决:guest 里 networkd 的 DHCPv4 客户端起不来(`-ENOPKG` / "Package not installed")。**
+    症状(VM 里,`systemd-networkd` 正常启动、接口也认到了):
+    ```
+    systemd-networkd[556]: enp0s1: Failed to configure DHCPv4 client: Package not installed
+    ```
+    装到笔记本前必须解决(SSH/更新/nix 都要网)。**诊断方法(下次直接照这个做)**:
+    * **不要**用 drop-in 把 `systemd-networkd.service` 的 ExecStart 换成 `strace …` —— 实测两头都堵死:
+      单元沙箱让 `/tmp` 只读(`Can't fopen '/tmp/nd.trace': Read-only file system`),
+      并且拒绝 ptrace(`PTRACE_TRACEME: Operation not permitted`),结果 networkd 直接 crash-loop,
+      连网络管理都没了(踩过)。
+    * 正确做法:在 VM 里**手工**停掉服务再跑一份带 strace 的实例(手工跑就没有单元沙箱):
+      ```bash
+      systemctl stop systemd-networkd
+      strace -f -o /tmp/nd.trace /usr/lib/systemd/systemd-networkd &
+      sleep 3; networkctl reconfigure enp0s1; sleep 3
+      grep -nE 'ENOPKG|dhcp|openat.*ENOENT' /tmp/nd.trace | tail -30
+      ```
+      (`ENOPKG` 在 Linux 上也来自内核的 `request_module()` —— 即"想要一个不存在的模块/文件",
+      所以要看它到底在 open 什么。)
+    * 备选(不改设计也能先有网):加 `dhcpcd-base`,让 dhcpcd 负责 DHCP,
+      网络配置从 networkd 挪过去(代价:DNS 的交接要处理,resolved 的 stub 不能再被覆盖)。
 ---
 
 ## 4. 常用命令
