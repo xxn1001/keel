@@ -60,19 +60,56 @@ confirm() {
 }
 
 # 找目标盘上 PARTLABEL=<名字> 的分区路径。
-# 为什么靠 lsblk 的父设备关系而不是 /dev/disk/by-partlabel:live 与目标盘的分区
-# **标签同名**(都是 root-a / esp / volume),by-partlabel 只会指向其中一个(通常是
-# live 那个),必须按"父设备等于目标盘"来区分。
+# 不能直接用 /dev/disk/by-partlabel:live 与目标盘的分区**标签同名**(都是 root-a /
+# esp / volume),by-partlabel 只会指向其中一个(通常是 live 那个)。所以必须按
+# "父设备等于目标盘"来筛。
+#
+# 两条查找路径,先 sysfs 再 lsblk(2026-09 真机踩过):
+#   刚写完分区表的设备上,lsblk 的 PARTLABEL 列(来自 udev 的数据库)可能还是空的 ⇒
+#   repart 明明建好了四个分区,这里却一个都找不到,报"建表后找不到 root-a 分区"。
+#   /sys/class/block/*/uevent 里的 PARTNAME 是**内核直接给的**,不经过 udev,所以先查它。
+# 两条都没命中就等一会儿再来(重读分区表 + 等 udev settle),最多约 10 秒;
+# 仍然没有就把现场(lsblk 表 + /proc/partitions)打到 stderr —— 免得只看到一句"找不到"。
+# 注意:诊断信息一律走 stderr,stdout 只输出结果路径(调用方是 $(...) 捕获)。
 find_part() {
-    local want="$1" name path pk found=""
-    while read -r name path pk; do
-        [ -n "$path" ] || continue
-        if [ "$name" = "$want" ] && [ "$pk" = "$TARGET_NAME" ]; then
-            found="$path"
-            break
+    local want="$1" attempt d name path parent found
+    for (( attempt = 1; attempt <= 10; attempt++ )); do
+        # ① sysfs:内核真相,不依赖 udev
+        for d in /sys/class/block/*; do
+            name="$(sed -n 's/^PARTNAME=//p' "$d/uevent" 2>/dev/null)"
+            [ "$name" = "$want" ] || continue
+            # /sys/class/block/vda1 → .../block/vda/vda1,上一级目录名就是父设备名
+            parent="$(basename "$(dirname "$(readlink -f "$d")")")"
+            [ "$parent" = "$TARGET_NAME" ] || continue
+            printf '/dev/%s\n' "$(basename "$d")"
+            return 0
+        done
+
+        # ② lsblk:等 udev 把 PARTLABEL 填上(顺带兼容没有 sysfs PARTNAME 的环境)
+        found=""
+        while read -r name path parent; do
+            [ -n "$path" ] || continue
+            if [ "$name" = "$want" ] && [ "$parent" = "$TARGET_NAME" ]; then
+                found="$path"
+                break
+            fi
+        done < <(lsblk -no PARTLABEL,PATH,PKNAME "$TARGET" 2>/dev/null || true)
+        if [ -n "$found" ]; then
+            printf '%s\n' "$found"
+            return 0
         fi
-    done < <(lsblk -no PARTLABEL,PATH,PKNAME "$TARGET" 2>/dev/null || true)
-    printf '%s\n' "$found"
+
+        # 让内核重读分区表、等 udev 处理完,然后再试
+        blockdev --rereadpt "$TARGET" 2>/dev/null || true
+        udevadm settle --timeout=5 2>/dev/null || true
+        sleep 1
+    done
+
+    # ③ 还是没有:把现场打出来(stderr),stdout 保持为空
+    keel_log "在 ${TARGET} 上找不到 PARTLABEL=${want} 的分区;现场如下:"
+    lsblk -o NAME,SIZE,TYPE,PARTLABEL,PKNAME "$TARGET" 2>&1 | sed 's/^/    /' >&2
+    sed -n '1,20p' /proc/partitions 2>/dev/null | sed 's/^/    /' >&2
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -179,12 +216,17 @@ systemd-repart --dry-run=no --empty=force --definitions="$REPART_DEFS" "$TARGET"
     keel_die "systemd-repart 建表失败。检查目标盘是否被占用(swap/挂载点)、是否有别的进程在写它。"
 
 sync
+# 刚写完分区表的设备上,内核与 udev 可能都还没"看见"新分区:
+# repart 自己会让内核重读,但这里再显式做一次并等 udev settle,免得下面的查找扑空
+# (find_part 里还会重试约 10 秒,并在彻底失败时打印现场)。
+blockdev --rereadpt "$TARGET" 2>/dev/null || true
+udevadm settle --timeout=10 2>/dev/null || true
 part_root_a="$(find_part root-a)"
 part_volume="$(find_part volume)"
 part_esp="$(find_part esp)"
-[ -n "$part_root_a" ] || keel_die "建表后找不到目标盘上的 root-a 分区(检查 ${REPART_DEFS} 里的分区名)"
-[ -n "$part_volume" ] || keel_die "建表后找不到目标盘上的 volume 分区"
-[ -n "$part_esp" ] || keel_die "建表后找不到目标盘上的 esp 分区"
+[ -n "$part_root_a" ] || keel_die "建表后找不到目标盘上的 root-a 分区(检查 ${REPART_DEFS} 里的分区名;现场见上面的 lsblk 输出)"
+[ -n "$part_volume" ] || keel_die "建表后找不到目标盘上的 volume 分区(现场见上面的 lsblk 输出)"
+[ -n "$part_esp" ] || keel_die "建表后找不到目标盘上的 esp 分区(现场见上面的 lsblk 输出)"
 keel_log "目标分区:root-a=${part_root_a} volume=${part_volume} esp=${part_esp}"
 
 # ---------------------------------------------------------------------------

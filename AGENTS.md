@@ -515,6 +515,28 @@
     再对着 `mkosi.extra/usr/bin/os-*` 与 `mkosi.extra/usr/lib/keel/*` 里出现的命令逐个点名。
     (2026-09 用这个办法过了 30 个候选命令:只有 `dosfstools` 一个真缺 —— 但就是它把装机卡住了。
     `passwd`(useradd/passwd)、`mawk`(awk)、`hostname`、`systemd-repart` 都在,不用再补。)
+
+33. **刚写完分区表的设备,别指望 `lsblk` 立刻能看到 `PARTLABEL` —— 它那一列来自 udev 的数据库,而 udev 还没跟上。**
+    真机(VM)装机:repart 明明打印了 `Adding new partition 0..3 to partition table` +
+    `Telling kernel to reread partition table` 然后 `All done.`,紧接着 `os-install` 的
+    `find_part root-a` 却什么都没找到:
+    ```
+    keel: 错误:建表后找不到目标盘上的 root-a 分区(检查 /usr/lib/keel/repart-install.d 里的分区名)
+    ```
+    当时的实现只查 `lsblk -no PARTLABEL,PATH,PKNAME <目标盘>`。
+    ⇒ 现在的 `find_part` 两道保险:
+    1. **先扫 sysfs**:`/sys/class/block/*/uevent` 里的 `PARTNAME=` 是内核直接给的,不经过 udev
+       (同一个思路见不变量 2 里 `/Volume` 的挂载);父设备用
+       `basename "$(dirname "$(readlink -f /sys/class/block/vda1)")"` 判断,不靠 `lsblk` 的 PKNAME;
+    2. 查不到就 `blockdev --rereadpt` + `udevadm settle` 后**重试约 10 秒**,
+       仍然没有就把现场(`lsblk -o NAME,SIZE,TYPE,PARTLABEL,PKNAME` + `/proc/partitions`)打到 stderr ——
+       免得只看到一句"找不到",还要人再猜。
+    `tools/verify.sh` 用一棵**假 sysfs 树**(含另一块盘上的同名分区)把这段逻辑真跑一遍:
+    必须命中目标盘、忽略同名盘、查不到时 stdout 为空。
+    **教训**:`lsblk` 的 PARTLABEL/PARTTYPE 这些列是 udev 的产物,不是内核的;
+    对"刚刚才发生"的设备变化要用 sysfs(`/sys/class/block/*/uevent`)或 `/proc/partitions`。
+    (根因未最终确认:也可能是内核当时拒绝了 `BLKRRPART`(比如 repart 的 loop 设备还没放手),
+    所以现在额外显式做一次 `blockdev --rereadpt`;真机现场见 `docs/troubleshooting.md` §2.3。)
 ---
 
 ## 4. 常用命令
@@ -568,6 +590,7 @@ sudo tools/burn.sh /dev/nvme0n1
 2. `systemd-sysupdate` 的 `Type=partition` transfer 对双槽布局的匹配语义(验证通过后换掉 v1 的直接写盘)。
 3. `/usr/lib/modules/<kver>` 挂 overlay 后 `depmod` + 模块加载的实际行为(为"第三方内核模块外置"做准备)。
 4. **`os-install` 的完整流程**(在 VM 里对第二块盘演练,见 `docs/install.md` §2.2)。
-   2026-09 首次尝试的两道坎都已修:镜像里没有 `/usr/lib/keel/repart-install.d`(坑 #31)、
-   镜像里没有 `dosfstools` 导致 repart 格式化 ESP 失败(坑 #32)。
+   2026-09 首次尝试已经踩掉三道坎:镜像里没有 `/usr/lib/keel/repart-install.d`(坑 #31)、
+   镜像里没有 `dosfstools` 导致 repart 格式化 ESP 失败(坑 #32)、
+   建表成功后 `find_part` 立刻查 `lsblk` 的 PARTLABEL 查不到分区(坑 #33,已改成先扫 sysfs + 重试)。
    **仍未走通全流程**:dd 根分区、mkfs volume、复制 ESP、写 pending 都没有实测过。
