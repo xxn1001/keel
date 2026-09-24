@@ -1,0 +1,58 @@
+#!/bin/bash
+# keel 自检:把"这台机器到底行不行"的关键证据打到**控制台**上。
+#
+# 只存在于 test profile(整个 mkosi.extra-test/ 只由 mkosi.profiles/test.conf 挂进来),
+# 正式产物里没有这个文件、也没有 keel-selftest.service。
+#
+# ── 为什么需要它 ────────────────────────────────────────────────────
+# 验证是在**容器**里跑 `mkosi vm` 的,而容器里:
+#   * 没有 /dev/kvm(走了纯软件模拟,慢,但不影响功能验证);
+#   * 连不进 guest —— `mkosi ssh` 走 VSock,在容器里是坏的(AGENTS.md 坑 #27);
+#   * 控制台是 qemu 的 stdio,只能在宿主机的终端上看。
+# 所以让 guest 自己把结论喊到控制台上,是唯一一条自动化的验证路径。
+#
+# 打多轮是因为要验证的东西**是异步的**:DHCP 要等 networkd 起来、发 discover、
+# 拿到租约、resolved 设好 DNS —— 第一轮没地址完全正常,要看的是趋势。
+set -uo pipefail
+# shellcheck source=/usr/lib/keel/lib.sh
+# shellcheck disable=SC1091
+. /usr/lib/keel/lib.sh
+
+rounds=${KEEL_SELFTEST_ROUNDS:-10}
+interval=${KEEL_SELFTEST_INTERVAL:-20}
+
+# 挑第一块看起来是有线网卡的接口(en*/eth*);没有就说清楚,别静默什么都不打
+iface=""
+for d in /sys/class/net/*; do
+    n=${d##*/}
+    case "$n" in
+        en*|eth*) iface=$n; break ;;
+    esac
+done
+[ -n "$iface" ] || iface="(没有 en*/eth* 接口)"
+
+for (( i = 1; i <= rounds; i++ )); do
+    echo
+    echo "################ keel-selftest 第 $i/$rounds 轮(uptime $(cut -d' ' -f1 /proc/uptime 2>/dev/null)s)################"
+    echo "--- /etc/machine-id(必须是 32 位十六进制;若是 uninitialized 就是坑 #29 复发了)"
+    cat /etc/machine-id 2>/dev/null || echo "  读不到 /etc/machine-id"
+    echo "--- keel-mounts 的日志(machine-id 那行在这里)"
+    journalctl -b -u keel-mounts --no-pager 2>/dev/null | tail -n5 | sed 's/^/  /'
+    echo "--- IPv4 地址"
+    ip -4 -o addr show 2>/dev/null | awk '{ printf "  %-10s %s\n", $2, $4 }'
+    echo "--- networkctl list(IDX LINK TYPE OPERATIONAL SETUP)"
+    networkctl list --no-pager --lines=0 2>/dev/null | sed 's/^/  /'
+    echo "--- networkctl status $iface"
+    networkctl status "$iface" --no-pager 2>/dev/null \
+        | grep -E 'State:|Online state|Address:|Gateway:|DNS:|DHCP' | head -n12 | sed 's/^[[:space:]]*/  /'
+    echo "--- resolvectl(DNS 应该来自 DHCP)"
+    resolvectl status --no-pager 2>/dev/null \
+        | grep -E 'Current DNS Server|DNS Servers|Default Route' | head -n5 | sed 's/^[[:space:]]*/  /'
+    echo "--- systemd-networkd 最近日志(找 DHCPv4 / ENOPKG)"
+    journalctl -b -u systemd-networkd --no-pager 2>/dev/null | tail -n12 | sed 's/^/  /'
+    echo "--- 失败的单元"
+    systemctl --failed --no-pager 2>/dev/null | sed 's/^/  /'
+    [ "$i" -lt "$rounds" ] && sleep "$interval"
+done
+echo
+echo "################ keel-selftest 结束(共 $rounds 轮)################"

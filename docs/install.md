@@ -175,6 +175,12 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 | 4 | 创建并启用 swapfile(`/Volume/keel/swapfile`) | 不做休眠(决策 D9) |
 | 5 | 记录 `/Volume/keel/state` 与 `schema-version` | 之后 `os-status` 从这里读 |
 
+> 另外,比 firstboot 更早的 `keel-mounts.service` 会把 `/etc/machine-id` 从镜像里的占位符
+> `uninitialized` 换成真正的 ID(幂等;首启复用 PID1 已经用的那个)。这不是可选项:
+> machine-id 为空时 networkd 的 DHCPv4、IPv6 稳定隐私地址、resolved 的 DNSSEC 全部失效
+> (`AGENTS.md` 坑 #29、`architecture.md` §4.3)。ID 落在 `/etc` overlay 的 upper 上 ⇒
+> 在 `/Volume` 里、每台机器唯一、换槽与更新都不会丢。
+
 ### 预期看到什么
 
 | 现象 | 说明 |
@@ -182,7 +188,7 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 | UEFI 文本控制台 | `main` 不含 GPU 驱动/固件,靠内核 `simpledrm`/`efifb` 出文本;**没有图形界面是预期行为**(§7.3) |
 | 启动日志 | v1 的 cmdline 不加 `quiet`(§5.1),第一次真机跑能看见全部日志比"干净"重要 |
 | SSH | 镜像含 `openssh-server`;有线网络走 `systemd-networkd` + `systemd-resolved`(决策 D15) |
-| 找 IP | 控制台里 `ip a`,或 `networkctl status`;拿到 IP 后从别的机器 `ssh <user>@<ip>` |
+| 找 IP | 控制台里 `ip a`、`networkctl status`,或直接 `os-status`(有「网络」一节);拿到 IP 后从别的机器 `ssh <user>@<ip>` |
 
 > 待验证:**初始登录凭据**在 `architecture.md` 里还没规定(是否预置普通用户、root 是否可登录)。
 > 以实际镜像和 `mkosi.conf` 的 credential 配置为准;进不去就用 U 盘 live 环境挂上来看(§7.1 B)。

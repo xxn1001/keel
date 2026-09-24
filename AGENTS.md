@@ -407,7 +407,8 @@
 
 27. **虚拟机的 SSH(曾用 VSock)已移除 —— 容器里那条路是死的。**
     背景:mkosi 的 `ssh` 动词用 VSock 连 guest 的 `sshd-vsock.socket`,本意是绕开 guest 网络
-    (guest 里 DHCP 还没修)。实测 mkosi 25.3 的 `run_ssh` 会去 flock
+    (当时的理由之一是 guest 里 DHCP 还是坏的 —— 那条已由坑 #29 修掉,
+    但 VSock ssh 在容器里依旧是坏的,所以移除这个决定不变)。实测 mkosi 25.3 的 `run_ssh` 会去 flock
     `$XDG_RUNTIME_DIR/mkosi/machine`,容器里没有 `/run/mkosi` ⇒ `FileNotFoundError`。
     既然控制台密码登录已经可用(`tools/build-container.sh -p <密码>` → mkosi 的 `--root-password=`),这条路就不值得维护,
     已从 `tools/build-container.sh` 移除(vm-bg/ssh 两个模式一起删)。
@@ -428,34 +429,39 @@
     `openssh-server` 也不会拉它 ⇒ 只装"看起来相关"的包是查不出来的(我们正是这么漏掉的)。
     这也解释了坑 #26 的 autologin 死循环:`--autologin` 同样要经 `/bin/login`。
 
-29. **networkd 的 DHCPv4 客户端在本镜像里起不来(`-ENOPKG` / "Package not installed");已用 dhcpcd 顶替。**
+29. **networkd 的 DHCPv4 起不来(`-ENOPKG` / "Package not installed")—— 根因是 `/etc/machine-id` 永远是 `uninitialized`,已修(2026-09)。**
     症状(VM 里,`systemd-networkd` 正常启动、接口也认到了):
     ```
     systemd-networkd[556]: enp0s1: Failed to configure DHCPv4 client: Package not installed
     ```
-    装到笔记本前必须解决(SSH/更新/nix 都要网)。**诊断方法(下次直接照这个做)**:
-    * **不要**用 drop-in 把 `systemd-networkd.service` 的 ExecStart 换成 `strace …` —— 实测两头都堵死:
-      单元沙箱让 `/tmp` 只读(`Can't fopen '/tmp/nd.trace': Read-only file system`),
-      并且拒绝 ptrace(`PTRACE_TRACEME: Operation not permitted`),结果 networkd 直接 crash-loop,
-      连网络管理都没了(踩过)。
-    * 正确做法:在 VM 里**手工**停掉服务再跑一份带 strace 的实例(手工跑就没有单元沙箱):
-      ```bash
-      systemctl stop systemd-networkd
-      strace -f -o /tmp/nd.trace /usr/lib/systemd/systemd-networkd &
-      sleep 3; networkctl reconfigure enp0s1; sleep 3
-      grep -nE 'ENOPKG|dhcp|openat.*ENOENT' /tmp/nd.trace | tail -30
-      ```
-      (`ENOPKG` 在 Linux 上也来自内核的 `request_module()` —— 即"想要一个不存在的模块/文件",
-      所以要看它到底在 open 什么。)
-    * 备选(不改设计也能先有网):加 `dhcpcd-base`,让 dhcpcd 负责 DHCP,
-      网络配置从 networkd 挪过去(代价:DNS 的交接要处理,resolved 的 stub 不能再被覆盖)。
-    * **现状(2026-09)**:走的就是这个备选 —— `dhcpcd-base` + `20-wired.network` 里 `DHCP=no`
-      + `/etc/dhcpcd.conf` 的 `nohook resolv.conf`
-      + `dhcpcd-hooks/20-keel-resolved` 把 DNS 交给 resolved(`resolvectl dns/domain/default-route`),
-      所以 `/etc/resolv.conf` 仍然指向 resolved 的 stub ✓。`tools/verify.sh` 有三条断言守着。
-      **ENOPKG 的根因仍未查清** —— strace 里没有任何 `ENOPKG` 系统调用失败(全是无关 ENOENT),
-      说明是 networkd 内部判定"DHCP 实现不可用"(编译期开关或运行期条件)。哪天要换回 systemd 原生栈,
-      从这里接着查。
+    **根因(读源码定位的,不用再猜)**:
+    * `ENOPKG` 在这条路径上只有一个来源:`sd_id128_get_machine()` 读到的 `/etc/machine-id`
+      内容是字符串 `uninitialized` —— `id128-util.c` 专门为这个内容返回 `-ENOPKG`(不是 `ENOENT`)。
+      "Package not installed" 只是 `strerror(ENOPKG)` 的字面翻译,**跟"缺包"毫无关系**,
+      这也正是当初被带偏的地方。
+    * 调用链:`dhcp4_configure()` → `dhcp4_set_client_identifier()` → DUID 默认 `DUIDType=uuid`
+      → `sd_dhcp_duid_set_uuid()` → `sd_id128_get_machine_app_specific()` → `-ENOPKG`。
+      所以当年 strace 里"没有任何 ENOPKG 系统调用失败"完全正常:失败来自**文件内容判定**,
+      不是某次系统调用。
+    * 为什么它永远是 `uninitialized`:mkosi 写进镜像的就是这个占位符;而 PID1 首启做
+      machine-id 初始化时,我们的 `/etc` overlay **还没挂**、根还是只读的 ⇒ 它判定"只能 transient":
+      真 ID 写进 `/run/machine-id`,再 bind mount 到 `/etc/machine-id`;紧接着 `keel-mounts`
+      把 overlay 挂到 `/etc`,**那个 bind mount 被整个盖住**(overlay 的 lower 看不到挂在里面的
+      子挂载)⇒ `/etc/machine-id` 永远是 lower 里那句 `uninitialized`。
+      `systemd-machine-id-commit.service` 也救不了:它要求 `/etc/machine-id` 是**挂载点**
+      (已被盖掉),而 `/etc` 可写那条路又依赖我们的 overlay。
+    * 影响面不止 DHCP:IPv6 稳定隐私地址、resolved 的 DNSSEC 密钥、任何 `%m` 展开一起废。
+    ⇒ **修法**:`/usr/lib/keel/mounts` 在挂完 `/etc` overlay 之后**立刻**
+      `systemd-machine-id-setup`(幂等;首启会复用 `/run/machine-id` 里 PID1 刚生成的那个 ID,
+      所以本次启动前后拿到的是同一个),ID 落进 overlay 的 upper ⇒ 在 `/Volume` 上、每台机器唯一、
+      换槽与更新都不丢(`docs/architecture.md` §4.3)。`DHCP=yes` 交回 networkd,
+      `dhcpcd-base` / `keel-dhcpcd.service` / dhcpcd hook / `/etc/dhcpcd.conf` 全部删除。
+      `tools/verify.sh` 三条断言守着它(DHCP=yes;mounts 里的补齐且在挂 overlay 之后;没有 dhcpcd 残留)。
+    **教训**:① `-ENOPKG` 别按字面理解成"缺包" —— systemd 里它表示"功能需要的东西没配好",
+      machine-id 未初始化是最常见的一种;② **PID1 在挂我们的 overlay 之前对 `/etc` 做的任何写入
+      都会被盖掉**(它写的是 lower 那份),凡是 PID1 早期写 /etc 的东西,重启后都要问一句"它还在吗"。
+    (当时的诊断弯路:用 drop-in 把 networkd 的 `ExecStart` 换成 `strace …` —— 单元沙箱让 `/tmp`
+      只读、还拒绝 ptrace,networkd 直接 crash-loop;要在 VM 里手工停掉服务再跑 strace 才行。)
 
 30. **`mkosi vm`(以及 `shell`/`boot` 这类"操作已构建镜像"的动作)不解析配置文件,它读上一次 build 的 history;与 history 不同的 CLI 设置只警告、不生效。**
     mkosi 25.3 的 `parse_config`(27 同):
@@ -681,3 +687,8 @@ sudo tools/burn.sh /dev/nvme0n1
 6. **ESP 在装机后的系统里没挂上**(`os-status` 报 `/boot/EFI/Linux` 不存在、`上次启动结果: 无记录`,
    而系统确实是从那块盘启动的)。已挂账到坑 #36 —— 后果是"写新 UKI / 切槽 / 启动成功确认"
    这条 A/B 更新的链目前是**断的**。诊断命令与候选修法都写在坑 #36 里,排在 DHCP 之后解决。
+7. **networkd 原生 DHCP 真能拿到租约**(坑 #29 的复验,已随本轮改动一起在 VM 里验)—— 期望:
+   `/etc/machine-id` 是 32 位十六进制(machine-id 补齐生效)、`networkctl status <if>` 的 `State`
+   是 `routable`、DNS 由 networkd 交给 resolved、`os-status` 的「网络」一节有地址;
+   并且镜像里**没有** dhcpcd(`command -v dhcpcd` 无输出)。复验用的自检在 test profile 里
+   (`mkosi.extra-test/`,`keel-selftest.service` 把结果打到控制台)。

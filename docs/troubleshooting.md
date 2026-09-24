@@ -118,6 +118,29 @@ journalctl -b -u systemd-networkd -u systemd-resolved -p warning
 `/etc/resolv.conf` 没指向 `/run/systemd/resolve/stub-resolv.conf`(postinst 里做的,§11 —— 被改坏就走 §3 的
 `--reset-etc`)。无线网络 main 不做。
 
+**DHCP 拿不到时先看 `/etc/machine-id`**(这是坑 #29,曾经害我们上了 dhcpcd 顶替):
+
+```bash
+cat /etc/machine-id        # 必须是 32 位十六进制;打印 "uninitialized" 就是这个问题
+os-status                  # 「网络」一节会直接告警(机器 ID 无效 + 没有 IPv4 地址)
+journalctl -b -u systemd-networkd | grep -iE 'DHCP|ENOPKG'
+```
+
+`/etc/machine-id` 是 `uninitialized`/空时,networkd 生成 DUID(默认 `DUIDType=uuid`)会拿到
+`-ENOPKG`,日志里的文字是误导性的 `Failed to configure DHCPv4 client: Package not installed`;
+同一个原因还会让 IPv6 稳定隐私地址、resolved 的 DNSSEC 密钥一起失效。
+正常流程由 `keel-mounts` 在挂完 `/etc` overlay 之后立刻 `systemd-machine-id-setup` 补一个真 ID
+(写进 overlay 的 upper ⇒ 在 `/Volume` 上,换槽/更新都不丢)。手动修:
+
+```bash
+systemd-machine-id-setup          # 幂等:已有合法 ID 时什么都不做
+systemctl restart systemd-networkd
+```
+
+> 历史教训(别再走回头路):我们一度用 `dhcpcd-base` + `DHCP=no` 绕过它 ——
+> 根因修掉之后 dhcpcd 已从镜像移除。**不要**为了"先有网"再挂第二个 DHCP 客户端:
+> 两个客户端抢一块网卡只会互相打架,而 `/etc/machine-id` 该修就得修 —— 它影响的不只是 DHCP。
+
 ### 2.3 装机时 `os-install` 报错
 
 | 现象 | 原因 | 修 |

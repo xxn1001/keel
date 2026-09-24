@@ -1,0 +1,20 @@
+[Unit]
+Description=keel 自检:把 machine-id / DHCP / 单元失败的证据打到控制台(仅 test profile)
+Documentation=file:/usr/share/doc/keel/troubleshooting.md
+# 等系统完全起来再打第一轮:那时 DHCP 该拿到租约了(确实有问题的话,
+# 后面几轮会一直打出同样的"没地址",一眼就能区分"还没好"和"就是不行")。
+After=multi-user.target
+# 自检只是观察者:失败、超时都不该影响系统,也不要拦住 multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=oneshot
+# 控制台 + journal 双写:宿主机的 `mkosi vm` 终端能看到,guest 的 journal 里也留一份
+StandardOutput=journal+console
+StandardError=journal+console
+ExecStart=/usr/lib/keel/selftest
+# 自检脚本里所有命令都做了容错,正常退出就是 0;真异常退出也只记一笔,不要标红
+SuccessExitStatus=0 1 2
+
+[Install]
+WantedBy=multi-user.target

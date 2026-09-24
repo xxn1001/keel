@@ -132,6 +132,18 @@ workdir  = /Volume/overlayfs/etc/work
 所有需要持久化的系统配置都写在这里(经 overlay 落到 `/Volume`),包括将来 `/etc/ld.so.conf.d/nvidia.conf`
 这类为"外置驱动"准备的钩子。
 
+**挂完 overlay 之后立刻补 `/etc/machine-id`,这是同一件挂载工作的一部分**(2026-09,坑 #29):
+镜像里放的是 mkosi 的占位符 `uninitialized`,而 PID1 做 machine-id 初始化时 overlay 还没挂、
+根还是只读的 ⇒ 它走"transient"路径:真 ID 写进 `/run/machine-id` 再 bind mount 到
+`/etc/machine-id`。紧接着我们把 overlay 挂到 `/etc`,**那个 bind mount 被整个盖住**
+(overlay 的 lower 看不到挂在里面的子挂载)⇒ `/etc/machine-id` 永远是 `uninitialized`
+⇒ 一切读 machine-id 的东西拿到 `-ENOPKG`:networkd 的 DHCPv4(DUID 默认是 uuid,
+报错文字却是误导性的 `Package not installed`)、IPv6 稳定隐私地址、resolved 的 DNSSEC 密钥全废。
+`systemd-machine-id-commit.service` 也救不了 —— 它的条件是 `/etc/machine-id` 是挂载点。
+所以 `keel-mounts` 挂完 overlay 就 `systemd-machine-id-setup`(幂等;首启会复用
+`/run/machine-id` 里 PID1 刚生成的那个 ID,所以本次启动前后一致),ID 落在 overlay 的 upper
+⇒ 存在 `/Volume` 上,换槽/更新都不丢、每台机器唯一。
+
 ### 4.4 构建顺序上的硬约束
 
 ```
@@ -359,7 +371,9 @@ RemovePackages=
 ```
 
 网络用 `systemd-networkd` + `systemd-resolved`(决策 D15);`/etc/resolv.conf` 在 postinst 里
-指向 `/run/systemd/resolve/stub-resolv.conf`。
+指向 `/run/systemd/resolve/stub-resolv.conf`。有线 DHCP 由 networkd 自己做
+(`20-wired.network` 里 `DHCP=yes`),它拿到的 DNS 直接交给 resolved —— 前提是
+`/etc/machine-id` 有效(§4.3、坑 #29),否则连 DHCP 客户端都配不起来。
 
 **这份清单是起点不是终点** —— 第一次真机构建时按报错调整,调整结果回写到这里。
 

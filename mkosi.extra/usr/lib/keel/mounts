@@ -110,3 +110,40 @@ if [ "$(findmnt -no FSTYPE /etc 2>/dev/null || true)" != overlay ]; then
     # 只存在于 upper(/Volume)里的 unit 永远不会被加载(坑 #8)。
     systemctl daemon-reload || keel_log "daemon-reload 失败(已忽略)"
 fi
+
+# ---------------------------------------------------------------------------
+# /etc/machine-id:把 mkosi 写的占位符 "uninitialized" 变成真正的 ID
+#
+# 不做这一件事,整个 networkd 的 DHCP 就是死的 —— 这就是坑 #29("Failed to configure
+# DHCPv4 client: Package not installed")的根因:
+#
+#   * mkosi 在镜像里放的是 `uninitialized`(它的占位符,表示"首启再生成");
+#   * PID1 做 machine-id 初始化时**我们的 overlay 还没挂**(那是本脚本干的),
+#     它看到根是只读的,就判定"只能 transient":把真 ID 写到 /run/machine-id,
+#     再 bind mount 到 /etc/machine-id 上;
+#   * 紧接着我们把 overlay 挂到 /etc —— **那个 bind mount 被整个盖住**
+#     (overlay 的 lower 是"旧的 /etc",看不到挂在里面的子挂载)
+#     ⇒ /etc/machine-id 永远是 lower 里那句 "uninitialized";
+#   * 于是 `sd_id128_get_machine()` 返回 -ENOPKG(`id128_read` 对 "uninitialized"
+#     这个内容专门返回 ENOPKG,不是 ENOENT),networkd 生成 DUID(默认
+#     `DUIDType=uuid`,要 machine-id)时拿到它 ⇒ 每个启动都失败,报文
+#     "Package not installed" 就是 ENOPKG 的 strerror。
+#   * `systemd-machine-id-commit.service` 也救不了:它要求 /etc/machine-id 是**挂载点**,
+#     而那个 bind mount 已经被 overlay 盖掉了,条件永远不成立。
+#
+# 影响面不止 DHCP:IPv6 稳定隐私地址、resolved 的 DNSSEC 密钥、任何 `%m` 展开
+# 都要 machine-id(顺手也解释了为什么这些功能一直"没反应")。
+#
+# 现在 /etc 已经可写,直接把 ID 落到 overlay 的 upper(=/Volume,换槽和更新都不丢):
+#   * 幂等:已经是 32 位十六进制就什么都不做;
+#   * 首启时 systemd-machine-id-setup 会**复用** /run/machine-id 里 PID1 刚生成的那个 ID
+#     (acquire_machine_id() 第一件事就是读它),所以本次启动前后拿到的是同一个 ID。
+# ---------------------------------------------------------------------------
+if ! grep -qxE '[0-9a-f]{32}' /etc/machine-id 2>/dev/null; then
+    if systemd-machine-id-setup >/dev/null 2>&1; then
+        keel_log "已生成 machine-id($(cat /etc/machine-id 2>/dev/null))"
+    else
+        keel_log "警告:systemd-machine-id-setup 失败 —— DHCP 的 DUID、IPv6 稳定地址、"
+        keel_log "      resolved 的 DNSSEC 密钥都会拿到 -ENOPKG;进系统后手动跑一遍它(坑 #29)"
+    fi
+fi

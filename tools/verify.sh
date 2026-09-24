@@ -531,15 +531,58 @@ else
     no "finalize 里没有 dpkg 工具链的删除/断言(决策 D10)"
 fi
 
-# DHCP:networkd 的 DHCPv4 在本镜像里起不来(坑 #29)⇒ 必须是 dhcpcd + DHCP=no
-if grep -qE '^[[:space:]]*dhcpcd-base[[:space:]]*$' mkosi.conf.d/20-packages.conf \
-   && grep -qE '^[[:space:]]*DHCP=no' mkosi.extra/etc/systemd/network/20-wired.network \
-   && [ -x mkosi.extra/usr/lib/dhcpcd/dhcpcd-hooks/20-keel-resolved ] \
-   && [ -f mkosi.extra/usr/lib/systemd/system/keel-dhcpcd.service ] \
-   && grep -q '^enable keel-dhcpcd.service$' mkosi.extra/usr/lib/systemd/system-preset/00-keel.preset; then
-    ok "DHCP 由 dhcpcd 负责(networkd DHCP=no + 自带 keel-dhcpcd 单元 + DNS hook)"
+# DHCP 走 systemd 原生栈(坑 #29 的根因已查清并修好:mkosi 在镜像里写的是
+# /etc/machine-id=uninitialized,PID1 的 transient bind mount 又被 /etc overlay 盖住,
+# 于是 machine-id 永远是空的 ⇒ networkd 生成 DUID 时拿到 -ENOPKG)。
+# 反过来也要断言:不许再出现 dhcpcd —— 两个 DHCP 客户端抢一块网卡只会互相打架。
+if grep -qE '^[[:space:]]*DHCP=yes' mkosi.extra/etc/systemd/network/20-wired.network \
+   && ! grep -rqE '^[[:space:]]*DHCP=no' mkosi.extra/etc/systemd/network/ \
+   && grep -q 'systemd-machine-id-setup' mkosi.extra/usr/lib/keel/mounts \
+   && ! grep -qE '^[[:space:]]*dhcpcd' mkosi.conf.d/20-packages.conf \
+   && [ ! -e mkosi.extra/etc/dhcpcd.conf ] \
+   && [ ! -e mkosi.extra/usr/lib/systemd/system/keel-dhcpcd.service ] \
+   && [ ! -d mkosi.extra/usr/lib/dhcpcd ] \
+   && ! grep -q 'keel-dhcpcd' mkosi.extra/usr/lib/systemd/system-preset/00-keel.preset; then
+    ok "DHCP 由 systemd-networkd 负责(DHCP=yes + mounts 里补 machine-id,没有 dhcpcd 残留)"
 else
-    no "DHCP 配置不完整:需要 dhcpcd-base + DHCP=no + dhcpcd-hooks/20-keel-resolved(坑 #29)"
+    no "DHCP 配置不对:需要 DHCP=yes + mounts 里的 systemd-machine-id-setup,且不能再有 dhcpcd 的包/单元/hook/配置(坑 #29)"
+fi
+
+# machine-id 必须在 /etc overlay **挂好之后**才补:在它之前 /etc 还是只读的 lower,
+# 写了也留不下来(而且那正是 PID1 transient 方案失效的同一个原因)
+mid_line=$(grep -n 'systemd-machine-id-setup' mkosi.extra/usr/lib/keel/mounts | head -n1 | cut -d: -f1)
+ovl_line=$(grep -n 'mount -t overlay overlay' mkosi.extra/usr/lib/keel/mounts | head -n1 | cut -d: -f1)
+if [ -n "$mid_line" ] && [ -n "$ovl_line" ] && [ "$mid_line" -gt "$ovl_line" ]; then
+    ok "machine-id 是在挂完 /etc overlay 之后补的(第 $ovl_line 行挂 overlay,第 $mid_line 行补 ID)"
+else
+    no "machine-id 的补齐位置不对(mounts 里必须在 'mount -t overlay overlay' 之后)"
+fi
+
+# 虚拟机自检(把 machine-id / DHCP 的证据打到控制台)只在 test profile 里,正式产物不带。
+# 这是"怎么在容器里验证 guest"的唯一自动化通道,所以它的接线也要被守住:
+# 少一个文件、或者不小心放进 mkosi.extra/,都会静默失效(要么不跑,要么跟着发行版发出去)。
+if grep -q '^ExtraTrees=mkosi.extra-test$' mkosi.profiles/test.conf \
+   && [ -x mkosi.extra-test/usr/lib/keel/selftest ] \
+   && [ -f mkosi.extra-test/usr/lib/systemd/system/keel-selftest.service ] \
+   && grep -q '^enable keel-selftest.service$' mkosi.extra-test/usr/lib/systemd/system-preset/01-keel-test.preset \
+   && [ ! -e mkosi.extra/usr/lib/keel/selftest ] \
+   && [ ! -e mkosi.extra/usr/lib/systemd/system/keel-selftest.service ] \
+   && [ "$(grep -rl 'mkosi.extra-test' mkosi.conf mkosi.conf.d mkosi.profiles 2>/dev/null | tr '\n' ' ')" = "mkosi.profiles/test.conf " ]; then
+    ok "虚拟机自检只在 test profile(mkosi.extra-test + preset 启用,正式产物里没有)"
+else
+    no "虚拟机自检的接线不对:需要 test.conf 的 ExtraTrees=mkosi.extra-test + 脚本/单元/preset,且不能出现在 mkosi.extra/ 或别的 profile 里"
+fi
+
+# 尽力而为:ExtraTrees= 是集合型(追加)设置,万一哪天追加语义变了,自检树就静默不生效。
+# 解析不出来不判失败(输出格式与 mkosi 版本有关),只把事实说出来。
+if mkosi --profile install --profile test summary >/dev/null 2>&1; then
+    if mkosi --profile install --profile test summary 2>/dev/null | grep -q 'mkosi\.extra-test'; then
+        ok "mkosi 解析 test profile 时确实带上了 mkosi.extra-test"
+    else
+        no "mkosi 解析 test profile 时**没有**带上 mkosi.extra-test(ExtraTrees= 的追加语义变了?)"
+    fi
+else
+    warn "mkosi 不可用,跳过 ExtraTrees 解析核对"
 fi
 
 missing=0

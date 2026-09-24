@@ -7,4 +7,8 @@ Name=en*
 Name=eth*
 
 [Network]
-DHCP=no                     # DHCP 交给 dhcpcd(坑 #29)
+# DHCP 由 networkd 自己负责 —— 它一度是坏的(坑 #29:ENOPKG),根因是
+# /etc/machine-id 永远是 "uninitialized",现在由 /usr/lib/keel/mounts 在挂完
+# /etc overlay 之后立刻补一个真 ID。**不要**为了"先有网"再把 DHCP 挪给 dhcpcd:
+# 两个 DHCP 客户端同时抢一个网卡只会互相打架。
+DHCP=yes

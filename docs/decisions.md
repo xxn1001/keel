@@ -153,6 +153,13 @@
   `desktop` profile 再切换/追加 `NetworkManager`(Wi-Fi、图形化管理)。
 - **理由**:main 只保证有线可用,用 systemd 原生栈可以省掉 dbus/polkit/NetworkManager 一大串依赖;
   桌面场景才真正需要 NetworkManager。
+- **补充(2026-09,坑 #29)**:DHCP **必须**由 networkd 自己做,不要再引第二个客户端(dhcpcd)。
+  networkd 的 DHCPv4 曾经在本镜像里起不来,报 `Failed to configure DHCPv4 client: Package not installed`
+  (= `-ENOPKG`),当时的临时办法是装 `dhcpcd-base` 顶替;根因已查清 —— 镜像里
+  `/etc/machine-id` 是 mkosi 写的占位符 `uninitialized`,而 PID1 首启用的 transient bind mount
+  又被我们随后挂的 `/etc` overlay 盖住,于是 machine-id 永远是空的,networkd 生成 DUID 时拿到 `-ENOPKG`。
+  现在由 `keel-mounts` 在挂完 overlay 后立刻 `systemd-machine-id-setup` 补上,`DHCP=yes` 交回 networkd,
+  dhcpcd 已从镜像里彻底移除(它同时也会喂 DNS 给 resolved,现在这一步由 networkd 直接做)。
 
 ## D16 命令命名
 

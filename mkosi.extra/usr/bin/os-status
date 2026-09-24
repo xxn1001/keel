@@ -208,7 +208,52 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7) 更新源配置(只报告,不探测可达性 —— 那要联网,不该由状态报告承担)
+# 7) 网络:机器 ID、链路、地址、DNS
+#
+# 为什么把 machine-id 放在网络这一节:它坏掉时**唯一**明显的症状就是
+# "networkd 的 DHCP 起不来"(坑 #29 —— DUID 默认要 machine-id,拿不到就是
+# -ENOPKG,报错文字还是误导性的 "Package not installed")。
+# 顺手也能看出 IPv6 稳定地址、resolved 的 DNSSEC 为什么不动。
+# ---------------------------------------------------------------------------
+hr
+echo "网络"
+mid="$(read_file /etc/machine-id)"
+if printf '%s' "$mid" | grep -qxE '[0-9a-f]{32}'; then
+    echo "  机器 ID    : ${mid}"
+else
+    echo "  机器 ID    : 无效或缺失(${mid:-空})"
+    echo "               警告:依赖 machine-id 的功能都会拿到 -ENOPKG —— 最典型的是"
+    echo "               networkd 的 DHCPv4(坑 #29)。手动修:systemd-machine-id-setup"
+fi
+
+links="$(networkctl list --no-pager --lines=0 2>/dev/null \
+    | awk '$1 ~ /^[0-9]+$/ { printf "  %-10s %-13s %s\n", $2, $4, $5 }')" || links=""
+if [ -n "$links" ]; then
+    echo "  链路       :"
+    printf '%s\n' "$links"
+else
+    echo "  链路       : 未知(systemd-networkd 没在跑?systemctl status systemd-networkd)"
+fi
+
+addrs="$(ip -4 -o addr show scope global 2>/dev/null | awk '{ printf "  %-10s %s\n", $2, $4 }')" || addrs=""
+if [ -n "$addrs" ]; then
+    echo "  IPv4 地址  :"
+    printf '%s\n' "$addrs"
+else
+    echo "  IPv4 地址  : 无(DHCP 没拿到?journalctl -u systemd-networkd -b)"
+fi
+
+dns="$(resolvectl status --no-pager 2>/dev/null \
+    | awk '/Current DNS Server:|DNS Servers:/ { sub(/^[ \t]+/, ""); print "  " $0 }' | head -n4)" || dns=""
+if [ -n "$dns" ]; then
+    echo "  DNS        :"
+    printf '%s\n' "$dns"
+else
+    echo "  DNS        : 未知(systemd-resolved 没在跑?/etc/resolv.conf 指向它的 stub)"
+fi
+
+# ---------------------------------------------------------------------------
+# 8) 更新源配置(只报告,不探测可达性 —— 那要联网,不该由状态报告承担)
 # ---------------------------------------------------------------------------
 hr
 src="$(keel_conf UPDATE_SOURCE "" 2>/dev/null)" || src=""
