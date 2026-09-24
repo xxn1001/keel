@@ -747,4 +747,7 @@ sudo tools/burn.sh /dev/nvme0n1
    networkd 日志 `enp0s1: DHCPv4 address 10.0.2.15/24, gateway 10.0.2.2 acquired from 10.0.2.2`,
    **全程没有 ENOPKG**,连跑 10 轮(200 秒)状态稳定。复验入口就是 test profile 里的
    `mkosi.extra-test/`(`keel-selftest.service` 把现场打到控制台)。
-   同轮 VM 顺手抓到坑 #37(live 镜像 volume 只有 1 GiB + swapfile 写满 ⇒ `/etc` 也写不进去),已修。
+   同轮 VM 顺手抓到坑 #37(live 镜像 volume 只有 1 GiB + swapfile 写满 ⇒ `/etc` 也写不进去),已修;
+   **第三轮 VM 复验**:`请求的 swap 是 1906 MiB,但 /Volume 只有 943 MiB 可用 ⇒ 按 471 MiB 创建`
+   → `已启用 swap` → `Finished keel-swapfile.service`,`/etc` 写探针 `WRITE_OK`,
+   失败单元只剩 6 个 `systemd-pcrlock-*`(VM 没 TPM,预期)。
