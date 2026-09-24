@@ -235,8 +235,21 @@
     另外 `mkosi.conf` 里也把 `RepartOffline=yes` 显式写出来了,不依赖版本默认值。
     开发容器里没有 `/dev/loop*`,repart 会静默回退到 offline ⇒ 这个坑在那里永远看不见,
     所以只能在文档里记下来。
+    **补充证据(来自真机构建日志)**:repart 会打印
+    `Configured GrowFileSystem=yes for partition type 'd605065b-…' that doesn't support it, ignoring.`
+    —— 对我们的私有类型它连那个 GPT 标志位都不设。所以 `GrowFileSystem=yes` 已从两个定义里删掉,
+    只留注释说明,免得每次构建都多一行看着像警告的输出。
 
-18. **`ToolsTree=default` 的 tools tree 只在 `build` 动作里自动构建。**
+18. **Debian 把 `systemd-boot` 拆成三个包,少一个的后果分别是"构建失败"和"启动后才炸"。**
+    | 包 | 提供 | 缺了会怎样 |
+    |---|---|---|
+    | `systemd-boot` | 集成与服务 | — |
+    | `systemd-boot-efi` | `/usr/lib/systemd/boot/efi/linuxx64.efi.stub`、`systemd-bootx64.efi` | **构建失败**:`Unified kernel image(s) requested but systemd-stub not found at /usr/lib/systemd/boot/efi/linuxx64.efi.stub` |
+    | `systemd-boot-tools` | `/usr/bin/bootctl` | **构建能过,启动后才炸**:`keel-firstboot` / `keel-confirm` / `os-update` / `os-rescue` 全都调不到 `bootctl` |
+    我们一开始只装了 `systemd-boot`,两个都缺 —— 第一个在构建最后一步炸出来,第二个本来会等到
+    真机首启才暴露。`tools/verify.sh` 现在有断言:包清单缺任何一个都会报错。
+
+19. **`ToolsTree=default` 的 tools tree 只在 `build` 动作里自动构建。**
     mkosi 源码里的守卫是:
     ```python
     if tools and not have_cache(tools):

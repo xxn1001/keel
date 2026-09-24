@@ -207,6 +207,18 @@ else
     ok "没有残留的旧名字"
 fi
 
+# Debian 把 systemd-boot 拆成三个包,少一个的后果分别是"构建失败"和"启动后才炸":
+#   缺 systemd-boot-efi   → mkosi 生成 UKI 时报 systemd-stub not found
+#   缺 systemd-boot-tools → 构建能过,但运行时没有 bootctl(keel-firstboot/keel-confirm 都要用)
+missing_pkgs=0
+for pkg in systemd-boot systemd-boot-efi systemd-boot-tools; do
+    if grep -qE "^[[:space:]]*${pkg}[[:space:]]*$" mkosi.conf.d/20-packages.conf; then :; else
+        no "包清单缺 $pkg(Debian 把 systemd-boot 拆成了三个包,见 AGENTS.md 坑 #18)"
+        missing_pkgs=1
+    fi
+done
+[ "$missing_pkgs" = 0 ] && ok "包清单包含 systemd-boot 三件套"
+
 missing=0
 for c in os-status os-update os-rescue os-install; do
     [ -e "mkosi.extra/usr/bin/$c" ] || { no "缺少命令 $c"; missing=1; }
