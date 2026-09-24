@@ -35,6 +35,8 @@
 # ── 注意事项 ───────────────────────────────────────────────────────
 #   * 需要 root(或 rootful 的 podman/docker):mkosi 的构建沙箱要 CAP_SYS_ADMIN。
 #     因此 mkosi.output/ 里产出的文件会属于 root —— 这是正常的。
+#     --privileged 同时会把宿主机的 /dev 暴露进容器,于是 repart 看得见 loop 设备;
+#     mkosi 默认走 offline 模式不会碰它们(我们在 mkosi.conf 里也显式写了 RepartOffline=yes)。
 #   * NixOS 上若没有容器引擎:`nix-shell -p podman` 或开 virtualisation.podman。
 #   * 这个脚本**没有在 NixOS 上实测过**(开发环境里没有容器引擎)。
 #     如果它在你的机器上出问题,把命令与报错贴出来即可。

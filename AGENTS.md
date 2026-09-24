@@ -222,6 +222,20 @@
     本地 27 全绿不等于容器里的 25.3 也能跑。所以两边的版本差异要么用同一个容器固定下来,
     要么在两边都跑一遍 verify。
 
+17. **容器里跑 repart 必须显式 `--offline=yes`,否则会撞 loop 设备。**
+    `systemd-repart` 自己的默认是 `--offline=auto` = "能建 loop 设备就用 loop",
+    只有在 loop **完全不可用**时才回退到 offline。
+    `tools/build-container.sh` 用了 `--privileged`(mkosi 的构建沙箱要 CAP_SYS_ADMIN),
+    这会把宿主机的 `/dev` 暴露进容器 ⇒ repart **看得见** loop 设备但用不了,
+    于是不回退、直接报:
+    `Failed to make loopback device of future partition 0: Device or resource busy`。
+    两个后果:
+    - mkosi 的实际构建**不受影响** —— 它的 `RepartOffline=` 默认就是 `yes`,根本不会走 loop;
+    - 但 `tools/verify.sh` 是**直接调 systemd-repart** 的,所以它必须自己带上 `--offline=yes`。
+    另外 `mkosi.conf` 里也把 `RepartOffline=yes` 显式写出来了,不依赖版本默认值。
+    开发容器里没有 `/dev/loop*`,repart 会静默回退到 offline ⇒ 这个坑在那里永远看不见,
+    所以只能在文档里记下来。
+
 ---
 
 ## 4. 常用命令

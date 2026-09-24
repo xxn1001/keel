@@ -98,7 +98,13 @@ else
 
     for d in mkosi.repart mkosi.repart-slot-a mkosi.repart-slot-b; do
         img="$tree/out.raw"; rm -f "$img"
-        if ! systemd-repart --empty=create --size=15G --definitions="$d" \
+        # --offline=yes 是必须的:systemd-repart 自己的默认是 --offline=auto,
+        # 意思是"能建 loop 设备就用 loop"。在容器里(尤其 --privileged 把宿主机的
+        # /dev 暴露进来时)loop 设备看得见但用不了,repart 不会回退到 offline,
+        # 而是直接报 "Failed to make loopback device ...: Device or resource busy"。
+        # mkosi 自己的默认是 RepartOffline=yes(即绝不会走到 loop 那条路),
+        # 所以这里也必须显式对齐,否则这个校验在不同环境里行为不一致。
+        if ! systemd-repart --offline=yes --empty=create --size=15G --definitions="$d" \
                 --copy-source="$tree" "$img" >"$tree/log" 2>&1; then
             no "$d:systemd-repart 执行失败"
             tail -5 "$tree/log" | sed 's/^/      /'
