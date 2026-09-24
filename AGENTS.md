@@ -563,6 +563,19 @@
     **教训**:判断"某个路径能不能是符号链接"时别只看 POSIX 语义 —— 具体工具有硬性要求
     (nix 要 store 是真目录,systemd 的 `ProtectHome=` 要 `/home` 是真挂载点,坑 #26 的 autologin
     则是 `/bin/login` 得存在)。
+
+35. **"系统版本"必须读 os-release 的 `IMAGE_VERSION`,不是 Debian 的 `VERSION_ID`。**
+    装机后 `os-status` 报 `系统版本: 13`,state 里 pending 也写 `版本 13` —— 因为 `keel_version()`
+    读的是 `/etc/os-release` 的 `VERSION_ID`,而在 Debian 基底上那是**发行版号**。
+    后果不只是显示难看:`os-update` 用版本号判断"这是不是同一个版本 / 要不要更新",
+    两边恒等于 `"13"` 会让这个判断**永远说"已经是最新"**;pending / last_result 里的版本也失去意义
+    (回滚判定、`os-status` 的历史记录全都分不清是哪一版)。
+    ⇒ mkosi 会把 `--image-version` 写进 `/usr/lib/os-release` 的 `IMAGE_VERSION=`
+    (`write_os_release`,25.x/27 都有;`/etc/os-release` 是指向它的符号链接),
+    所以 `keel_version()` 改成先读 `IMAGE_VERSION`、读不到才退回 `VERSION_ID`。
+    `tools/verify.sh` 有断言。**教训**:基底发行版的 os-release 字段(`VERSION_ID`/`ID`)描述的是
+    **基底**,不是我们的产品 —— 凡是"我们自己的版本/标识"都要用 mkosi 注入的 `IMAGE_ID`/`IMAGE_VERSION`,
+    或者干脆自己写一份文件。
 ---
 
 ## 4. 常用命令

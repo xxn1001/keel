@@ -498,6 +498,15 @@ else
     no "os-install 与 mkosi.postinst 对 repart 定义目录不一致(os-install 读 '${defs_in_script:-空}')"
 fi
 
+# keel 的"系统版本"必须来自 /usr/lib/os-release 的 IMAGE_VERSION(mkosi 写的),
+# **不能**用 Debian 的 VERSION_ID —— 那会让版本显示成 "13",而且 os-update 的版本比较
+# 会恒等 ⇒ 永远认为"已经是最新"(坑 #35)。
+if sed -n '/^keel_version()/,/^}/p' mkosi.extra/usr/lib/keel/lib.sh | grep -q 'IMAGE_VERSION'; then
+    ok "keel_version 读 IMAGE_VERSION(不是 Debian 的 VERSION_ID,坑 #35)"
+else
+    no "keel_version 没读 IMAGE_VERSION —— 版本会显示成 13、os-update 的版本比较也会失效(坑 #35)"
+fi
+
 # /nix 与 /home 必须是「真实目录 + bind mount」,不能是符号链接:
 #   nix 硬性拒绝符号链接的 store 路径(坑 #34);
 #   /home 是 ProtectHome= 这类沙箱语义的要求。

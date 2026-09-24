@@ -85,8 +85,21 @@ keel_state_set() {
     mv -f "$tmp" "$KEEL_STATE"
 }
 
+# 版本号 = **镜像版本**,不是发行版版本。
+#
+# mkosi 会把 `--image-version` 写进 /usr/lib/os-release 的 `IMAGE_VERSION=`
+# (/etc/os-release 是指向它的符号链接)。而 `VERSION_ID` 在 Debian 基底上是发行版号(13)——
+# 拿它当 keel 版本有两个后果(2026-09 装机后实测,见 AGENTS.md 坑 #35):
+#   * os-status 显示"系统版本: 13",pending / last_result 里的版本也全是 13;
+#   * os-update 靠版本号判断"要不要更新",两边恒等于 13 会让它**永远认为已经是最新**。
+# 所以先读 IMAGE_VERSION,读不到(理论上不会)才退回 VERSION_ID。
 keel_version() {
-    sed -n 's/^VERSION_ID="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' /etc/os-release | head -n1
+    local v
+    v=$(sed -n 's/^IMAGE_VERSION="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' /etc/os-release | head -n1)
+    if [ -z "$v" ]; then
+        v=$(sed -n 's/^VERSION_ID="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' /etc/os-release | head -n1)
+    fi
+    printf '%s\n' "$v"
 }
 
 keel_slot_device() { printf '/dev/disk/by-partlabel/root-%s' "$1"; }
