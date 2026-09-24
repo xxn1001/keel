@@ -236,6 +236,21 @@
     开发容器里没有 `/dev/loop*`,repart 会静默回退到 offline ⇒ 这个坑在那里永远看不见,
     所以只能在文档里记下来。
 
+18. **`ToolsTree=default` 的 tools tree 只在 `build` 动作里自动构建。**
+    mkosi 源码里的守卫是:
+    ```python
+    if tools and not have_cache(tools):
+        if (args.rerun_build_scripts or args.verb != Verb.build) and args.force == 0:
+            die("Default tools tree requested but it is out-of-date or has not been built yet")
+    ```
+    也就是说:直接跑 `mkosi … vm`(或 `shell`/`boot`)而 tools tree 还没建时,
+    mkosi **不会顺手帮你建**,而是让你先 build:
+    `‣ (Make sure to (re)build the image first with 'mkosi build' or use '--force')`。
+    第一次接触这个项目很容易在这里卡住(看起来像错误,其实只是顺序问题)。
+    ⇒ `tools/build-container.sh vm` 已经改成"先 build 再 vm";手动跑的话就是两条命令:
+    `mkosi --profile install --profile test build` → `mkosi --profile install --profile test vm`。
+    别用 `--force` 图省事:`-f` 会把已构建的镜像删掉重来。
+
 ---
 
 ## 4. 常用命令

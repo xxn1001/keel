@@ -49,6 +49,7 @@
 | 项 | 说明 |
 |---|---|
 | 构建产物 | `tools/verify.sh && tools/build.sh` → `dist/keel-<version>/keel.raw` |
+| **第一次要先 build** | `ToolsTree=default` 的 tools tree **只在 `build` 动作里**自动构建。tools tree 还没建时直接跑 `vm`,mkosi 会拒绝并提示你先 build(`AGENTS.md` 已知的坑 #18)。所以第一次是两条命令:`mkosi --profile install --profile test build`,成功之后 `mkosi --profile install --profile test vm`。`tools/build-container.sh vm` 已经替你做了这两步。**不要**图省事加 `--force`:`-f` 会把已构建的镜像删掉重来 |
 | QEMU + OVMF | **不用手动装**:`ToolsTree=default`(推荐,`AGENTS.md` 坑 #10)时由 mkosi 的 tools tree 提供;mkosi 27 的 Debian runtime profile 里就是 `qemu-system` + `ovmf` |
 | `/dev/kvm` | 有才快;没有会极慢,见 §1.2 |
 

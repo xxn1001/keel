@@ -62,8 +62,18 @@ IMAGE=${KEEL_BUILD_IMAGE:-docker.io/library/debian:trixie}
 case "$MODE" in
 build) PAYLOAD='tools/verify.sh && tools/build.sh' ;;
 vm)
+    # 必须先 build 再 vm,原因见 mkosi 源码里的那道守卫:
+    #     if tools and not have_cache(tools):
+    #         if (args.rerun_build_scripts or args.verb != Verb.build) and args.force == 0:
+    #             die("Default tools tree requested but it is out-of-date or has not been built yet")
+    # 也就是说:**只有 build 这个动作会自动把 tools tree 建出来**;
+    # 用 vm 而 tools tree 还没建时,mkosi 直接拒绝(而不是顺手帮你建)。
+    # 第一次会慢(tools tree + 全部软件包),之后两步都会命中缓存。
     # --profile test 只是给控制台开 root 自动登录(仅虚拟机用,见 mkosi.profiles/test.conf)
-    PAYLOAD="tools/verify.sh && mkosi --profile install --profile test vm ${EXTRA_MKOSI[*]:-}"
+    EXTRA="${EXTRA_MKOSI[*]:-}"
+    PAYLOAD="tools/verify.sh \
+        && mkosi --profile install --profile test $EXTRA build \
+        && mkosi --profile install --profile test $EXTRA vm"
     ;;
 shell) PAYLOAD='exec bash' ;;
 *) die "用法:$0 [build|vm|shell] [-- mkosi 的额外参数]" ;;
