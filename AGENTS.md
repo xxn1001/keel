@@ -264,6 +264,21 @@
     `mkosi --profile install --profile test build` → `mkosi --profile install --profile test vm`。
     别用 `--force` 图省事:`-f` 会把已构建的镜像删掉重来。
 
+20. **`RepartDirectories=` 会被 mkosi 的隐式默认值"追加",光在 profile 里覆盖是不够的。**
+    mkosi 把"源目录里存在 `mkosi.repart/`"当作 `RepartDirectories=` 的默认值,而这个设置是
+    **集合型(追加语义)** ⇒ 只要源码树里有个叫 `mkosi.repart` 的目录,`--profile slot-b` 里设的目录
+    就会和它**同时生效**,两套分区布局一起交给 repart。真机上的表现:
+    ```
+    repart: ".../mkosi.repart-slot-b/10-root-b.conf and .../mkosi.repart/20-root-b.conf
+             have the same resolved split name ..., refusing."
+    ```
+    ⇒ 修法:三个布局目录现在叫 `repart/{install,slot-a,slot-b}`,源码树里**没有** `mkosi.repart` 了,
+    隐式默认值随之消失;`tools/verify.sh` 另外断言"每个 profile 解析出的 RepartDirectories 恰好一个"。
+    **这是同一个家族的第 4 次**:`Profiles=`(追加语义)、`CacheDirectory=` / `OutputDirectory=`
+    (目录存在才有默认值)、`RepartDirectories=`(两者叠加)。规律:
+    **凡是 mkosi 用"源目录里某个文件/目录是否存在"来定默认值的设置,只要我们要用 profile 覆盖它,
+    就必须先把那个默认路径消灭掉(改名/移走),只赋值是不够的。**
+
 ---
 
 ## 4. 常用命令
@@ -313,18 +328,3 @@ sudo tools/burn.sh /dev/nvme0n1
 1. `root=PARTLABEL=` 与 `systemd.mount-extra=PARTLABEL=...` 在 initrd 里的解析(有把握,但要真跑一次)。
 2. `systemd-sysupdate` 的 `Type=partition` transfer 对双槽布局的匹配语义(验证通过后换掉 v1 的直接写盘)。
 3. `/usr/lib/modules/<kver>` 挂 overlay 后 `depmod` + 模块加载的实际行为(为"第三方内核模块外置"做准备)。
-
-20. **`RepartDirectories=` 会被 mkosi 的隐式默认值"追加",光在 profile 里覆盖是不够的。**
-    mkosi 把"源目录里存在 `mkosi.repart/`"当作 `RepartDirectories=` 的默认值,而这个设置是
-    **集合型(追加语义)** ⇒ 只要源码树里有个叫 `mkosi.repart` 的目录,`--profile slot-b` 里设的目录
-    就会和它**同时生效**,两套分区布局一起交给 repart。真机上的表现:
-    ```
-    repart: ".../mkosi.repart-slot-b/10-root-b.conf and .../mkosi.repart/20-root-b.conf
-             have the same resolved split name ..., refusing."
-    ```
-    ⇒ 修法:三个布局目录现在叫 `repart/{install,slot-a,slot-b}`,源码树里**没有** `mkosi.repart` 了,
-    隐式默认值随之消失;`tools/verify.sh` 另外断言"每个 profile 解析出的 RepartDirectories 恰好一个"。
-    **这是同一个家族的第 4 次**:`Profiles=`(追加语义)、`CacheDirectory=` / `OutputDirectory=`
-    (目录存在才有默认值)、`RepartDirectories=`(两者叠加)。规律:
-    **凡是 mkosi 用"源目录里某个文件/目录是否存在"来定默认值的设置,只要我们要用 profile 覆盖它,
-    就必须先把那个默认路径消灭掉(改名/移走),只赋值是不够的。**
