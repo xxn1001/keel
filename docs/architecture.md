@@ -367,8 +367,8 @@ keel/
 ├── mkosi.initrd.conf               ← 只影响默认 initrd(清空脚本类设置,见坑 #1)
 ├── mkosi.profiles/{install,slot-a,slot-b}.conf   产物形态
 ├── mkosi.profiles/test.conf       可叠加:仅虚拟机测试用(root 自动登录)
-├── mkosi.repart/                   ← 安装镜像布局(esp + root-a + root-b + volume)
-├── mkosi.repart-slot-{a,b}/        ← 载荷布局(esp + 目标槽 root)
+├── repart/install/                   ← 安装镜像布局(esp + root-a + root-b + volume)
+├── repart/slot-{a,b}/        ← 载荷布局(esp + 目标槽 root)
 ├── mkosi.extra/                    ← 进镜像的所有文件:
 │   ├── usr/bin/os-{status,update,rescue,install}  用户命令
 │   ├── usr/lib/keel/{lib.sh,mounts,firstboot,confirm,swapfile}
@@ -391,7 +391,7 @@ keel/
 | # | 内容 | 完成标志 |
 |---|---|---|
 | 1 | `mkosi.conf` + `mkosi.conf.d/` + `mkosi.initrd.conf` | `mkosi --profile install summary` 通过 |
-| 2 | `mkosi.repart/` + `mkosi.repart-slot/` + 三个 profile | repart dry-run 报出预期分区表 |
+| 2 | `repart/install/` + `repart/slot-{a,b}/` + 三个 profile | repart dry-run 报出预期分区表 |
 | 3 | `mkosi.extra/` + `postinst` + `finalize` | `systemd-analyze verify` 全过;finalize 幂等可重入 |
 | 4 | `mkosi.extra/usr/bin/os-*` + `/usr/lib/keel/*` | `shellcheck` 全过;`--help` 可用 |
 | 5 | `tools/{verify,build,burn}.sh` | `tools/verify.sh` 一条命令全绿 |

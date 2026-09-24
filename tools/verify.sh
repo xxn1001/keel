@@ -44,6 +44,52 @@ else
             grep -E '^‣' "$out/summary" | head -5 | sed 's/^/      /'
         fi
     done
+    # RepartDirectories 是集合型设置(**追加**语义),而 mkosi 还会把"存在的 mkosi.repart/ 目录"
+    # 当成隐式默认值 ⇒ 一旦源码树里真有个叫 mkosi.repart 的目录,profile 里再设一个,
+    # 就会变成两套分区布局同时生效。真机上正是这样炸的:
+    #   repart: ".../mkosi.repart-slot-b/10-root-b.conf and .../mkosi.repart/20-root-b.conf
+    #            have the same resolved split name ..., refusing."
+    # 所以断言:每个 profile 解析出来的 RepartDirectories 必须恰好一个。
+    # (这也是把三个目录改名成 repart/{install,slot-a,slot-b} 的原因 —— 消灭那个隐式默认值。)
+    for p in $PROFILES; do
+        n=$(mkosi --profile "$p" summary --json 2>/dev/null | python3 -c '
+import json, sys
+# mkosi 的 --json 输出是 JSON-SEQ,而且真正的配置嵌在每条记录的 "Images": [...] 里
+# (tools tree、initrd、主镜像各一份),所以要先把 Images 摊平,再挑主镜像那一份。
+raw = sys.stdin.read()
+dec = json.JSONDecoder()
+objs = []
+i = 0
+while True:
+    j = raw.find("{", i)
+    if j < 0:
+        break
+    try:
+        o, i = dec.raw_decode(raw, j)
+        objs.append(o)
+    except ValueError:
+        i = j + 1
+imgs = []
+for o in objs:
+    v = o.get("Images")
+    if isinstance(v, list):
+        imgs.extend(x for x in v if isinstance(x, dict))
+cands = [x for x in imgs if isinstance(x.get("RepartDirectories"), list)]
+pick = None
+for c in cands:
+    if str(c.get("Output", "")).startswith("keel"):
+        pick = c
+if pick is None and cands:
+    pick = cands[-1]
+print(len(pick["RepartDirectories"]) if pick else -1)
+' 2>/dev/null) || n=-1
+        if [ "$n" = 1 ]; then
+            ok "--profile $p:RepartDirectories 恰好一个"
+        else
+            no "--profile $p:RepartDirectories 解析出 $n 个(必须恰好 1 个;源码树里不能有名为 mkosi.repart 的目录)"
+        fi
+    done
+
     # 不带 --profile 会解析成功但没有任何 root=(产物形态必须显式选)。
     # 拦截点在构建期:mkosi.finalize 检查 $MKOSI_CONFIG。这里断言两件事:
     #   ① 不带 profile 确实没有 root=;② finalize 里的守卫还在。
@@ -96,7 +142,7 @@ else
     : >"$tree/boot/EFI/Linux/keel-a.efi"
     echo 1 >"$tree/usr/share/keel/volume-skeleton/keel/schema-version"
 
-    for d in mkosi.repart mkosi.repart-slot-a mkosi.repart-slot-b; do
+    for d in repart/install repart/slot-a repart/slot-b; do
         img="$tree/out.raw"; rm -f "$img"
         # --offline=yes 是必须的:systemd-repart 自己的默认是 --offline=auto,
         # 意思是"能建 loop 设备就用 loop"。在容器里(尤其 --privileged 把宿主机的
@@ -113,7 +159,7 @@ else
         names=$(sfdisk --dump "$img" 2>/dev/null | sed -n 's/.*name="\([^"]*\)".*/\1/p' | tr '\n' ' ')
         sizes=$(sfdisk --dump "$img" 2>/dev/null | sed -n 's/.*size= *\([0-9]*\),.*/\1/p' | tr '\n' ' ')
         case "$d" in
-        mkosi.repart)
+        repart/install)
             [ "$names" = "esp root-a root-b volume " ] \
                 && ok "安装镜像分区名 = esp root-a root-b volume" \
                 || no "安装镜像分区名不对:[$names]"
@@ -128,10 +174,10 @@ else
                 && ok "volume 类型 = 项目私有 UUID" \
                 || no "volume 类型不是私有 UUID(实际 $voltype)"
             ;;
-        mkosi.repart-slot-a)
+        repart/slot-a)
             [ "$names" = "esp root-a " ] && ok "slot-a 载荷分区名 = esp root-a" || no "slot-a 载荷分区名不对:[$names]"
             ;;
-        mkosi.repart-slot-b)
+        repart/slot-b)
             [ "$names" = "esp root-b " ] && ok "slot-b 载荷分区名 = esp root-b" || no "slot-b 载荷分区名不对:[$names]"
             ;;
         esac
@@ -187,13 +233,13 @@ fi
 # ---------------------------------------------------------------------------
 head1 "6. 一致性断言(改一处忘一处的经典位置)"
 # ---------------------------------------------------------------------------
-uuid_repart=$(sed -n 's/^Type=\(.*\)$/\1/p' mkosi.repart/30-volume.conf | head -1)
+uuid_repart=$(sed -n 's/^Type=\(.*\)$/\1/p' repart/install/30-volume.conf | head -1)
 uuid_grow=$(sed -n 's/^Type=\(.*\)$/\1/p' mkosi.extra/usr/lib/keel/repart.d/40-volume-grow.conf | head -1)
 [ -n "$uuid_repart" ] && [ "$uuid_repart" = "$uuid_grow" ] \
     && ok "volume 类型 UUID 在安装镜像与扩容定义里一致" \
     || no "volume 类型 UUID 不一致:安装=[$uuid_repart] 扩容=[$uuid_grow]"
 
-skel_repart=$(grep -o 'CopyFiles=[^:]*' mkosi.repart/30-volume.conf | head -1 | cut -d= -f2)
+skel_repart=$(grep -o 'CopyFiles=[^:]*' repart/install/30-volume.conf | head -1 | cut -d= -f2)
 if grep -q "$skel_repart" mkosi.finalize; then
     ok "骨架路径 $skel_repart 在 finalize 里也出现"
 else

@@ -114,7 +114,7 @@ do_reset_etc() {
 # --grow-volume
 #
 # repart 按**分区类型**把定义匹配到现有分区,所以 /usr/lib/keel/repart.d 里的定义
-# 必须和装机时的 30-volume.conf 是同一个类型 UUID(见 mkosi.repart/30-volume.conf
+# 必须和装机时的 30-volume.conf 是同一个类型 UUID(见 repart/install/30-volume.conf
 # 的注释:刻意用项目私有 UUID,避免和 linux-generic 的 root-b 撞车)。
 #
 # TODO(待验证):"GrowFileSystem=yes 会顺带 resize2fs" 这个说法**站不住**:
