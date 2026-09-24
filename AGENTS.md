@@ -193,6 +193,15 @@
    分区名、尺寸、类型、`CopyFiles` 全都能在这里验证;加上 mkosi 配置解析、单元语法、shellcheck,
     就是 `tools/verify.sh` 的全部内容。**跑不了的只有真机构建与启动。**
 
+14. **`GrowFileSystem=yes` 只扩分区,不扩文件系统。**
+    systemd-repart 从不改动**已存在**分区的文件系统(源码 `context_mkfs()` 对已存在分区直接 continue);
+    `GrowFileSystem=` 只是打一个 GPT 标志位,而那个标志只被 `systemd-gpt-auto-generator` 消费 ——
+    我们的 `/Volume` 是 cmdline 里 `systemd.mount-extra=` 显式挂载的,**根本不过 gpt-auto-generator**。
+    ⇒ 扩容必须两步:`systemd-repart` 扩分区 + `systemd-growfs /Volume` 扩文件系统
+    (两处都已实现:首启的 `keel-firstboot` 与 `os-rescue --grow-volume`)。
+    另外 `systemd-growfs` 对 ext4 会调 `resize2fs`,所以 `e2fsprogs` **必须**在包清单里。
+    首次真机启动后请用 `df -h /Volume` 复核这一点。
+
 ---
 
 ## 4. 常用命令

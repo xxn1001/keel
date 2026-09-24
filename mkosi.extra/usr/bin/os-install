@@ -13,8 +13,8 @@
 set -euo pipefail
 
 # shellcheck source=/usr/lib/keel/lib.sh
-# SC1091:lib.sh 只在镜像里(/usr/lib/keel/lib.sh),仓库里没有这个文件,
-# 静态检查工具追不到它(它不在仓库里)。变量名与函数名以父 agent 给出的接口表为准。
+# SC1091:脚本里写的是镜像内的绝对路径,而库的源文件在仓库的
+# mkosi.extra/usr/lib/keel/lib.sh —— 静态检查工具按绝对路径找不到它,只能关掉这条提示。
 #
 # shellcheck disable=SC1091  # 注释与 source 行之间不能插别的东西
 . /usr/lib/keel/lib.sh
@@ -127,8 +127,19 @@ if [ "$TARGET_TYPE" != "disk" ]; then
 fi
 TARGET_SIZE="$(lsblk -dno SIZE "$TARGET" 2>/dev/null)" || TARGET_SIZE="未知"
 
+# 取"当前根"的设备节点。
+# findmnt 的 SOURCE 字段在 btrfs/subvol 场景下会带 `[/subvol]` 这类装饰,甚至可能带
+# 换行分隔的多个来源,所以只取第一行、再截掉第一个 `[` 之后的部分。
+root_device() {
+    local src v
+    src="$(findmnt -no SOURCE / 2>/dev/null)" || src=""
+    src="${src%%$'\n'*}"
+    v="${src%%\[*}"
+    printf '%s\n' "$v"
+}
+CUR_ROOT_SRC="$(root_device)"
+
 # 绝不允许装到当前系统所在的那块盘上:那会覆掉正在运行的槽(见 troubleshooting.md §7)
-CUR_ROOT_SRC="$(findmnt -no SOURCE / 2>/dev/null)" || CUR_ROOT_SRC=""
 CUR_ROOT_DISK=""
 if [ -n "$CUR_ROOT_SRC" ]; then
     CUR_ROOT_DISK="$(lsblk -no PKNAME "$CUR_ROOT_SRC" 2>/dev/null | head -n1)" || CUR_ROOT_DISK=""
@@ -139,6 +150,8 @@ fi
 if [ -z "$CUR_ROOT_DISK" ]; then
     keel_log "警告:解析不出当前根所在的磁盘,跳过'目标盘=当前盘'的检查(自己再确认一次 ${TARGET} 不是启动盘)"
 fi
+[ -n "$CUR_ROOT_SRC" ] && [ -e "$CUR_ROOT_SRC" ] ||
+    keel_die "定位不到当前根分区设备(findmnt -no SOURCE / 给出的是 '${CUR_ROOT_SRC}'),无法复制根文件系统"
 
 # /usr/lib/keel/repart-install.d 由父 agent 提供;没有它这条路根本走不下去
 [ -d "$REPART_DEFS" ] || keel_die "找不到 repart 定义目录:${REPART_DEFS}(这个镜像不完整?)"
@@ -195,7 +208,8 @@ tgt_root_bytes="$(blockdev --getsize64 "$part_root_a" 2>/dev/null)" || tgt_root_
 if [ -n "$cur_root_bytes" ] && [ -n "$tgt_root_bytes" ] && [ "$tgt_root_bytes" -lt "$cur_root_bytes" ]; then
     keel_die "目标 root-a(${tgt_root_bytes} 字节)比当前根分区(${cur_root_bytes} 字节)小,拒绝复制(会截断文件系统)。"
 fi
-keel_log "复制当前根 $(readlink -f "$CUR_ROOT_SRC") → ${part_root_a}(可能耗时几分钟)"
+# 复制整块设备(不是文件系统内容):目标分区由 repart 建成同样的布局,dd 到分区起点即可
+keel_log "复制当前根 ${CUR_ROOT_SRC} → ${part_root_a}(可能耗时几分钟)"
 dd if="$CUR_ROOT_SRC" of="$part_root_a" bs=4M conv=fsync status=progress ||
     keel_die "写 ${part_root_a} 失败"
 sync
@@ -211,9 +225,11 @@ keel_log "格式化 ${part_volume}(ext4,label=${VOLUME_LABEL})"
 mkfs.ext4 -q -L "$VOLUME_LABEL" -F "$part_volume" || keel_die "mkfs.ext4 ${part_volume} 失败"
 
 VOL_MNT="$(mktemp -d /tmp/keel-install.XXXXXX)"
-# 任何提前退出都收尾;成功路径最后会自己 umount + rm -rf 并摘掉 trap
+ESP_MNT="$(mktemp -d /tmp/keel-install.XXXXXX)"
+# 一个 trap 管两个挂载点。刻意不装两个 trap:第二次 trap 会**覆盖**第一次,
+# 中途失败就会留下挂着的临时挂载点。
 # shellcheck disable=SC2064
-trap "umount -R '$VOL_MNT' 2>/dev/null || true; rm -rf '$VOL_MNT'" EXIT
+trap "umount -R '$VOL_MNT' 2>/dev/null || true; umount -R '$ESP_MNT' 2>/dev/null || true; rm -rf '$VOL_MNT' '$ESP_MNT'" EXIT
 
 mount -t ext4 "$part_volume" "$VOL_MNT" || keel_die "挂载 ${part_volume} 失败"
 if [ -d "$SKELETON" ]; then
@@ -261,8 +277,6 @@ trap - EXIT
 # 盘的 A 槽标签同名(§3.3 / AGENTS.md 坑 #5)。
 # ---------------------------------------------------------------------------
 ESP_MNT="$(mktemp -d /tmp/keel-install.XXXXXX)"
-# shellcheck disable=SC2064
-trap "umount -R '$ESP_MNT' 2>/dev/null || true; rm -rf '$ESP_MNT'" EXIT
 mount -t vfat -o umask=0077 "$part_esp" "$ESP_MNT" || keel_die "挂载 ${part_esp} 失败"
 if [ -d "$KEEL_ESP" ]; then
     cp -a "$KEEL_ESP/." "$ESP_MNT/" || keel_die "复制 live ESP 内容到目标 ESP 失败"
@@ -281,6 +295,16 @@ for f in "$ESP_MNT/EFI/Linux/keel-${CURRENT_SLOT}.efi" "$ESP_MNT/EFI/Linux/keel-
 done
 if [ -n "$target_uki" ]; then
     keel_log "目标 ESP 上当前槽的条目:${target_uki}"
+    case "$target_uki" in
+        *+*.efi)
+            # live U 盘本身就是"带计数启动"的:systemd-bless-boot 还没把它改名成 good
+            keel_log "注意:这是带启动计数的名字。目标机首启若到达 boot-complete.target,"
+            keel_log "      systemd-bless-boot 会把它改名为 keel-${CURRENT_SLOT}.efi;若连续 3 次"
+            keel_log "      到不了,引导器会把它当作坏条目并跳过 —— 而目标盘上还没有别的槽可退。"
+            keel_log "      第一次启动务必盯着控制台。"
+            ;;
+        *) : ;;
+    esac
 else
     keel_log "警告:目标 ESP 上没有 keel-${CURRENT_SLOT}.efi 或它的带计数条目;装完可能起不来(先检查 live ESP 里到底有什么:ls -l ${KEEL_UKI_DIR})"
 fi

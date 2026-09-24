@@ -54,17 +54,28 @@ if [ -z "$(keel_state_get running_slot)" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5) 把 volume 扩到整盘
+# 5) 把 volume 扩到整盘(分区 + 文件系统,**两步都要**)
 #
-# repart 是幂等的:分区表已经符合定义时它什么都不做,所以每次启动跑一遍是安全的。
-# 这也是"把镜像 dd 到更大的盘之后"的自愈入口。
+# 为什么要两步:systemd-repart 只扩**分区**,它从不改动已存在分区的文件系统
+# (源码里 context_mkfs() 对已存在的分区直接 continue)。repart 定义里的
+# GrowFileSystem= 只是打一个 GPT 标志位,而那个标志只被 systemd-gpt-auto-generator
+# 消费 —— 我们的 /Volume 是 cmdline 里 systemd.mount-extra= 显式挂载的,
+# 根本不过 gpt-auto-generator。所以文件系统必须自己调 systemd-growfs 扩。
+# (AGENTS.md 已知的坑 #14;真机首启后请用 df -h /Volume 复核。)
+#
+# 两步都幂等:分区表符合定义时 repart 什么都不做;文件系统到顶时 systemd-growfs
+# 也不做任何事。所以每次启动跑一遍是安全的,这也是"把镜像 dd 到更大的盘之后"的自愈入口。
 # ---------------------------------------------------------------------------
 vol=$(readlink -f /dev/disk/by-partlabel/volume 2>/dev/null || true)
 if [ -n "$vol" ] && [ -b "$vol" ]; then
     pk=$(lsblk -ndo PKNAME "$vol" 2>/dev/null | head -n1 || true)
     if [ -n "$pk" ] && [ -b "/dev/$pk" ]; then
         if ! systemd-repart --dry-run=no --definitions=/usr/lib/keel/repart.d "/dev/$pk" >/dev/null 2>&1; then
-            keel_log "volume 扩容失败(稍后可以手动跑 os-rescue --grow-volume)"
+            keel_log "volume 分区扩容失败(稍后可以手动跑 os-rescue --grow-volume)"
         fi
+    fi
+    # 分区弄好之后再把文件系统顶满(需要 e2fsprogs 的 resize2fs)
+    if ! systemd-growfs /Volume >/dev/null 2>&1; then
+        keel_log "volume 文件系统扩容失败(resize2fs 在吗?df -h /Volume 看看;也可手动跑 systemd-growfs /Volume)"
     fi
 fi

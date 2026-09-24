@@ -11,8 +11,8 @@
 set -euo pipefail
 
 # shellcheck source=/usr/lib/keel/lib.sh
-# SC1091:lib.sh 只在镜像里(/usr/lib/keel/lib.sh),仓库里没有这个文件,
-# 静态检查工具追不到它(它不在仓库里)。变量名与函数名以父 agent 给出的接口表为准。
+# SC1091:脚本里写的是镜像内的绝对路径,而库的源文件在仓库的
+# mkosi.extra/usr/lib/keel/lib.sh —— 静态检查工具按绝对路径找不到它,只能关掉这条提示。
 #
 # shellcheck disable=SC1091  # 注释与 source 行之间不能插别的东西
 . /usr/lib/keel/lib.sh
@@ -116,6 +116,18 @@ do_reset_etc() {
 # repart 按**分区类型**把定义匹配到现有分区,所以 /usr/lib/keel/repart.d 里的定义
 # 必须和装机时的 30-volume.conf 是同一个类型 UUID(见 mkosi.repart/30-volume.conf
 # 的注释:刻意用项目私有 UUID,避免和 linux-generic 的 root-b 撞车)。
+#
+# TODO(待验证):"GrowFileSystem=yes 会顺带 resize2fs" 这个说法**站不住**:
+#   读 systemd main 的源码,resize_fs() 只被 systemd-growfs 调用,
+#   repart 自己从不 resize 已有文件系统(context_mkfs 里明写
+#   `if (PARTITION_EXISTS(p)) continue;  /* Never format existing partitions */`),
+#   GrowFileSystem= 只是把 GPT 的 bit 59 打上,交给 gpt-auto-generator 生成
+#   systemd-growfs@.service —— 而我们的 volume 是用 cmdline 的
+#   systemd.mount-extra=PARTLABEL=volume 显式挂的,不经过 gpt-auto-generator
+#   (repart.d(5):这三个 flag "only affect automatic partition mounting")。
+#   ⇒ 所以这一步只保证**分区**变大;若实测 df 没变,需要在挂载好的 /Volume 上
+#   跑 systemd-growfs /Volume(它会按文件系统类型调 resize2fs)。
+#   在真机确认之前不要假设文件系统也一起变大了。
 # ---------------------------------------------------------------------------
 do_grow_volume() {
     local pn rel disk part_bytes dev_bytes
@@ -126,12 +138,14 @@ do_grow_volume() {
     if [ -z "$pn" ]; then
         keel_die "解析不出 volume 分区所在的磁盘(lsblk -no PKNAME $(readlink -f "$VOLUME_PART") 没输出)"
     fi
-    # lsblk 给出的 PKNAME 可能是 nvme0n1p2 这种"分区名"而不是磁盘名(不同版本的
-    # lsblk 对 by-partlabel 符号链接的处理不一样),所以递归往上找到真正的整盘。
+    # lsblk 给出的 PKNAME 可能是分区名而不是整盘名(不同版本/不同插件对
+    # by-partlabel 符号链接的处理不一样),所以再往上找一层,直到父设备是整盘。
     rel="$(lsblk -no TYPE "$(readlink -f "$VOLUME_PART")" 2>/dev/null | head -n1)" || rel=""
     if [ "$rel" != "disk" ]; then
         local pn2
         pn2="$(lsblk -no PKNAME "/dev/$pn" 2>/dev/null | head -n1)" || pn2=""
+        # nvme0n1p2 的父设备是 nvme0n1(TYPE=disk),它自己没有父设备 —— lsblk 对
+        # 整盘会打印空行,这里必须把它挡掉,否则 pn 会被清空。
         if [ -n "$pn2" ]; then
             pn="$pn2"
         fi
@@ -149,11 +163,28 @@ do_grow_volume() {
     dev_bytes="$(blockdev --getsize64 "$disk" 2>/dev/null)" || dev_bytes=""
     echo "目标磁盘 : ${disk}(${dev_bytes:-未知} 字节)"
     echo "volume   : $(readlink -f "$VOLUME_PART")(当前 ${part_bytes:-未知} 字节)"
-    echo "只扩不缩;文件系统扩容由 repart 的 GrowFileSystem 完成(不手动跑 resize2fs)。"
+    echo "只扩不缩。分两步:repart 扩**分区**,systemd-growfs 扩**文件系统** ——"
+    echo "repart 从不改动已存在分区的文件系统,GrowFileSystem= 只是个给"
+    echo "systemd-gpt-auto-generator 看的 GPT 标志位,而我们不走那条路。"
 
+    if ! command -v systemd-repart >/dev/null 2>&1; then
+        keel_die "找不到 systemd-repart(systemd-repart 包没装?)"
+    fi
     systemd-repart --dry-run=no --definitions="$REPART_DEFS" "$disk" ||
         keel_die "systemd-repart 失败。常见原因:目标盘上还有别的分区占着后面的空间、或定义里的类型 UUID 对不上现有 volume 分区。"
     sync
+
+    # 第二步:把文件系统顶满分到的新空间(需要 resize2fs,e2fsprogs 提供)。
+    # 已经到顶时 systemd-growfs 什么也不做,所以重复执行是安全的。
+    if command -v systemd-growfs >/dev/null 2>&1 || [ -x /usr/lib/systemd/systemd-growfs ]; then
+        if systemd-growfs /Volume; then
+            keel_log "文件系统已扩到分区大小"
+        else
+            keel_log "systemd-growfs 失败:确认 e2fsprogs(resize2fs)装了、/Volume 是可写的 ext4"
+        fi
+    else
+        keel_log "找不到 systemd-growfs,文件系统没扩;手动跑 resize2fs $(readlink -f "$VOLUME_PART")"
+    fi
     keel_log "完成。用 lsblk 和 df -h /Volume 确认新的大小"
 }
 

@@ -67,12 +67,15 @@ sudo tools/burn.sh /dev/sdX
 # 3. 在 live 环境里把系统装到目标盘
 lsblk -f
 sudo os-install /dev/nvme0n1
-sudo os-install /dev/nvme0n1 --seed-b    # 顺手把当前版本也填进 B 槽
 ```
 
 `os-install` 做的事(§7.1 B):用 repart 在目标盘建表 → 把**当前运行的根**写进目标 `root-a` →
-把当前 UKI 写到目标 ESP → 用镜像里的骨架初始化 `volume` 分区。
-`--seed-b` 只是多填一个 B 槽,装完立刻就能测槽切换,建议加上。
+挂目标 ESP 并把 live ESP 的内容整体拷过去(引导器 + UKI + `loader.conf`)→
+格式化 `volume` 并用镜像里的骨架初始化。
+
+> **没有 `--seed-b`**:live 手上只有 A 槽的 UKI,它的 cmdline 写死了 `root=PARTLABEL=root-a`,
+> 复制一份改名成 `keel-b.efi` 会造出"B 的内核 + A 的根"的坏槽(违反不变量 3)。
+> 备用槽第一次被填充,就是第一次真实更新(见 §5 的本地更新源做法)。
 
 U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)。路径 C(独立安装器 ISO)v1 不做。
 
@@ -93,7 +96,7 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 | # | 动作 | 说明 |
 |---|---|---|
 | 1 | 校验/修复 `/Volume` 骨架 | 缺失就按镜像里的骨架重建 —— "手贱清空 volume"的自愈入口 |
-| 2 | `systemd-repart --dry-run=no` 把 `volume` 扩到整盘剩余空间 | 定义在 `/usr/lib/keel/repart.d/` |
+| 2 | **两步**扩容:`systemd-repart --dry-run=no` 扩 `volume` **分区**,再 `systemd-growfs /Volume` 扩**文件系统** | repart 只扩分区、从不碰已存在分区的文件系统(`GrowFileSystem=` 只是个 GPT 标志位,只被 gpt-auto-generator 消费,而我们不走那条路)。**首启后请用 `df -h /Volume` 复核** |
 | 3 | `bootctl install` 建立本机 NVRAM 启动项 | 装机镜像里不可能带;已有则跳过 |
 | 4 | 创建并启用 swapfile(`/Volume/keel/swapfile`) | 不做休眠(决策 D9) |
 | 5 | 记录 `/Volume/keel/state` 与 `schema-version` | 之后 `os-status` 从这里读 |

@@ -256,7 +256,10 @@ U 盘本身也是一套完整系统,顺便当救援盘。
 ### 7.2 首次启动自动完成(`keel-firstboot.service`,幂等)
 
 1. 校验/修复 `/Volume` 骨架(缺失就按镜像里的骨架重建 —— 这是"手贱清空 volume"的自愈入口);
-2. 用 `systemd-repart --dry-run=no` 把 `volume` 扩到整盘剩余空间(定义在 `/usr/lib/keel/repart.d/`);
+2. **两步**扩 `volume`:先用 `systemd-repart --dry-run=no` 扩**分区**(定义在
+   `/usr/lib/keel/repart.d/`),再用 `systemd-growfs /Volume` 扩**文件系统** ——
+   repart 从不改动已存在分区的文件系统,`GrowFileSystem=` 只是给
+   `systemd-gpt-auto-generator` 看的 GPT 标志位(我们不走那条路,见 §13.1);
 3. `bootctl install` 建立本机 NVRAM 启动项(已有则跳过);
 4. 首启创建并启用 swapfile(`/Volume/keel/swapfile`);
 5. 记录 `/Volume/keel/state` 与 `schema-version`。
@@ -412,6 +415,13 @@ keel/
   那么 `--profile slot-b` 会变成"install + slot-b"被解析两次,cmdline 里同时出现
   `root=PARTLABEL=root-a` 和 `root=PARTLABEL=root-b`。现在改为不给默认值 +
   在 `mkosi.finalize` 里断言"恰好一个 root="。
+- ⚠️ **`GrowFileSystem=yes` 不会扩文件系统**(核对 systemd 源码与手册后确认):
+  repart 只扩分区,`context_mkfs()` 对已存在的分区直接跳过;那个设置只打一个 GPT 标志位,
+  而标志只被 `systemd-gpt-auto-generator` 消费 —— 我们的 `/Volume` 是 cmdline 显式挂载的,
+  不过 gpt-auto-generator。⇒ 首启与 `os-rescue --grow-volume` 里都补了
+  `systemd-growfs /Volume`,并把 `e2fsprogs`(resize2fs)显式加进包清单。
+  **真机首启后请用 `df -h /Volume` 复核。**
+- ⚠️ 发现并已修掉:`Profiles=` 默认值会让两个产物 profile 同时被解析(见上一节)。
 - ⚠️ 发现并已修掉:`mkosi.initrd.conf` 里清空脚本设置必须写在 `[Content]` 段
   (写成 `[Config]` 会被拒绝且**静默不生效**)。
 

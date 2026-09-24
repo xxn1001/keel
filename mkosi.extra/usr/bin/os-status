@@ -10,8 +10,8 @@
 set -euo pipefail
 
 # shellcheck source=/usr/lib/keel/lib.sh
-# SC1091:lib.sh 只在镜像里(/usr/lib/keel/lib.sh),仓库里没有这个文件,
-# 静态检查工具追不到它(它不在仓库里)。变量名与函数名以父 agent 给出的接口表为准。
+# SC1091:脚本里写的是镜像内的绝对路径,而库的源文件在仓库的
+# mkosi.extra/usr/lib/keel/lib.sh —— 静态检查工具按绝对路径找不到它,只能关掉这条提示。
 #
 # shellcheck disable=SC1091  # 注释与 source 行之间不能插别的东西
 . /usr/lib/keel/lib.sh
@@ -63,7 +63,9 @@ hr() { printf '%s\n' "----------------------------------------------------------
 # 1) 版本 / 内核 / 当前槽
 # ---------------------------------------------------------------------------
 version="$(keel_version 2>/dev/null)" || version=""
-[ -n "$version" ] || version="$(grep -E '^VERSION_ID=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '"')"
+# 末尾的 || version="" 是必需的:报告必须在任何环境下都跑到最后(退出码永远 0),
+# 而管道里最后一个命令失败会让整个赋值语句非零退出。
+[ -n "$version" ] || version="$(grep -E '^VERSION_ID=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '"')" || version=""
 [ -n "$version" ] || version="未知"
 kernel="$(uname -r 2>/dev/null)" || kernel="未知"
 slot="$(keel_current_slot 2>/dev/null)" || slot=""

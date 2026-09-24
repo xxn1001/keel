@@ -14,8 +14,8 @@
 set -euo pipefail
 
 # shellcheck source=/usr/lib/keel/lib.sh
-# SC1091:lib.sh 只在镜像里(/usr/lib/keel/lib.sh),仓库里没有这个文件,
-# 静态检查工具追不到它(它不在仓库里)。变量名与函数名以父 agent 给出的接口表为准。
+# SC1091:脚本里写的是镜像内的绝对路径,而库的源文件在仓库的
+# mkosi.extra/usr/lib/keel/lib.sh —— 静态检查工具按绝对路径找不到它,只能关掉这条提示。
 #
 # shellcheck disable=SC1091  # 注释与 source 行之间不能插别的东西
 . /usr/lib/keel/lib.sh
@@ -70,6 +70,7 @@ validate_version() {
 }
 
 # 本地源 → 拷贝;https:// → curl。更新源允许 file:// 与裸路径(docs/update.md §6)。
+# 目标目录由调用方通过全局 DEST 指定(cmd_fetch 的临时目录)。
 fetch_one() {
     local rel="$1"
     case "$SRC" in
@@ -108,8 +109,11 @@ volume_schema() {
 # 用 sort -V(GNU 版本排序),这样 2025.9.9 < 2025.9.10 也是对的。
 version_is_newer() {
     local remote="$1" current="$2" top
+    if [ -z "$remote" ] || [ "$remote" = "$current" ]; then
+        return 1
+    fi
     top="$(printf '%s\n%s\n' "$current" "$remote" | LANG=C sort -V | tail -n1)" || return 1
-    [ -n "$remote" ] && [ "$top" = "$remote" ] && [ "$remote" != "$current" ]
+    [ "$top" = "$remote" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -159,14 +163,14 @@ cmd_check() {
 # 这一步不写任何槽,所以失败可以直接重来。三道闸:sha256、签名(可选)、schema。
 # ---------------------------------------------------------------------------
 cmd_fetch() {
-    local rv rs schema h actual tmp=""
+    local rv rs schema h actual a
     [ -e "$LOCAL_SRC/$MANIFEST" ] || [ "$REMOTE" -eq 1 ] || keel_die "更新源里找不到 $MANIFEST:${LOCAL_SRC}"
 
     install -d -m 0755 "$KEEL_OTA"
-    tmp="$(mktemp -d "$KEEL_OTA/.fetch.XXXXXX")"
-    # 任何提前退出都清掉半成品目录;成功路径最后把 tmp 改名成正式目录并摘掉 trap。
-    # 单引号是故意的:延迟到 trap 触发时再展开 $tmp,否则拿到的是空值(SC2064)。
-    trap 'rm -rf "$tmp"' EXIT
+    DEST="$(mktemp -d "$KEEL_OTA/.fetch.XXXXXX")"
+    # 任何提前退出都清掉半成品目录;成功路径最后把 DEST 改名成正式目录并摘掉 trap。
+    # 单引号是故意的:延迟到 trap 触发时再展开 $DEST,否则拿到的是空值(SC2064)。
+    trap 'rm -rf "$DEST"' EXIT
 
     keel_log "从 ${SRC} 取 manifest"
     fetch_one "$MANIFEST" || keel_die "下载 manifest 失败:${SRC}/${MANIFEST}"
@@ -175,8 +179,8 @@ cmd_fetch() {
         keel_log "更新源没有分布 $MANIFEST_SIG"
     fi
 
-    rv="$(manifest_get "$tmp/$MANIFEST" version)"
-    rs="$(manifest_get "$tmp/$MANIFEST" schema)"
+    rv="$(manifest_get "$DEST/$MANIFEST" version)"
+    rs="$(manifest_get "$DEST/$MANIFEST" schema)"
     validate_version "$rv"
     keel_log "远端版本:${rv}"
 
@@ -187,11 +191,11 @@ cmd_fetch() {
 
     # --- sha256 -----------------------------------------------------------
     for a in "${ARTIFACTS[@]}"; do
-        h="$(manifest_get "$tmp/$MANIFEST" "sha256_$a")"
+        h="$(manifest_get "$DEST/$MANIFEST" "sha256_$a")"
         if [ -z "$h" ]; then
             keel_die "manifest 里缺少 sha256_$a=,拒绝安装未声明校验和的载荷"
         fi
-        actual="$(sha256sum "$tmp/$a" | cut -d' ' -f1)" || keel_die "计算 $a 的 sha256 失败"
+        actual="$(sha256sum "$DEST/$a" | cut -d' ' -f1)" || keel_die "计算 $a 的 sha256 失败"
         if [ "$actual" != "$h" ]; then
             keel_die "$a 校验和不匹配:期望 $h,实际 $actual(载荷被截断或改过,重下)"
         fi
@@ -199,11 +203,11 @@ cmd_fetch() {
     keel_log "sha256 全部匹配(4 个产物)"
 
     # --- 签名 -------------------------------------------------------------
-    if [ -f "$tmp/$MANIFEST_SIG" ]; then
+    if [ -f "$DEST/$MANIFEST_SIG" ]; then
         if [ ! -f "$PUBKEY" ]; then
             keel_die "更新源提供了 $MANIFEST_SIG,但本机没有公钥 $PUBKEY,无法验签"
         fi
-        if ! openssl dgst -sha256 -verify "$PUBKEY" -signature "$tmp/$MANIFEST_SIG" "$tmp/$MANIFEST"; then
+        if ! openssl dgst -sha256 -verify "$PUBKEY" -signature "$DEST/$MANIFEST_SIG" "$DEST/$MANIFEST"; then
             keel_die "manifest 验签失败 —— 更新源可能被篡改,已中止(什么都没写进槽)"
         fi
         keel_log "manifest 验签通过"
@@ -216,15 +220,25 @@ cmd_fetch() {
     fi
 
     # --- schema 兼容性 ----------------------------------------------------
+    # 只认十进制整数;manifest 里的 schema 是别的东西就当作"读不懂"直接拒绝,
+    # 免得 [ "$rs" -gt "$schema" ] 在 set -e 下抛出难懂的错误。
     schema="$CURRENT_SCHEMA"
-    if [ -n "$rs" ] && [ "$rs" -gt "$schema" ]; then
-        keel_die "这个更新需要更新的 /Volume 布局(manifest schema=${rs},本机=${schema})。当前系统不认识这个布局,拒绝安装;请先升级到中间版本,或重装。"
-    fi
+    case "$rs" in
+        "") : ;;
+        *[!0-9]*)
+            keel_die "manifest 里的 schema 不是整数:'${rs}'(更新源坏了?)"
+            ;;
+        *)
+            if [ "$rs" -gt "$schema" ]; then
+                keel_die "这个更新需要更新的 /Volume 布局(manifest schema=${rs},本机=${schema})。当前系统不认识这个布局,拒绝安装;请先升级到中间版本,或重装。"
+            fi
+            ;;
+    esac
 
     # --- 落盘到正式目录 ---------------------------------------------------
     # 先删旧的同版本目录:上一次 fetch 可能留下半份坏载荷,cp 不清理多余文件。
     rm -rf "${KEEL_OTA:?}/${rv:?}"
-    mv -- "$tmp" "$KEEL_OTA/$rv"
+    mv -- "$DEST" "$KEEL_OTA/$rv"
     trap - EXIT
     sync
     keel_log "载荷已就位:$KEEL_OTA/$rv"
@@ -309,7 +323,9 @@ cmd_stage() {
     for stale in "$KEEL_UKI_DIR/keel-${target}"+*.efi; do
         [ -e "$stale" ] || continue
         base="${stale##*/}"
-        [ "$base" = "keel-${target}+${TRIES}.efi" ] && continue
+        if [ "$base" = "keel-${target}+${TRIES}.efi" ]; then
+            continue
+        fi
         rm -f "$stale" || keel_log "警告:删不掉 $stale(留着不影响启动)"
         keel_log "已清理上次残留:${base}"
     done
@@ -344,14 +360,16 @@ cmd_switch() {
         a|b) ;;
         *) die_usage "os-update switch <a|b>" ;;
     esac
-    pref="keel-${slot}.efi"
     local existing="" f
+    pref="keel-${slot}.efi"
     for f in "$KEEL_UKI_DIR"/*.efi; do
         [ -e "$f" ] || continue
         existing="$existing ${f##*/}"
     done
-    [ -e "$KEEL_UKI_DIR/$pref" ] ||
-        keel_die "ESP 上没有 ${KEEL_UKI_DIR}/${pref}:槽 ${slot} 还没有可用条目(先用 os-update stage 填这个槽)。现有条目:${existing:- 无}"
+    if [ ! -e "$KEEL_UKI_DIR/$pref" ]; then
+        keel_die "ESP 上没有 ${KEEL_UKI_DIR}/${pref}:槽 ${slot} 还没有正式条目(先用 os-update stage 填这个槽,或用 bootctl list 看有没有带计数的 ${slot} 条目)。现有条目:${existing:- 无}"
+    fi
+    # 只写 EFI 变量 LoaderEntryPreferred,不动 ESP 上的 loader.conf(不变量 4)
     if ! bootctl set-preferred "$pref"; then
         keel_die "bootctl set-preferred ${pref} 失败(固件拒绝写 EFI 变量?)。可改用开机菜单(space)手动选择槽 ${slot}。"
     fi
@@ -368,16 +386,21 @@ cmd_rollback() {
     cur="$CURRENT_SLOT"
     [ -n "$cur" ] || keel_die "解析不出当前槽,无法判断要切回哪个槽"
     other="$(keel_other_slot "$cur")"
-    echo "回滚:把下次启动指向槽 ${other}(当前槽 ${cur},${CURRENT_VERSION})"
-    cmd_switch "$other"
-    # 清 pending:回滚是"放弃这次更新"的明确表达,留着 pending 会让下次启动的
-    # 成功/失败判定把这次回滚误判成更新失败(§5.3 ⑪)。
+    case "$other" in
+        a|b) ;;
+        *) keel_die "算不出另一个槽(keel_other_slot 返回 '${other}')" ;;
+    esac
+    # 先改状态再报"完成":相反的顺序会在 cmd_switch 的输出之后才改 pending,
+    # 用户看到"回滚完成"时状态可能还没写。
     keel_state_set pending_slot ""
     keel_state_set pending_version ""
     keel_state_set last_result "failed"
     keel_state_set last_result_version "$CURRENT_VERSION"
     keel_state_set last_result_time "$(date +%s)"
+    echo "回滚:把下次启动指向槽 ${other}(当前槽 ${cur},${CURRENT_VERSION})"
+    cmd_switch "$other"
     keel_log "已清空 pending,并把上次结果记为 failed(${CURRENT_VERSION})"
+    echo "注意:回滚改的是下次启动用哪个槽,/Volume 上的数据(含 /etc 的改动)不会被回退。"
 }
 
 # ---------------------------------------------------------------------------
@@ -398,7 +421,9 @@ cmd_gc() {
         if printf '%s\n' "$newest" | grep -qxF -- "$v"; then
             continue
         fi
-        [ -n "$keep" ] && [ "$v" = "$keep" ] && continue
+        if [ -n "$keep" ] && [ "$v" = "$keep" ]; then
+            continue
+        fi
         echo "  删除 $dir"
         rm -rf "$dir" || keel_die "删除 $dir 失败"
         removed=$((removed + 1))

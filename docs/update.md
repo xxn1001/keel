@@ -123,12 +123,19 @@ sudo os-rescue --mark-bad   # 把当前槽标记为 bad(systemd-bless-boot bad)
 | 挂载的 U 盘目录 | U 盘挂到 `/mnt`,指向 `/mnt/keel-<version>/` | 无网环境装机后升级 |
 
 ```
-# /Volume/keel/config(示意:键名以 in-image/os-update 的实际实现为准 —— 待验证)
+# /Volume/keel/config
 UPDATE_SOURCE=https://example.invalid/keel/
+SWAPFILE_SIZE=            # 可留空:默认 min(内存, 8G) 且不小于 1G
 ```
 
-`check` / `fetch` 会去这个地址找 `manifest` 与 `slot-a/`、`slot-b/` 两组载荷(§6 的发布目录结构)。
-下载后所有校验都在本地完成:`fetch` 验 sha256 与 schema 兼容性;签名 `manifest.sig` 在 v1 只留接口(§6)。
+`check` / `fetch` 会去这个地址找 `manifest` 和四个**扁平命名**的载荷:
+`slot-a.root.raw`、`slot-a.uki.efi`、`slot-b.root.raw`、`slot-b.uki.efi`
+(不是 `slot-a/` 子目录 —— 见 `architecture.md` §6 的发布目录结构)。
+`manifest` 刻意是最朴素的 `key=value` 文本:镜像里没有 jq,清单不该依赖它。
+
+下载后所有校验都在本地完成:`fetch` 逐个文件验 sha256、再检查 schema 兼容性;
+`manifest.sig` 存在时会用 `/usr/share/keel/update-key.pub` 验签(公钥缺失直接报错,
+不做静默降级),不存在时打印醒目警告后继续 —— 这是 v1 的权宜策略。
 
 ## 7. 给将来维护者:发一个新版本要做什么
 
