@@ -83,6 +83,9 @@ snapshot() {
     cat "$KEEL_STATE" 2>&1 | sed 's/^/  /'
     log "--- keel-confirm 本次启动的日志(它是读到 pending 才动的那个单元)---"
     journalctl -b -u keel-confirm --no-pager 2>&1 | tail -n10 | sed 's/^/  /'
+    log "--- 看门狗(挂住的机器靠它复位;decision D25)---"
+    log "  RuntimeWatchdogUSec = $(systemctl show -p RuntimeWatchdogUSec --value 2>&1)"
+    log "  /dev/watchdog*      = $(ls /dev/watchdog* 2>&1 | tr '\n' ' ')"
     log "--- 上一次启动的内核日志里有没有 panic 的痕迹(panic=-1 立即重启,现场只在这里)---"
     journalctl -b -1 -k --no-pager 2>&1 |
         grep -iE "panic|Attempted to kill init|No working init" | tail -n5 | sed 's/^/  /' || true

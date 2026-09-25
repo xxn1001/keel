@@ -780,6 +780,31 @@ else
     no "演练没有覆盖「带迁移的载荷被拒绝」这一项"
 fi
 
+# 运行时看门狗(决策 D25 / 坑 #50):主镜像与 initrd 各一份,且两边的值必须一致
+WD_MAIN=mkosi.extra/etc/systemd/system.conf.d/keel-watchdog.conf
+WD_INITRD=mkosi.extra-initrd/etc/systemd/system.conf.d/keel-watchdog.conf
+if [ -f "$WD_MAIN" ] && [ -f "$WD_INITRD" ] &&
+   grep -q '^RuntimeWatchdogSec=60' "$WD_MAIN" &&
+   grep -q '^RuntimeWatchdogSec=60' "$WD_INITRD"; then
+    if grep -q '^RebootWatchdogSec=' "$WD_MAIN" && grep -q '^RebootWatchdogSec=' "$WD_INITRD"; then
+        ok "运行时看门狗配置在主镜像与 initrd 里都有,两边 RuntimeWatchdogSec 一致(坑 #50)"
+    else
+        no "看门狗配置缺 RebootWatchdogSec"
+    fi
+else
+    no "缺少看门狗配置(或两边不一致)⇒ initrd 冻结时机器会一直挂着,自动回退不会发生(坑 #50)"
+fi
+if grep -qE '^ExtraTrees=mkosi\.extra-initrd$' mkosi.initrd.conf; then
+    ok "mkosi.initrd.conf 把 mkosi.extra-initrd 挂进 initrd(initrd 不读主镜像的 /etc)"
+else
+    no "mkosi.initrd.conf 里没有 ExtraTrees=mkosi.extra-initrd ⇒ initrd 拿不到看门狗配置"
+fi
+if grep -q '^softdog$' mkosi.extra/etc/modules-load.d/keel-watchdog.conf; then
+    ok "没有硬件看门狗的设备上会加载 softdog 兜底"
+else
+    no "没有加载 softdog ⇒ 部分真机上 RuntimeWatchdogSec 只会打一条警告"
+fi
+
 head1 "7. 账号模型(决策 D21:admin 是唯一交互账号,root 锁定)"
 # ---------------------------------------------------------------------------
 if grep -qE '^[[:space:]]*sudo$' mkosi.conf.d/20-packages.conf; then

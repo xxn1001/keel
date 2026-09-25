@@ -58,6 +58,7 @@ v1 **没有自动更新定时器**(§8):手动触发,便于在笔记本上边用
 
 | 证据 | 在哪看 |
 |---|---|
+| 机器卡住一分钟左右之后**自己重启**并回到旧槽 | 运行时看门狗复位(`RuntimeWatchdogSec=60`,决策 D25);journal 里不会有那次失败的任何记录 |
 | 重启后槽和版本**都没变**(还是旧槽、旧版本) | `os-status`(one-shot 已被消费 ⇒ 回到持久默认);硬失败(panic)也会自动回来 —— cmdline 里有 `panic=-1`(决策 D24) |
 | ESP 上出现 `keel-<目标>.efi.failed` | `ls -l "$(bootctl --print-esp-path)/EFI/Linux/"` |
 | `state` 里 pending 被清空、记了 failed | `os-status`;`/data/keel/state` |

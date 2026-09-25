@@ -847,3 +847,28 @@
     **教训**:① "警告但继续"的检查等于没有检查 —— 要么在能判断的地方就拒绝,要么把失败信息
     写到能一眼看出根因;② `fetch` 与 `stage` 之间**没有隐式契约**:`stage` 只看"最大版本号",
     所以任何"我 fetch 了 X 然后 stage"的脚本都必须自己确认 stage 装的是 X(演练现在会核对)。
+
+50. **"起不来"有两种:panic 会被 `panic=-1` 重启,**挂住**不会 —— 坏槽实测是**永久冻结**(2026-09 演练)。**
+    现象(把候选槽的根镜像做成"没有可用 init"之后再启动,期待 panic ⇒ 自动回退):
+    ```
+    [  OK  ] Reached target initrd-switch-root.target - Switch Root.
+             Starting initrd-switch-root.service - Switch Root...
+    [!!!!!!] Switch root target contains no usable init.
+    [  107.224858] systemd-journald[244]: Failed to send WATCHDOG=1 notification message: Connection refused
+    [  217.224736] systemd-journald[244]: Failed to send WATCHDOG=1 notification message: Transport endpoint is not connected
+    [  287.224712] …(每 70 秒一条,永不停止)
+    ```
+    也就是说:initrd 里的 systemd 发现新根"没有可用的 init"之后**故意冻结**(让人能看现场),
+    **不 panic、不退出、不重启** ⇒ `panic=-1`(决策 D24)完全帮不上忙,
+    持久默认(旧槽)永远不会被用到,机器就停在黑屏 —— 对一台放在桌上的笔记本来说等于变砖。
+    ⇒ 修法(决策 D25):启用**运行时看门狗** —— `RuntimeWatchdogSec=60`,
+    PID1 每 30 秒喂一次 `/dev/watchdog`;PID1 冻住 ⇒ 到点硬件复位 ⇒ 下次启动走旧槽 ⇒
+    `keel-confirm` 判定"更新失败已回滚"。因为冻结的是 **initrd 的 PID1**,而 initrd
+    **不读主镜像的 `/etc`**,所以必须在 `mkosi.initrd.conf` 里给 initrd 单独塞一份配置
+    (`ExtraTrees=mkosi.extra-initrd`);再加 `softdog` 兜底没有硬件看门狗的设备。
+    **教训**:① 说"失败会自动回滚"之前,先把"失败"**分类** —— 能自己重启的(panic)
+    和不能的(挂住/冻结/等设备),它们的兜底机制完全不同;
+    ② "没有任何代码运行"的故障只能靠**外部**(看门狗/人)处理,
+    这类机制必须显式设计出来并演练,不能默认它不存在;
+    ③ 改这类"兜底"配置时注意**它跑在哪个 PID1 上**:initrd 的 PID1 与主系统的 PID1
+    读的是**两份不同的 /etc**。

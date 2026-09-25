@@ -264,8 +264,9 @@ os-update stage
 失败路径(**试用一次**没到 boot-complete:内核 panic / initrd 失败 / systemd 起不来都算)
  ⑩ one-shot 在引导时就被引导器消费掉了 ⇒ 下次启动回到**持久默认**(旧槽,见 ⑨ 记下的
     `set-default`)—— 自动回退,不需要人工介入。**前提是「下次启动真的会发生」**:
-    cmdline 里的 `panic=-1` 让内核 panic 立即重启(决策 D24 / 坑 #46);没有它,
-    panic 就是一次停机,而不是一次失败
+    cmdline 里的 `panic=-1` 让内核 panic 立即重启(决策 D24 / 坑 #46);
+    **挂住**这类失败(initrd 冻结、卡死)则由运行时看门狗复位(决策 D25 / 坑 #50):
+    initrd 与主镜像各带一份 `RuntimeWatchdogSec=60`,PID1 喂不到狗就硬件复位
  ⑪ 旧槽起来后 keel-confirm.service 发现"跑在旧槽,但 state 说 pending 新槽" → 判定失败:
     清 pending、把坏 UKI 挪成 keel-<目标>.efi.failed、state 记 failed 并 journal 告警
 ```
