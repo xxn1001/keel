@@ -204,7 +204,17 @@ cmd_fetch() {
 
     for a in "${ARTIFACTS[@]}"; do
         keel_log "取 $a"
-        fetch_one "$a" || keel_die "下载失败:${SRC}/${a}"
+        if ! fetch_one "$a"; then
+            # 失败原因可能是网络,也可能是 /data 满了(ENOSPC 在 curl 那里只表现为"下载失败",
+            # 2026-09 演练里就把它误判成过网络问题)。剩余空间不够就直说 + 给下一步。
+            fb2="$(free_bytes)"
+            if [ "$fb2" -lt $((3 * 1024 * 1024 * 1024)) ]; then
+                keel_die "下载失败:${SRC}/${a}
+       /data 只剩 $((fb2 / 1048576)) MiB,大概是空间不够(一份载荷约 13 GiB)。先跑 os-update gc
+       或删掉 /data/ota 下的旧版本(已经装进槽里的内容不受影响),再重试。"
+            fi
+            keel_die "下载失败:${SRC}/${a}"
+        fi
     done
 
     # --- sha256 -----------------------------------------------------------

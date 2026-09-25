@@ -156,11 +156,33 @@ p2)
         exit 0
     fi
     log "坏载荷源可达:$SRC_BAD"
+    # 先腾空间:一份载荷就是 13 GiB(两个 6 GiB 根镜像 + 两个 163 MB UKI),而 /data 只有 27 GiB
+    # —— 留着上一份的话第二份下不下来(第一次演练就栽在这里:curl ENOSPC,报的却是"下载失败")。
+    # 已经装进槽里的版本不受影响,删的只是下载缓存。
+    log "清掉 /data/ota 里已下载的载荷(腾出 ~13 GiB;已装进槽的内容不受影响)"
+    rm -rf "${KEEL_OTA:?}"/*
     set_source "$SRC_BAD"
     log "========== 坏载荷:check / fetch / stage =========="
     os-update check 2>&1 | sed 's/^/  /'
-    os-update fetch 2>&1 | sed 's/^/  /'
-    os-update stage 2>&1 | sed 's/^/  /'
+    if fetch_out="$(os-update fetch 2>&1)"; then
+        printf '%s\n' "$fetch_out" | sed 's/^/  /'
+        log "fetch 成功"
+    else
+        printf '%s\n' "$fetch_out" | sed 's/^/  /'
+        log "**fetch 失败** ⇒ 破坏性演练无法继续(坏载荷没下下来);跳过 stage 与重启"
+        printf 'done\n' >"$STATE"
+        sleep 3
+        systemctl poweroff
+        exit 0
+    fi
+    stage_out="$(os-update stage 2>&1)" && stage_rc=0 || stage_rc=$?
+    printf '%s\n' "$stage_out" | sed 's/^/  /'
+    staged_ver="$(printf '%s' "$stage_out" | sed -n 's/.*版本 \([^)]*\)).*/\1/p' | head -n1)"
+    log "stage rc=$stage_rc,它装的版本是 '${staged_ver:-未知}'(期望 2026.*.bad 那种带 .bad 的)"
+    case "$staged_ver" in
+        *.bad) log "版本核对:OK(装的确实是坏载荷)" ;;
+        *) log "版本核对:**与预期不符** —— stage 装的不是坏载荷(看上面 fetch/stage 的输出)" ;;
+    esac
     snapshot "坏载荷 stage 之后(重启前)"
     log "3 秒后重启 —— 这次那个槽**起不来**(内核 panic),panic=-1 会立即重启,然后回到本槽"
     advance p3
