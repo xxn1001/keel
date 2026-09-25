@@ -766,6 +766,20 @@ else
     no "drill 模式缺少坏载荷的准备(破坏性回滚验不了)"
 fi
 
+# v1 不支持 /data 迁移:带 migrate= 的载荷必须在 fetch 阶段被拒(而不是装上)
+if grep -q 'migrate=' mkosi.extra/usr/bin/os-update &&
+   grep -q '还没有迁移执行器' mkosi.extra/usr/bin/os-update; then
+    ok "os-update fetch 会拒绝声明了 /data 迁移的载荷(v1 没有迁移执行器,拒绝好过假装迁移过)"
+else
+    no "os-update 没有拒绝带 migrate= 的载荷 ⇒ 可能装上一个要求迁移的版本(回滚后旧系统读不懂 /data)"
+fi
+if grep -q 'migrate=mkdir' tools/ota-drill-container.sh &&
+   grep -q 'SRC_MIG' mkosi.extra-test/usr/lib/keel/ota-drill; then
+    ok "演练会造一个带 migrate= 的载荷并验证它被拒绝"
+else
+    no "演练没有覆盖「带迁移的载荷被拒绝」这一项"
+fi
+
 head1 "7. 账号模型(决策 D21:admin 是唯一交互账号,root 锁定)"
 # ---------------------------------------------------------------------------
 if grep -qE '^[[:space:]]*sudo$' mkosi.conf.d/20-packages.conf; then

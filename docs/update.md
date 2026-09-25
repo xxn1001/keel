@@ -39,7 +39,7 @@ sudo os-update stage --reboot  # 同上,并立即重启
 | # | 动作 | 为什么 |
 |---|---|---|
 | ① | 读 `/proc/cmdline` 判断当前槽,目标槽 = 另一个 | 绝不会写正在运行的那个槽 |
-| ② | **迁移 `/data`**,成功后 bump schema-version | 由**旧系统**执行,声明式,只增不破 —— 见 §4 |
+| ② | **迁移 `/data`**,成功后 bump schema-version | 由**旧系统**执行,声明式,只增不破 —— 见 §4。**v1 未实现**:带迁移的载荷会被 `fetch` 拒绝 |
 | ③ | 把 `slot-<目标>.root.raw` 写进 `/dev/disk/by-partlabel/root-<目标>`,再 `sync` + `blockdev --flushbufs` | 新根落盘 |
 | ④ | 把 `slot-<目标>.uki.efi` 写成 `$KEEL_ESP/EFI/Linux/keel-<目标>+3.efi`(`KEEL_ESP` 由 `bootctl --print-esp-path` 得到,通常是 `/boot`) | 新 UKI + 启动计数 |
 | ⑤ | `bootctl set-oneshot keel-<目标>+3.efi` | 候选槽只试一次;为什么不用 `set-preferred` 见坑 #43 |
@@ -80,6 +80,16 @@ sudo os-rescue --mark-bad   # 把当前槽标记为 bad(systemd-bless-boot bad)
 
 失败的载荷不会自动删:留在 `/data/ota/` 里(§4.2),查清原因后用 `os-update gc` 清理
 (保留最近 2 个版本 + 当前,§8)。
+
+> ⚠ **v1 的状态(2026-09 实测确认)**:**迁移执行器还没有实现**。具体行为是:
+> * `os-update fetch` 看到 manifest 里 `migrate=` 非空 ⇒ **明确拒绝**这个载荷
+>   (与其"假装迁移过、装上去,然后回滚时旧系统读不懂 `/data`",不如在这里失败);
+> * `os-update stage` **不执行**任何迁移,也**不会** bump `schema-version`;
+> * 因此 v1 的 `/data` 布局**冻结在 schema 1**。第一次真正的布局变更要等执行器写出来
+>   并按下面的约定演练过(v2 的工作,见 [`roadmap.md`](roadmap.md) 2.8)。
+>
+> 本节下面写的是**目标语义**,不是当前的实现 —— 保留它是为了"第一次做迁移时按这个来",
+> 也为了让"为什么不能随便改 `/data` 布局"这件事有据可查。
 
 ## 4. `/data` 的 schema 迁移约定(最重要的一节)
 

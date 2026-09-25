@@ -171,7 +171,7 @@ cmd_check() {
 # 这一步不写任何槽,所以失败可以直接重来。三道闸:sha256、签名(可选)、schema。
 # ---------------------------------------------------------------------------
 cmd_fetch() {
-    local rv rs schema h actual a fb
+    local rv rs schema h actual a fb mig
     [ -e "$LOCAL_SRC/$MANIFEST" ] || [ "$REMOTE" -eq 1 ] || keel_die "更新源里找不到 $MANIFEST:${LOCAL_SRC}"
 
     install -d -m 0755 "$KEEL_OTA"
@@ -235,6 +235,16 @@ cmd_fetch() {
         echo "        只靠 sha256 防传输损坏,防不住恶意替换更新源。"
         echo "        v1 策略:继续,但请只使用自己控制的更新源。"
         echo "  ************************************************************"
+    fi
+
+    # --- /data 迁移(v1 明确不支持)----------------------------------------
+    # manifest 里的 `migrate=` 是**声明式迁移**的位置(docs/update.md §4):由**旧系统**在
+    # stage 阶段执行,只增不破。但 v1 **还没有迁移执行器**,所以这里必须**明确拒绝**带迁移的
+    # 载荷 —— 比"假装迁移过、装上去,然后回滚时旧系统读不懂 /data"好得多(那条路会静默毁数据)。
+    # 真正的实现(含 schema_min 语义、与下面 schema 检查的关系)见 docs/roadmap.md。
+    mig="$(manifest_get "$DEST/$MANIFEST" migrate)" || mig=""
+    if [ -n "$mig" ]; then
+        keel_die "这个载荷声明了 /data 迁移(migrate=${mig}),但 v1 还没有迁移执行器(docs/update.md §4、docs/roadmap.md)。拒绝安装:与其'假装迁移过',不如在这里明确失败。"
     fi
 
     # --- schema 兼容性 ----------------------------------------------------

@@ -28,6 +28,7 @@ STATE=/data/keel/ota-drill.state
 DRILL_LOG=/data/keel/ota-drill.log
 SRC_GOOD="${KEEL_DRILL_SRC:-http://10.0.2.2:8000/good}"
 SRC_BAD="${KEEL_DRILL_SRC_BAD:-http://10.0.2.2:8000/bad}"
+SRC_MIG="${KEEL_DRILL_SRC_MIG:-http://10.0.2.2:8000/mig}"
 
 step="$(cat "$STATE" 2>/dev/null || true)"
 [ -n "$step" ] || step=p0
@@ -51,7 +52,7 @@ set_source() {
 }
 
 wait_source() {
-    local url=$1 i
+    local url=$1
     for _ in $(seq 1 40); do
         if curl -fsS --max-time 5 -o /dev/null "$url/manifest" 2>/dev/null; then
             return 0
@@ -130,6 +131,23 @@ p2)
     else
         log "判定:**与预期不符**(本该在槽 a)—— 对照快照"
     fi
+    # v1 **没有** schema 迁移执行器 ⇒ 带 migrate= 的载荷必须在 fetch 阶段被拒绝(而不是装上)
+    if wait_source "$SRC_MIG"; then
+        log "========== 带迁移的载荷:fetch **必须拒绝**(v1 不支持迁移)=========="
+        set_source "$SRC_MIG"
+        mig_out="$(os-update fetch 2>&1)" && mig_rc=0 || mig_rc=$?
+        printf '%s\n' "$mig_out" | sed 's/^/  /'
+        if [ "$mig_rc" != 0 ] && printf '%s' "$mig_out" | grep -q '迁移'; then
+            log "判定:**拒绝生效** —— 带 migrate= 的载荷没有装进来(rc=$mig_rc)"
+            mig_ok=1
+        else
+            log "判定:**与预期不符** —— 带迁移的载荷居然被接受了(rc=$mig_rc)"
+            mig_ok=0
+        fi
+        set_source "$SRC_GOOD"
+    else
+        log "迁移载荷源 $SRC_MIG 不可达 ⇒ 跳过这一项检查"
+    fi
     if ! wait_source "$SRC_BAD"; then
         log "坏载荷源 $SRC_BAD 不可达 ⇒ 演练到此结束(破坏性部分跳过)"
         printf 'done\n' >"$STATE"
@@ -151,6 +169,7 @@ p3)
     log "阶段 p3:坏载荷启动失败之后,应该**自动**回到旧槽"
     snapshot "坏载荷失败后自动回来的这一次启动"
     slot_now="$(keel_current_slot 2>/dev/null)"
+    log "迁移载荷的拒绝检查结果:${mig_ok:-未执行}"
     result="$(keel_state_get last_result 2>/dev/null)"
     bad_count=$(find "${KEEL_UKI_DIR:-/nonexistent}" -maxdepth 1 -name '*.failed' 2>/dev/null | wc -l)
     log "判定要素:当前槽=$slot_now(应为 a)、last_result=$result(应为 failed)、ESP 上 .failed 条目数=$bad_count(应 ≥1)"

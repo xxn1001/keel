@@ -116,6 +116,20 @@ sed -e "s/^version=.*/version=${GOOD_VER}.bad/" \
     "/work/$DRILL_PAYLOAD/manifest" >/tmp/drill-serve/bad/manifest
 echo "   坏载荷版本:${GOOD_VER}.bad(slot-$BAD_SLOT.root.raw 的 sha256 已更新)"
 
+# 再做一个"声明了 /data 迁移"的载荷:它的产物都是符号链接(内容没变),只是 manifest 里
+# `migrate=` 非空。v1 没有迁移执行器 ⇒ os-update fetch **必须拒绝**它(这一项也在演练里验)。
+rm -rf /tmp/drill-serve/mig
+mkdir -p /tmp/drill-serve/mig
+for f in /work/"$DRILL_PAYLOAD"/*; do
+    b=$(basename "$f")
+    [ "$b" = "manifest" ] && continue
+    ln -sfn "$f" "/tmp/drill-serve/mig/$b"
+done
+sed -e "s/^version=.*/version=${GOOD_VER}.mig/" \
+    -e 's/^migrate=.*/migrate=mkdir:\/data\/keel\/migtest:0755/' \
+    "/work/$DRILL_PAYLOAD/manifest" >/tmp/drill-serve/mig/manifest
+echo "   迁移载荷版本:${GOOD_VER}.mig(manifest 里 migrate=mkdir:/data/keel/migtest:0755)"
+
 step "7/7 起 VM(演练状态机自己跑;p3 结束时会 poweroff,所以这次 VM 会自己退出)"
 set +e
 timeout "$DRILL_VM_TIMEOUT" mkosi --profile install --profile test \

@@ -245,6 +245,7 @@ systemd.gpt_auto=no
 os-update stage
  ① 读 /proc/cmdline 判断当前槽 → 目标槽 = 另一个
  ② 迁移 /data(声明式,由**旧系统**执行,只增不破,成功后 bump schema-version)
+    ⚠ **v1 未实现迁移执行器**:带 migrate= 的载荷会被 fetch 拒绝(见 update.md §4 开头)
  ③ 把 slot-<目标>.root.raw 写进 /dev/disk/by-partlabel/root-<目标>;sync + blockdev --flushbufs
  ④ mount -o remount,rw /efi;把 slot-<目标>.uki.efi 写成 /efi/EFI/Linux/keel-<目标>+3.efi
  ⑤ bootctl set-oneshot keel-<目标>+3.efi           (候选槽只试**一次**;见下面的说明与坑 #43)
