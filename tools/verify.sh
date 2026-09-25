@@ -957,7 +957,10 @@ fi
 # 断言仓库里不存在"组/其他人不可读"的文件(可执行文件放宽到 0755)。
 # 范围覆盖**所有 tracked 文件**(不只 mkosi.extra*/):mkosi.conf / mkosi.profiles/* / docs/*.md
 # 也一样会被 mkosi 或 mkosi.postinst 读,0600 只是 umask 的意外产物。
-badmodes=$(git ls-files -z 2>/dev/null | xargs -0 -r stat -c '%a %n' 2>/dev/null | awk '$1 !~ /[4567]$/ {print $2}' | head -5)
+# --cached --others --exclude-standard:已跟踪的 + 还没提交但**没被 ignore** 的。
+# 只看已跟踪文件会漏掉最危险的那一刻 —— 新文件刚写好、还没 commit 的时候(实测就是这么漏的)。
+badmodes=$(git ls-files -z --cached --others --exclude-standard 2>/dev/null |
+           xargs -0 -r stat -c '%a %n' 2>/dev/null | awk '$1 !~ /[4567]$/ {print $2}' | head -5)
 if [ -z "$badmodes" ]; then
     ok "仓库里没有「其他用户不可读」的文件(git 不跟踪读权限,只能在构建前查,坑 #57)"
 else
