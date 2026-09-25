@@ -721,7 +721,8 @@ if grep -q '^keel_boot_candidate() { bootctl set-oneshot' mkosi.extra/usr/lib/ke
 else
     no "lib.sh 缺少 bootctl 动词的封装(坑 #43)"
 fi
-if grep -q 'keel_boot_candidate "\$pref"' mkosi.extra/usr/bin/os-update &&
+if grep -q 'keel_boot_candidate "\$candidate_id"' mkosi.extra/usr/bin/os-update &&
+   grep -q 'candidate_id="keel-\${target}.efi"' mkosi.extra/usr/bin/os-update &&
    grep -q 'keel_boot_default "\$pref"' mkosi.extra/usr/bin/os-update &&
    grep -q 'keel_boot_default "\$uki_name"' mkosi.extra/usr/lib/keel/confirm; then
     ok "os-update(stage=候选/switch=固化)与 keel-confirm(固化)都走 helper"

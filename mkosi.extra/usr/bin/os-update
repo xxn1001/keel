@@ -368,12 +368,18 @@ cmd_stage() {
         keel_log "已清理上次残留:${base}"
     done
 
-    pref="keel-${target}+${TRIES}.efi"
-    # 候选槽只试一次(keel_boot_candidate = set-oneshot;为什么不用 set-preferred 见 lib.sh 的注释)
-    if ! keel_boot_candidate "$pref"; then
-        keel_die "bootctl set-oneshot ${pref} 失败:引导器不接受这个条目(文件确实在 ESP 上?ESP 是可写的?),或固件拒绝写 EFI 变量(部分主板只读这些变量)。可改用开机菜单手动选择槽 ${target}。"
+    # 两个名字要分清(坑 #45,演练实测):
+    #   * 写进 ESP 的**文件名** = keel-<目标>+3.efi(带计数后缀,引导器靠它做 boot counting);
+    #   * bootctl 认的**条目 ID**  = keel-<目标>.efi —— 也就是文件名**去掉计数后缀**
+    #     (`bootctl list` 里看得最清楚:文件是 keel-b+3.efi,而 id 是 keel-b.efi)。
+    # 给 set-oneshot 传错(带 +3)时,引导器找不到匹配的条目,那次 one-shot 被**静默忽略**
+    # ⇒ 又回到持久默认(= 旧槽),keel-confirm 还会把它误判成"更新失败已回滚"。
+    pref="keel-${target}+${TRIES}.efi"          # 文件名(带计数)
+    candidate_id="keel-${target}.efi"           # 条目 ID(不带计数)
+    if ! keel_boot_candidate "$candidate_id"; then
+        keel_die "bootctl set-oneshot ${candidate_id} 失败:引导器不接受这个条目(文件确实在 ESP 上?ESP 是可写的?),或固件拒绝写 EFI 变量(部分主板只读这些变量)。可改用开机菜单手动选择槽 ${target}。"
     fi
-    keel_log "preferred 条目已指向 ${pref}"
+    keel_log "候选条目(ID ${candidate_id},文件 ${pref})已设为下次启动"
 
     keel_state_set pending_slot "$target"
     keel_state_set pending_version "$OTA_PAYLOAD_VERSION"
