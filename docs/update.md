@@ -82,7 +82,7 @@ sudo os-rescue --mark-bad   # 把当前槽标记为 bad(systemd-bless-boot bad)
 | 命令 | 什么时候用 | 注意 |
 |---|---|---|
 | `os-update rollback` | 新版本起来了但行为不对(服务异常、硬件不工作),想干净地回到上一个版本 | 只改"下次启动用哪个槽",当前运行的系统不被修改;重启才生效 |
-| `os-rescue --mark-bad` | **当前槽能启动但不可用**,想让引导器下次跳过它(§9) | 它标记的是"当前正在运行的这个槽"。如果你恰好在唯一可用的槽上执行,就把自己锁在门外了 —— 先确认另一个槽是好的 |
+| `os-rescue --mark-bad` | **当前槽能启动但不可用**,想让引导器下次跳过它(§9) | 它标记的是"当前正在运行的这个槽"。如果你恰好在唯一可用的槽上执行,就把自己锁在门外了 —— 先确认另一个槽是好的。**它只在"带启动计数的启动"里有意义**(候选槽那一次尝试,`bootctl list` 里名字带 `+N`);槽一旦被确认(`keel-x.efi`)就没有计数可标记,这时它会明确告诉你改用 `sudo os-update switch <另一个槽>`(2026-09 演练实测,见 §9) |
 
 失败的载荷不会自动删:留在 `/data/ota/` 里(§4.2),查清原因后用 `os-update gc` 清理
 (保留最近 2 个版本 + 当前,§8)。
@@ -225,13 +225,38 @@ userspace 型(能进 initrd、起不来),**验证决策 D26 并挖出坑 #51**�
 #50 "起不来"分三类,而坏槽实测是**永久冻结**(看门狗才救得回来)、
 #51 迁移/schema 检查排在下载之后(13 GiB 下完才轮到拒绝)。
 
-**还没做**(按下一轮的顺序):
-`os-install` 在 `UnifiedKernelImageFormat=keel-a` 改名之后的**整盘重验证**、
-`os-rescue` 的五条路径(`--init-data` / `--reset-etc` / `--grow-data` / `--mark-bad` / `--repair-boot`)、
-ESP 容量账(1 GiB ESP × 163 MB UKI:连续多次更新后 `gc` 与拒绝阈值的边界)、
-`/data` 写满演练(看门人三级动作 + 满盘时 `os-update` 的行为)、
-坑 #51 修好之后"迁移载荷在下载前就被拒"的行为复验、
-initrd 阶段的冻结(看门狗覆盖不到,见 `docs/roadmap.md` 3.0)。
+**还没做**:initrd 阶段的冻结(看门狗覆盖不到,见 `docs/roadmap.md` 3.0)、
+真机(U 盘 + 笔记本)那一趟、`--mark-bad` 在**真正的候选槽启动**上的正面用例
+(这轮只验证了它"没有计数时说的是真话")。
 
 **装机路径**:`os-install` 装到整盘之后的第一轮体检由项目所有者在 libvirt 里跑过
 (`sudo ~/keel-check`,49 ✓ / 1 ✗ —— 那条 ✗ 是体检脚本自己的 bug,坑 #52;详见 `docs/install.md` §9)。
+
+### 9.1 libvirt「真装机路径」全链路复验(2026-09-25,B1/B2/B3 三轮,自动跑)
+
+以前的演练都是 `mkosi vm` 里的临时镜像;这一轮改在 **libvirt** 里按 `docs/install.md` §8
+的路径走(**装机 → 目标盘首启 → 更新 → 回滚 → 救援 → 写满**),每台机器都由脚本自己确认
+"我现在在哪台机器上"。
+
+| 轮次 | 做了什么 | 实测证据 |
+|---|---|---|
+| B1 装机 | 构建 → live 启动 → `os-install --yes /dev/vdb` → 只挂目标盘启动(等价于真机"拔掉 U 盘") | 目标盘布局 `esp 1G + root-a 6G + root-b 6G + data 27G`;首启 `last_result=success`(os-install 写的 pending 被 `keel-confirm` 收掉)、ESP 上 `keel-a.efi`、`/data` 扩到 27 GiB、root 在 `PARTLABEL=root-a`;**`sudo ~/keel-check` = 通过 50 / 失败 0 / 警告 0 / 跳过 3**(3 个跳过 = 虚拟机微码、无 vTPM、可选的 nix 装包测试) |
+| B2 更新 + 回滚 | 宿主用 `python3 -m http.server` 提供新版本(2026.09.25.1348)→ `check/fetch/stage --reboot` → 再 `rollback` | 4 个产物 13 GiB 约 30–40 秒(600–900 MB/s)下完、`sha256 全部匹配`;`dd` 写 root-b 6 GiB 用 11 秒(580 MB/s);UKI `keel-b+3.efi`;重启后 `当前槽 b`、`last_result=success`、条目被 bless 成 `keel-b.efi`;`rollback` 后回 `槽 a`、`last_result=failed` |
+| B3 救援 | `os-rescue` 五条路径 + `keel-data-guard` 三级 + 满盘 `fetch` | `--init-data` 幂等(补回被删的目录,**不覆盖**已有文件:哨兵文件与 `UPDATE_SOURCE` 原样);`--grow-data` 幂等(resize2fs "Nothing to do!");`--repair-boot` 成功重装引导器 + NVRAM 项;`--reset-etc` → 重启后 upper 被备份到 `/data/overlayfs/etc.bak-20260925-220113`、请求标志消费掉、`/etc` 可写、系统照常启动;看门人 warn(1.5 GiB)/critical(300 MiB,交还 256 MiB 应急空间)/emergency(60 MiB,删 OTA 载荷)三级都对,**下次启动 firstboot 把应急空间重建**;满盘时 `os-update fetch` 直接拒绝且**没有发出任何产物请求** |
+
+**ESP 容量账**(1 GiB ESP,每个 UKI 163 MB):装完 1 个 UKI;stage 之后 2 个 UKI,
+`/boot` 用了 **313 MiB / 1022 MiB,余 710 MiB**(≈4 个 UKI 的余量)——
+也就是说"当前槽 + 候选槽 + 若干 `.failed` 残留"都还在安全范围内。
+
+**「迁移/schema 载荷必须在下载前被拒」(坑 #51)的行为复验**:两个假载荷(只有 manifest,
+产物根本不存在)分别声明 `migrate=` 与 `schema=99`;`os-update fetch` 都立刻失败,
+HTTP 源日志里**只有 `GET /manifest`(还有一次 `GET /manifest.sig` → 404,签名是可选的)**,
+**一个产物请求都没有** —— 修好之后守门确实排在下载之前。
+
+这一轮(含准备工作)一共挖出并修掉 7 个坑,共同点是"**写下来了,但从没跑过**":
+#54 NixOS 宿主没有 `/bin/bash`(脚本 shebang)、#55 libvirt 固件命名 + `readarray` 不传退出码、
+#56 域 XML 混用 `os/boot` 与 per-device boot order、#57 仓库权限位 0600 让 networkd 读不到配置
+(网络静默失效)、#58 域 XML 没有稳定 uuid + `$( )` 里的赋值传不出来、
+#59 演练差点把 live 系统的结论当成装好的系统的(外加 `os-install` 无人值守要 `--yes`)、
+#60 `systemd-bless-boot` 不在 `PATH` 里(`--mark-bad` 永远报"找不到")。
+每个坑的细节与教训见 `docs/traps.md`。

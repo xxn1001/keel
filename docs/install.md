@@ -284,7 +284,7 @@ tools/libvirt-test.sh console   # 串口控制台(virsh console;退出按 Ctrl+]
 | 5 | guest | `nix-shell -p fastfetch` | 装机后 nix 可用(不变量 7) |
 | 6 | 宿主 + guest | 宿主 `tools/libvirt-test.sh update-serve`;guest 里把 `UPDATE_SOURCE=http://192.168.122.1:8000` 写进 `/data/keel/config`,然后 `os-update check && fetch && stage --reboot` | 新槽启动、`last_result=success`、条目被 bless 成 `keel-b.efi` |
 | 7 | guest | `sudo os-update rollback` + 重启 | 回到旧槽(版本回退)—— 真机上的 A/B 就是这样 |
-| 8 | guest | `sudo ~/keel-check` | 九组检查全绿(装好之后的正式验收;见 §9) |
+| 8 | guest | `sudo ~/keel-check` | 九组检查全绿(装好之后的正式验收;见 §9)。**2026-09-25 实测:通过 50 / 失败 0 / 警告 0 / 跳过 3**,3 个跳过是虚拟机专属(微码、vTPM)与可选的 nix 装包测试 |
 
 ### libvirt 能模拟什么、不能模拟什么
 

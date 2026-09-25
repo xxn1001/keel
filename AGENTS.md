@@ -240,6 +240,14 @@ sudo tools/burn.sh /dev/nvme0n1
       → **49 ✓ / 1 ✗ / 3 ! / 1 -**。那条 ✗ 是**体检脚本自己的 bug**(`grep '^panic=-1' /proc/cmdline`
       永不匹配,坑 #52),三条 ! 是虚拟机里的正常情况(无微码行、无 vTPM、看门人 3 分钟后才写结论)——
       都已按"报出真实情况"修掉,`tools/verify.sh` 补了功能测试 + 静态断言(134 项全绿)
+- [x] **libvirt「真装机路径」全链路复验(2026-09-25,B1/B2/B3,自动跑)**:构建 → live → `os-install --yes`
+      → **只挂目标盘**启动(等价真机"拔掉 U 盘")→ `keel-check` **50 ✓ / 0 ✗ / 0 ! / 3 -**;
+      更新 13 GiB(30–40 s)→ stage(dd 6 GiB / 11 s)→ 进槽 b(bless 成 `keel-b.efi`、`last_result=success`)
+      → `rollback` 回槽 a(`last_result=failed`);`os-rescue` 五条路径 + `keel-data-guard` 三级
+      (warn/critical/emergency,交还并重建 256 MiB 应急空间)+ 满盘 `fetch` 直接拒绝(HTTP 日志零产物请求)。
+      这一轮(含准备)挖出并修掉坑 #54–#60,**共同点是"写下来了但从没跑过"** —— 其中最贵的是
+      #57(工作区权限位 0600 让 networkd 读不到配置 ⇒ 网络静默失效)与 #59(演练差点把 live 系统的
+      体检结论当成装好的系统的)。证据表见 `docs/update.md` §9.1
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 
@@ -258,8 +266,8 @@ sudo tools/burn.sh /dev/nvme0n1
    PARTLABEL 扑空,已改成先扫 sysfs + 重试)。
 5. **装机后 nix 真的能用**(`nix-shell -p vim` 等)—— 第一次跑就撞上坑 #34(`/nix` 是符号链接),
    已改成「真实目录 + bind mount」。**已复验(2026-09,由项目所有者在自己机器上实测)**:
-   `nix-shell -p fastfetch` 能进 shell、能跑起来。**仍待补**:`df -h /data` 确认首启把 data
-   分区扩到了整盘(不变量 14)—— 这条并进下一轮装机演练。
+   `nix-shell -p fastfetch` 能进 shell、能跑起来。**已补(2026-09-25,libvirt 整盘装机)**:
+   40 GiB 目标盘首启后 `/data` = 27 GiB(分区与文件系统一致),`keel-check` 也会核对这两个数字。
 6. ~~**ESP 在装机后的系统里没挂上**~~ **已修(2026-09,坑 #36 / 决策 D18)**:
    `keel-mounts` 自己扫 `PARTNAME=esp` 以 rw 挂到 `/boot`,cmdline 加 `systemd.gpt_auto=no`,
    `lib.sh` 只认真实挂载点(`KEEL_ESP_MOUNTED`),没挂上时 os-status / os-update / keel-confirm
@@ -268,8 +276,9 @@ sudo tools/burn.sh /dev/nvme0n1
    `bootctl --print-esp-path = /boot`,`/boot/EFI/Linux/` 里有 163 MB 的 UKI,
    `os-status` 打出 `ESP 挂载 : /boot(/dev/vdb1 vfat)`;同一轮里 `/data` 正常(
    swapfile 按 `/data` 的可用空间压到 471 MiB 并启用)、machine-id 32 位、DHCP `routable`。
-   **仍未实测**:`os-update` 真正往 ESP 写一个新 UKI(要凑一趟 OTA 载荷)—— 不过它现在写之前会
-   remount rw 并检查挂载点,所以"写到空目录还报成功"这条已经堵住了。
+   **已实测(2026-09-25,libvirt 真装机路径)**:`os-update stage` 往 ESP 写了 `keel-b+3.efi`
+   (163 MB),重启后 `systemd-bless-boot` 把它改名成 `keel-b.efi`;ESP 用量 313 MiB / 1022 MiB
+   (两个 UKI 之后还剩 710 MiB)。
    (当时记的"失败单元只剩 6 个 `systemd-pcrlock-*`,VM 没 TPM"**是错的**:mkosi 的 QEMU
    **默认带 vTPM**,那 6 个单元是"条件通过、真的跑了但拿不到固件测量结果"才失败的 ——
    见坑 #40。2026-09 已按决策 D20 把它们 disable + mask,所以现在的预期是**失败单元为空**。)
