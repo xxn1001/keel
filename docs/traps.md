@@ -1053,3 +1053,23 @@
     (同理还有属主、sparse 文件、符号链接);
     ③ 排查顺序值得记:串口无报错 → `domifstat` 看 tx=0 → 怀疑 guest 侧没发包 →
     回头看"谁读这个配置、以什么身份读",比在宿主网络栈上瞎找快得多。
+
+58. **两次 `virsh define` 撞名 + 演练脚本里"子 shell 里设的变量传不出来"(2026-09,libvirt 装机演练的同一轮)。**
+    两个都是"自己写的自动化脚本"的毛病,但形状不同:
+    ① **域 XML 没有 uuid**:`render_xml` 会被调用两次(先 live、再 `--boot target` 换启动顺序),
+       不带 `<uuid>` 时 libvirt 认为第二次是"新建同名域",直接拒绝:
+       ```
+       error: operation failed: domain 'keel-test' already exists with uuid d420e6c6-…
+       ```
+       ⇒ 修法:第一次生成 UUID 写进 `$WORK/$DOMAIN.uuid`,之后一直复用;`prepare` 重新开始时
+       先 `virsh destroy` + `virsh undefine --nvram`(顺带把引用旧盘的僵尸域清掉)。
+    ② **`LIVE_IP=$(wait_ssh 900)`**:`wait_ssh` 里既 `echo` 又给全局 `IP` 赋值,而命令替换
+       `$( )` 是**子 shell** ⇒ 父 shell 里的 `IP` 仍然是空的。脚本随后用 `$IP` 去 ssh,
+       报的是 `Could not resolve hostname :`(注意冒号前是空的)——
+       看起来像 DNS 问题,其实是"变量没传出来"。
+       ⇒ 修法:`IP=$LIVE_IP` 显式接一下(或者在函数里只回显、不在函数里改全局)。
+    **教训**:① 演练脚本本身也是要"被演练"的代码 —— 这一轮里它自己贡献了 4 个坑(#55–#58),
+       全都是"写的时候没跑过"的典型;
+    ② **`$( )` 里的赋值不会出来**,这是 shell 最容易骗人的地方之一(同类的还有管道
+       `cmd | while read` 里的变量);看到"变量莫名其妙是空的",先想这一条;
+    ③ 报错信息里的空格也是信息:`Could not resolve hostname :` 那个空位就是"变量是空的"。

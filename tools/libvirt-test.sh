@@ -101,11 +101,24 @@ load_ovmf() {
 
 xml_path() { printf '%s/%s.xml' "$WORK" "$DOMAIN"; }
 
+# 域的 UUID 必须**稳定**:render_xml 会被调用两次(live / target),不带 uuid 时
+# libvirt 每次 define 都想"新建"一个同名域,第二次直接报
+#   operation failed: domain 'keel-test' already exists with uuid …
+# ⇒ 第一次生成后写进 $WORK/$DOMAIN.uuid,之后一直复用(2026-09 实测,坑 #58)。
+domain_uuid() {
+    local f="$WORK/$DOMAIN.uuid"
+    if [ -s "$f" ]; then cat "$f"; return 0; fi
+    mkdir -p "$WORK"
+    cat /proc/sys/kernel/random/uuid >"$f"
+    cat "$f"
+}
+
 render_xml() {
     local boot_target=$1 ovmf_code=$2
     cat >"$(xml_path)" <<EOF
 <domain type='kvm'>
   <name>$DOMAIN</name>
+  <uuid>$(domain_uuid)</uuid>
   <memory unit='MiB'>$RAM</memory>
   <vcpu>$CPUS</vcpu>
   <os>
@@ -165,6 +178,14 @@ cmd_prepare() {
     local img; img=$(find_install_image) || die "找不到安装镜像:先跑 tools/build.sh(或 mkosi ... build)"
     load_ovmf
     mkdir -p "$WORK"
+    # 从零开始:上次留下的域必须先删掉 —— 它可能还在跑,而且引用的正是下面要重建的那两块盘。
+    # `--nvram` 把旧的 UEFI 变量一起删掉(反正 prepare 会重新复制一份干净的 vars 文件)。
+    if virsh dominfo "$DOMAIN" >/dev/null 2>&1; then
+        log "已存在的域 $DOMAIN:先 destroy + undefine(--nvram),从干净状态开始"
+        virsh destroy "$DOMAIN" >/dev/null 2>&1 || true
+        virsh undefine "$DOMAIN" --nvram >/dev/null 2>&1 || virsh undefine "$DOMAIN" >/dev/null 2>&1 || true
+    fi
+    rm -f "$WORK/$DOMAIN.uuid"          # 新的一次演练 = 新的域身份
     log "安装镜像:$img"
     log "OVMF    :${OVMF[0]}"
     # 盘:安装镜像用 qcow2 overlay(不复制 15 GiB);目标盘 40 GiB 稀疏

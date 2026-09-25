@@ -882,6 +882,18 @@ if grep -q "boot dev='hd'" tools/libvirt-test.sh; then
 else
     ok "域 XML 只用 per-device <boot order=> 定启动顺序(不与 os/boot 冲突,坑 #56)"
 fi
+# 域 XML 要带**稳定的 uuid**,否则第二次 render(切到目标盘启动)时 define 会报
+# "domain 'keel-test' already exists with uuid …"(坑 #58);prepare 还要先清掉旧域。
+if grep -q 'domain_uuid' tools/libvirt-test.sh && grep -q '<uuid>' tools/libvirt-test.sh; then
+    ok "域 XML 带稳定 uuid(同一次演练里 live→target 两次 define 不会撞名,坑 #58)"
+else
+    no "render_xml 不带 uuid ⇒ 第二次 define 会报 already exists with uuid(坑 #58)"
+fi
+if grep -q 'virsh undefine "\$DOMAIN" --nvram' tools/libvirt-test.sh; then
+    ok "prepare 会先 destroy+undefine 旧域(不留下引用旧盘的僵尸域)"
+else
+    no "prepare 没有清理已存在的域 ⇒ 重建磁盘后旧域还指着它们"
+fi
 if grep -q 'virsh define "\$(xml_path)" >/dev/null || die' tools/libvirt-test.sh; then
     ok "virsh define 的退出码被检查(define 失败不会再伪装成 start 失败,坑 #56)"
 else
