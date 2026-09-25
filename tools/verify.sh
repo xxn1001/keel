@@ -889,6 +889,13 @@ if grep -q 'domain_uuid' tools/libvirt-test.sh && grep -q '<uuid>' tools/libvirt
 else
     no "render_xml 不带 uuid ⇒ 第二次 define 会报 already exists with uuid(坑 #58)"
 fi
+# 从目标盘启动时必须把"U 盘"(vda)摘掉(坑 #59):两块盘都在时固件会按 NVRAM 里的旧条目
+# 又启动 live 盘,演练于是把 live 的体检结论当成装好的系统的。
+if grep -q 'boot_target" != target' tools/libvirt-test.sh && grep -q 'vda_xml' tools/libvirt-test.sh; then
+    ok "「--boot target」会把 live 盘摘掉(等价于真机拔 U 盘,也才能真正验证独立启动,坑 #59)"
+else
+    no "「--boot target」没有摘掉 live 盘 ⇒ 固件可能又启动 live,结论是假的(坑 #59)"
+fi
 if grep -q 'virsh undefine "\$DOMAIN" --nvram' tools/libvirt-test.sh; then
     ok "prepare 会先 destroy+undefine 旧域(不留下引用旧盘的僵尸域)"
 else

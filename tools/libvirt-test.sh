@@ -115,6 +115,24 @@ domain_uuid() {
 
 render_xml() {
     local boot_target=$1 ovmf_code=$2
+    # 从**目标盘**启动时,把"U 盘"(vda)整个摘掉 —— 真机上这一步就是"拔掉 U 盘再重启"。
+    #
+    # 为什么必须摘:两块盘都在时,固件会优先走它 NVRAM 里的启动项,而 live 那次的启动项
+    # 还在(装机时 os-install 只是往目标 ESP 里装了引导器,并没有删掉 vda 的条目)⇒
+    # 实测结果是**又启动了 live 盘**,演练于是把 live 系统的体检结论当成了"装好的系统"的
+    # (2026-09 实测,坑 #59)。摘掉之后才真的验证了"装好的系统能独立启动"。
+    local vda_xml=""
+    if [ "$boot_target" != target ]; then
+        read -r -d '' vda_xml <<DISK || true
+    <!-- vda = "U 盘"(安装镜像的 qcow2 overlay,写操作落在 overlay 上,原始产物不动) -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' discard='unmap'/>
+      <source file='$PWD/$WORK/install.qcow2'/>
+      <target dev='vda' bus='virtio'/>
+      <boot order='1'/>
+    </disk>
+DISK
+    fi
     cat >"$(xml_path)" <<EOF
 <domain type='kvm'>
   <name>$DOMAIN</name>
@@ -138,14 +156,7 @@ render_xml() {
   <on_reboot>restart</on_reboot>
   <on_crash>restart</on_crash>
   <devices>
-    <!-- vda = "U 盘"(安装镜像的 qcow2 overlay,写操作落在 overlay 上,原始产物不动) -->
-    <disk type='file' device='disk'>
-      <driver name='qemu' type='qcow2' discard='unmap'/>
-      <source file='$PWD/$WORK/install.qcow2'/>
-      <target dev='vda' bus='virtio'/>
-      <boot order='$([ "$boot_target" = target ] && echo 2 || echo 1)'/>
-    </disk>
-    <!-- vdb = 目标盘(os-install 会把它整块擦掉) -->
+$vda_xml    <!-- vdb = 目标盘(os-install 会把它整块擦掉) -->
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2' discard='unmap'/>
       <source file='$PWD/$WORK/target.qcow2'/>

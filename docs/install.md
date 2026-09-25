@@ -278,8 +278,8 @@ tools/libvirt-test.sh console   # 串口控制台(virsh console;退出按 Ctrl+]
 | # | 在哪 | 做什么 | 期望 |
 |---|---|---|---|
 | 1 | guest | `os-status` | 当前槽 a;`/data` 只有 1 GiB(live 镜像本来就这样) |
-| 2 | guest | `sudo os-install /dev/vdb` | 目标盘被整块重写:`esp` 1 G + `root-a` 6 G + `root-b` 6 G + `data` 剩余 |
-| 3 | 宿主 | `tools/libvirt-test.sh destroy && tools/libvirt-test.sh start --boot target` | 这次从**目标盘**启动 —— 就是"装好的系统" |
+| 2 | guest | `sudo os-install /dev/vdb`(**无人值守时用 `os-install --yes /dev/vdb`**) | 目标盘被整块重写:`esp` 1 G + `root-a` 6 G + `root-b` 6 G + `data` 剩余。⚠ 没有终端时它**故意拒绝执行**(怕你 ssh 里写错设备名),不给 `--yes` 就是"什么都没干、退出码 1" |
+| 3 | 宿主 | `tools/libvirt-test.sh destroy && tools/libvirt-test.sh start --boot target` | 这次从**目标盘**启动 —— 就是"装好的系统"。脚本会把 live 盘(vda)**整个摘掉**,等价于真机上"拔掉 U 盘再重启"(坑 #59:两块盘都在时,固件会按 NVRAM 里的旧条目又启动 live 盘)。自检时先确认 `findmnt -no SOURCE /` 是 `/dev/vdb2`,别看错对象 |
 | 4 | guest | `os-status`、`df -h /data` | 首启把 `data` 扩到整盘;骨架/ESP/machine-id 都正常 |
 | 5 | guest | `nix-shell -p fastfetch` | 装机后 nix 可用(不变量 7) |
 | 6 | 宿主 + guest | 宿主 `tools/libvirt-test.sh update-serve`;guest 里把 `UPDATE_SOURCE=http://192.168.122.1:8000` 写进 `/data/keel/config`,然后 `os-update check && fetch && stage --reboot` | 新槽启动、`last_result=success`、条目被 bless 成 `keel-b.efi` |
