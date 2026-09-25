@@ -307,6 +307,10 @@ sudo tools/burn.sh /dev/nvme0n1
       这一轮(含准备)挖出并修掉坑 #54–#60,**共同点是"写下来了但从没跑过"** —— 其中最贵的是
       #57(工作区权限位 0600 让 networkd 读不到配置 ⇒ 网络静默失效)与 #59(演练差点把 live 系统的
       体检结论当成装好的系统的)。证据表见 `docs/update.md` §9.1
+- [x] **v1 已打标签(2026-09-25)**:`git tag v1`(附注标签,指向当时已验证的源码树)。
+      发布说明与**已知限制 22 条**在 [`docs/release-notes-v1.md`](docs/release-notes-v1.md),
+      v1 之后的计划在 [`docs/roadmap.md`](docs/roadmap.md)。打标签时的实测证据写进了标签正文
+      (装机 / 更新 / 回滚 / 坏槽三类兜底 / 救援五路径 / 写满 / 日志落盘 / 控制台日志级别)。
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 
