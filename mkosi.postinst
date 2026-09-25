@@ -110,11 +110,11 @@ fi
 # 两道保险:preset 里 disable(不生成 enable 链接)+ 这里 mask(任何激活路径都拒绝)。
 # 将来做 Secure Boot / TPM 封印时,解封是那个工作项的一部分(见 docs/roadmap.md)。
 #
-# ⚠ **不要**把 `systemd-pcrlock@.service`(模板)也 mask:第一次这么做时构建日志里出现
-#   `Failed to preset all unit: Unit /buildroot/etc/systemd/system/systemd-pcrlock@.service is masked`
-#   —— `systemctl preset-all` 对"被 mask 的模板单元"会报一条失败(构建还能继续,但日志很脏)。
-#   模板本身没有 [Install],不会被 preset 启用;真正能拉起它的 `systemd-pcrlock.socket`
-#   已经在 mask 列表里 ⇒ 少 mask 这一个不会漏。
+# 关于构建日志里的 `Failed to preset all unit: Unit … is masked`:那是 `systemctl preset-all`
+# 给**每一个**被 mask 的单元都打的一条(第二轮 VM 里数出 22 条,绝大多数是 Debian 自己 mask 的:
+# cryptdisks / hwclock / x11-common / sudo.service…),不是我们引入的问题、也不影响构建。
+# 这里**不** mask `systemd-pcrlock@.service`(模板)只是因为没必要:模板没有 [Install],
+# 真正能拉起它的是 `systemd-pcrlock.socket`,而它已经在下面这份列表里。
 # ---------------------------------------------------------------------------
 install -d -m 0755 "$R/etc/systemd/system"
 masked_n=0
