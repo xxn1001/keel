@@ -886,9 +886,11 @@ fi
 # 仓库里的权限位会**原样**进镜像,而 git 不跟踪读权限(坑 #57):
 # 0600 的 /etc/systemd/network/*.network 会让 systemd-networkd 读不到 ⇒ 网络静默失效。
 # 断言仓库里不存在"组/其他人不可读"的文件(可执行文件放宽到 0755)。
-badmodes=$(find mkosi.extra mkosi.extra-initrd mkosi.extra-test -type f ! -perm -o+r 2>/dev/null | head -5)
+# 范围覆盖**所有 tracked 文件**(不只 mkosi.extra*/):mkosi.conf / mkosi.profiles/* / docs/*.md
+# 也一样会被 mkosi 或 mkosi.postinst 读,0600 只是 umask 的意外产物。
+badmodes=$(git ls-files -z 2>/dev/null | xargs -0 -r stat -c '%a %n' 2>/dev/null | awk '$1 !~ /[4567]$/ {print $2}' | head -5)
 if [ -z "$badmodes" ]; then
-    ok "mkosi.extra*/ 里没有「其他用户不可读」的文件(git 不跟踪读权限,只能在构建前查,坑 #57)"
+    ok "仓库里没有「其他用户不可读」的文件(git 不跟踪读权限,只能在构建前查,坑 #57)"
 else
     no "这些文件不是其他用户可读的 ⇒ 镜像里会被对应的非 root 服务读不到(坑 #57):"
     printf '%s\n' "$badmodes" | sed 's/^/      /'
