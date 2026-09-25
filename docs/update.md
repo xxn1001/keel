@@ -56,7 +56,7 @@ v1 **没有自动更新定时器**(§8):手动触发,便于在笔记本上边用
 
 | 证据 | 在哪看 |
 |---|---|
-| 重启后槽和版本**都没变**(还是旧槽、旧版本) | `os-status`(one-shot 已被消费 ⇒ 回到持久默认) |
+| 重启后槽和版本**都没变**(还是旧槽、旧版本) | `os-status`(one-shot 已被消费 ⇒ 回到持久默认);硬失败(panic)也会自动回来 —— cmdline 里有 `panic=-1`(决策 D24) |
 | ESP 上出现 `keel-<目标>.efi.failed` | `ls -l "$(bootctl --print-esp-path)/EFI/Linux/"` |
 | `state` 里 pending 被清空、记了 failed | `os-status`;`/data/keel/state` |
 | journal 里有 `keel-confirm.service` 的告警 | `journalctl -b -u keel-confirm.service` |
@@ -174,11 +174,15 @@ sudo tools/build-container.sh -p <临时密码> drill
 
 | 阶段 | 做什么 | 期望证据 |
 |---|---|---|
-| p0 | 等源 → `check` → `fetch` → `stage` → 重启 | `/data/ota/<新版本>/` 里 4 个产物 + sha256 全对;ESP 上出现 `keel-b+3.efi`;`state` 里有 pending |
-| p1 | 已在新槽:记录证据 → `rollback` → 重启 | 当前槽 b、版本 = 载荷版本;ESP 上条目已 bless 成 `keel-b.efi`;`keel-confirm` 日志显示"更新成功"、`last_result=success`、pending 已清 |
-| p2 | 已回旧槽:记录证据 | 当前槽 a、版本回到引导镜像那个(2000.01.01.0001) |
+| p0 | 好载荷:等源 → `check` → `fetch` → `stage` → 重启 | `/data/ota/<新版本>/` 里 4 个产物 + sha256 全对;ESP 上出现 `keel-<目标>+3.efi`;`state` 里有 pending |
+| p1 | 已在新槽 → `rollback` → 重启 | 当前槽 b、版本 = 载荷版本;条目已 bless 成 `keel-b.efi`;`keel-confirm` 记 `last_result=success`、pending 已清 |
+| p2 | 已回旧槽 → 换**坏载荷**源 → `check`/`fetch`/`stage` → 重启 | 坏载荷的版本更高、sha256 也对(它的根镜像被做了手脚,但校验和是重算过的);候选条目指向那个槽 |
+| p3 | 坏槽那次启动 panic(`panic=-1` 立即重启)之后**自动回到旧槽** → poweroff | 当前槽 = 旧槽、`last_result=failed`、ESP 上出现 `keel-<坏槽>+N.efi.failed`;控制台里能看到 panic 现场 |
 
-证据全在控制台(宿主终端的 `mkosi vm` 输出)与 guest 的 `/data/keel/ota-drill.log` 里。
+坏载荷由 `tools/ota-drill-container.sh` 现场制作,做法是:把目标槽的根镜像复制一份,
+用 `debugfs` 删掉 **PID1**(`/usr/lib/systemd/systemd`)与内核的 init 兜底(`/bin/sh` → `dash`、`bash`)
+⇒ 内核找不到任何 init ⇒ **panic**;`panic=-1` 让它立即重启 ⇒ 下次启动回到持久默认(旧槽)。
+删完会**回读确认**,并重算那个产物的 sha256 写进坏 manifest(版本号加 `.bad` 后缀)。
 
 ### v1 实测结果(2026-09,VM;`tools/build-container.sh -p <密码> drill`)
 
