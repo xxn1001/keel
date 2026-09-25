@@ -697,12 +697,20 @@ else
     ok "正式产物完全不含 OTA 演练"
 fi
 if grep -q 'drill)' tools/build-container.sh &&
-   grep -q 'DRILL_BOOT_VERSION' tools/build-container.sh &&
-   grep -q 'truncate -s 40G' tools/build-container.sh &&
-   grep -q 'python3 -m http.server' tools/build-container.sh; then
-    ok "drill 模式:引导镜像版本旧于载荷 + truncate 40G + 容器内起 HTTP 源"
+   grep -q 'ota-drill-container.sh' tools/build-container.sh &&
+   [ -x tools/ota-drill-container.sh ] &&
+   grep -q 'truncate -s 40G' tools/ota-drill-container.sh &&
+   grep -q 'DRILL_BOOT_VERSION' tools/ota-drill-container.sh &&
+   grep -q 'python3 -m http.server' tools/ota-drill-container.sh &&
+   grep -q 'urllib.request' tools/ota-drill-container.sh; then
+    ok "drill 模式:独立编排脚本(远古引导版本 + truncate 40G + 容器内 HTTP 源 + python3 探测)"
 else
-    no "tools/build-container.sh 的 drill 模式不完整"
+    no "drill 编排不完整(见 tools/build-container.sh / tools/ota-drill-container.sh)"
+fi
+if grep -q 'systemctl poweroff' mkosi.extra-test/usr/lib/keel/ota-drill; then
+    ok "演练 p2 结束会 poweroff(宿主不用靠 timeout 杀 VM)"
+else
+    no "演练结束后不会自己关机 ⇒ 宿主每次都得等 timeout"
 fi
 
 head1 "7. 账号模型(决策 D21:admin 是唯一交互账号,root 锁定)"

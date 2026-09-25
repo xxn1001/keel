@@ -168,30 +168,9 @@ vm)
 #      /run/mkosi 不存在 ⇒ FileNotFoundError: '/run/mkosi/machine'(实测)。
 # 真机上的 SSH 是另一回事(sshd + 公钥,见 docs/install.md §2.5),不受这里影响。
 drill)
-    # OTA 演练(见 docs/update.md §9、mkosi.extra-test/usr/lib/keel/ota-drill)。
-    # 三步各自的理由:
-    #
-    # ① 引导镜像的版本**必须比载荷旧**:`os-update check` 靠版本号判断"有没有新版本"
-    #    (mkosi.version 是"打印当前时间戳"的脚本,所以载荷那个版本天然比 $DRILL_BOOT_VERSION 新)。
-    # ② 安装镜像要 `truncate -s 40G`:载荷是 4 个产物(两个 6 GiB 根镜像 + 两个 163 MB UKI),
-    #    而 live 镜像自带的 /data 只有 1 GiB —— 首启会把 data 扩到整盘 ⇒ 27 GiB(不变量 14)。
-    # ③ HTTP 服务必须**和 qemu 在同一个网络命名空间**(也就是容器里)起:guest 访问 10.0.2.2 时,
-    #    SLIRP 连的是 qemu 进程自己的 loopback,宿主上的服务它够不着。
-    #    然后 `ln -s` 成 good/ —— v2 的破坏性演练会再加一个 bad/。
-    PAYLOAD="tools/verify.sh \
-        && tools/build.sh \
-        && DRILL_PAYLOAD=\$(ls -1d dist/keel-* 2>/dev/null | sort -V | tail -n1) \
-        && [ -n \"\$DRILL_PAYLOAD\" ] \
-        && echo \"== 载荷:\$DRILL_PAYLOAD ==\" \
-        && mkosi --profile install --profile test --image-version=$DRILL_BOOT_VERSION $EXTRA_Q$ROOTPW_Q --force build \
-        && truncate -s 40G mkosi.output/keel.raw \
-        && rm -rf /tmp/drill-serve && mkdir -p /tmp/drill-serve \
-        && ln -sfn \"/work/\$DRILL_PAYLOAD\" /tmp/drill-serve/good \
-        && ( cd /tmp/drill-serve && nohup python3 -m http.server $DRILL_PORT --bind 0.0.0.0 >/tmp/drill-http.log 2>&1 & ) \
-        && sleep 2 \
-        && curl -fsS -o /dev/null \"http://127.0.0.1:$DRILL_PORT/good/manifest\" \
-        && echo \"== 本地源就绪:guest 将访问 http://10.0.2.2:$DRILL_PORT/good ==\" \
-        && mkosi --profile install --profile test $ROOTPW_Q vm"
+    # OTA 演练的编排在 tools/ota-drill-container.sh 里(容器内运行,见那个脚本头部的说明)。
+    # 这里只负责把容器起起来、把密码从环境变量带进去(KEEL_ROOT_PASSWORD 由上面的 -e 传)。
+    PAYLOAD='bash tools/ota-drill-container.sh'
     ;;
 shell) PAYLOAD='exec bash' ;;
 esac
@@ -229,6 +208,9 @@ ARGS=(run --rm -it --privileged -v "$PWD:/work" -v "$WS:/var/tmp" -w /work)
 # KEEL_ROOT_PASSWORD 里取(命令行参数不经过 build.sh ⇒ 只能用环境变量)。
 # `vm` 模式则用它拼 mkosi 命令行(见上面的 $ROOTPW_Q);两处都设上,`shell` 模式里手敲 mkosi 也能用。
 [ -n "$PASSWORD" ] && ARGS+=(-e "KEEL_ROOT_PASSWORD=$PASSWORD")
+# 演练参数也传进去(容器里的 tools/ota-drill-container.sh 读它们);从宿主覆盖:
+#   KEEL_DRILL_PORT=9000 sudo tools/build-container.sh drill
+ARGS+=(-e "KEEL_DRILL_BOOT_VERSION=$DRILL_BOOT_VERSION" -e "KEEL_DRILL_PORT=$DRILL_PORT")
 log "引擎:$ENGINE   镜像:$IMAGE   模式:$MODE"
 [ "$(id -u)" = 0 ] || log "提示:没在用 root 跑。若报权限错误,请加 sudo(mkosi 的沙箱需要 CAP_SYS_ADMIN)"
 log "产物会落在宿主机的 mkosi.output/ 与 dist/(属主是 root)"

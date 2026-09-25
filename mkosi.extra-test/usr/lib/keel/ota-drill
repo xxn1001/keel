@@ -128,6 +128,9 @@ p2)
     log "版本应回到引导镜像那个版本(比载荷旧)⇒ 说明 A→B→A 的槽切换真的走通了"
     printf 'done\n' >"$STATE"
     log "演练结束 —— 全部证据在上面;完整记录也在 $DRILL_LOG"
+    log "3 秒后 poweroff(让宿主的 mkosi vm 自己退出,不用外部 timeout 杀)"
+    sleep 3
+    systemctl poweroff
     ;;
 *)
     log "演练已完成(state=$step)。想重跑:rm -f $STATE && systemctl restart keel-ota-drill"
