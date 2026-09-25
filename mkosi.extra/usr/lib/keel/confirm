@@ -10,6 +10,11 @@
 set -euo pipefail
 . /usr/lib/keel/lib.sh
 
+# 本单元能跑到这里,就说明 boot-complete.target 达成了 —— 给 keel-boot-failed-reboot 留个标记
+# (决策 D26:它靠这个标记区分"启动成功"与"进了 emergency 等人")。
+install -d -m 0755 /run/keel 2>/dev/null || true
+: >/run/keel/boot-complete 2>/dev/null || true
+
 slot=$(keel_current_slot)
 if [ -z "$slot" ]; then
     keel_log "无法从 /proc/cmdline 判断当前槽,跳过确认"

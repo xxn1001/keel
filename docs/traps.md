@@ -869,6 +869,24 @@
     —— 机器挂住 650+ 秒,最后只能人工终止。配置是不是真进了 initrd 还没查实
     (我们那个"抽 `.initrd` 查文件名"的检查自己也可能误报,同一个坑 #47 的形状)。
     ⇒ v1 的口径:**不承诺覆盖 initrd 阶段的冻结**,已记 `docs/roadmap.md` 3.0。
+
+    **补记(同一天的第三次演练,第三种失败)**:把候选槽根里的 `/etc/systemd/system/default.target`
+    换成**悬空符号链接**之后,根里的 systemd 起来了、PID1 健康、还在正常喂看门狗,但永远到不了
+    默认目标 ⇒ 进 emergency 并在控制台等人按键:
+    ```
+    system logs, "systemctl reboot" to reboot, or "exit" to continue bootup.
+    Press Enter for system maintenance
+    (or press Control-D to continue):
+    ```
+    ⇒ `panic=-1` 不会触发(没有 panic);看门狗也**不会**复位(PID1 是健康的,喂狗正常 ——
+    这是看门狗的正确行为,不是 bug)。机器就这么停着,回退永远不会发生。
+    而这一类(进 emergency/rescue)恰恰是最常见的软失败。
+    ⇒ 兜底:`keel-boot-failed-reboot.service`(决策 D26)—— `WantedBy=emergency.target rescue.target`,
+    发现"这次启动没到过 boot-complete"就提示 + 等 60 秒 + 重启;
+    想手工排查的人按提示 `systemctl stop keel-boot-failed-reboot` 即可取消。
+    **教训**:"失败"要按**兜底机制**分类,而不是按"看起来是不是坏了"分类 ——
+    panic / 冻住 / 停在提示符,三者需要的机制完全不同(重启指令、看门狗、超时看门狗);
+    把这三类列出来之后,"自动回滚"这句话才站得住。
     **教训**:① 说"失败会自动回滚"之前,先把"失败"**分类** —— 能自己重启的(panic)
     和不能的(挂住/冻结/等设备),它们的兜底机制完全不同;
     ② "没有任何代码运行"的故障只能靠**外部**(看门狗/人)处理,

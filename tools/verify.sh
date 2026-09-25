@@ -805,6 +805,37 @@ else
     no "没有加载 softdog ⇒ 部分真机上 RuntimeWatchdogSec 只会打一条警告"
 fi
 
+# 启动失败看门狗(决策 D26):没到 boot-complete ⇒ 自动重启;三类失败各一道兜底
+BF=mkosi.extra/usr/lib/systemd/system/keel-boot-failed-reboot.service
+if [ -f "$BF" ] && grep -q '^WantedBy=emergency.target rescue.target$' "$BF" &&
+   [ -x mkosi.extra/usr/lib/keel/boot-failed-reboot ] &&
+   grep -q '^enable keel-boot-failed-reboot.service$' \
+        mkosi.extra/usr/lib/systemd/system-preset/00-keel.preset; then
+    if grep -q '/run/keel/boot-complete' mkosi.extra/usr/lib/keel/confirm &&
+       grep -q 'systemctl stop keel-boot-failed-reboot' mkosi.extra/usr/lib/keel/boot-failed-reboot; then
+        ok "启动失败看门狗:emergency/rescue 时 60 秒后自动回退,且告诉人怎么取消(决策 D26)"
+    else
+        no "启动失败看门狗缺「boot-complete 标记」或「取消方式」提示"
+    fi
+else
+    no "缺少 keel-boot-failed-reboot(emergency 那类失败会停在提示符前,自动回滚不成立)"
+fi
+
+# libvirt 验证脚本(真机前的模拟):必须可执行,且指向目标盘/串口/更新源三件事都在
+if [ -x tools/libvirt-test.sh ] &&
+   grep -q 'os-install /dev/vdb' tools/libvirt-test.sh &&
+   grep -q 'virsh console' tools/libvirt-test.sh &&
+   grep -q '192.168.122.1' tools/libvirt-test.sh; then
+    ok "libvirt-test.sh 在(装机 → 串口控制台 → 本地更新源 三条路径都写了)"
+else
+    no "tools/libvirt-test.sh 缺失或不完整(真机前的模拟没法做)"
+fi
+if grep -q 'console=ttyS0' mkosi.conf.d/30-content.conf; then
+    ok "cmdline 里有 console=ttyS0(服务器串口/带外管理与 libvirt 验证都要它)"
+else
+    no "cmdline 里没有 console=ttyS0 ⇒ libvirt 的 virsh console 看不到启动日志"
+fi
+
 head1 "7. 账号模型(决策 D21:admin 是唯一交互账号,root 锁定)"
 # ---------------------------------------------------------------------------
 if grep -qE '^[[:space:]]*sudo$' mkosi.conf.d/20-packages.conf; then

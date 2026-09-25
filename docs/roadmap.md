@@ -10,14 +10,14 @@
 |---|---|---|---|
 | 1.1 | **更新载荷签名**(`manifest.sig` 真验签) | v1 的更新**手动触发**、源由用户自己配;先把"更新链路本身"跑通。代码里已经有接口:`os-update fetch` 见到 `manifest.sig` 就用 `/usr/share/keel/update-key.pub` 验签,公钥缺失时直接报错、不静默降级 | ① 决定密钥放哪(烤进 UKI 凭据区 / 单独一个小分区 / 首次配置);② 提供 `tools/sign.sh` 生成与轮换密钥;③ 密钥轮换路径(载荷里带 key id);④ 写进 `docs/update.md` §6 |
 | 1.2 | **Secure Boot** | 需要自己的密钥 + 签名 UKI + 处理固件密钥库;开着还会关掉"引导菜单里按 `e` 改 cmdline"这条调试通道(`docs/traps.md` 坑 #4) | 引导链:用 `systemd-shiim`/自签 `db` 签 UKI;同时**解封** `systemd-pcrlock*`(决策 D20 把它们 mask 掉了 —— 解封是这一步的一部分);`tools/verify.sh` 要加"解封了没有"的断言 |
-| 1.3 | **TPM 封印的密钥**(LUKS / `/data` 加密) | v1 的 `/data` 是**不加密**的(决策 D6),笔记本丢了数据就没了 | 与 1.2 一起做:`systemd-cryptenroll` + `pcrlock`/`systemd-measure` 把密钥封印到启动链;`/data` 换 LUKS 会**改分区布局** ⇒ 必须按"只增不破"迁移(不变量 6) |
+| 1.3 | **TPM 封印的密钥**(LUKS / `/data` 加密) | v1 的 `/data` 是**不加密**的(决策 D6):机器被拿走/退役,数据就没了(服务器上这条同样是硬伤) | 与 1.2 一起做:`systemd-cryptenroll` + `pcrlock`/`systemd-measure` 把密钥封印到启动链;`/data` 换 LUKS 会**改分区布局** ⇒ 必须按"只增不破"迁移(不变量 6) |
 | 1.4 | **dm-verity 校验根分区** | 与"每台机器的 `/data` 迁移/机器专属字节"冲突(决策 D19 方案 D 已否决) | 需要先把"根镜像逐字节可校验"这条保住:任何往根里写机器专属数据的设计都要先排除 |
 
 ## 2. 系统功能
 
 | # | 事项 | 说明 |
 |---|---|---|
-| 2.1 | **`desktop` profile** | 笔记本日常用:Wi-Fi 固件 + NetworkManager(或 networkd 的 wpa_supplicant 路径)、GPU 固件/驱动、字体、桌面环境。桌面软件走 nix(不变量 7),但**固件与内核模块必须在基底**。做的时候顺手把 admin 加进 `video`/`audio`/`render` 组(决策 D21 里刻意留到那时) |
+| 2.1 | **`desktop` profile(可选)** | **不是主线**:只在「笔记本兼任」这个场景下有用。笔记本日常用需要 Wi-Fi 固件 + NetworkManager(或 networkd 的 wpa_supplicant 路径)、GPU 固件/驱动、字体、桌面环境。桌面软件走 nix(不变量 7),但**固件与内核模块必须在基底**。做的时候顺手把 admin 加进 `video`/`audio`/`render` 组(决策 D21 里刻意留到那时) |
 | 2.2 | **`server` profile** | 虚拟化宿主(GPU 直通):`vfio-pci` 绑定、KVM、libvirt 走 nix;cmdline 里的 `iommu=pt` 等已经是机器无关超集(§5.1) |
 | 2.3 | **`/usr/lib/modules` 外置模块** | 为"第三方内核模块不进基底"做准备:把 `/usr/lib/modules/<kver>` 挂 overlay 后 `depmod` + 模块加载是否成立(`architecture.md` §13.1 待验证第 3 条) |
 | 2.4 | **`cache` 分区** | 把"可丢弃的缓存"(`/nix` store、journal)与"不可丢的状态"(`/home`、`/etc` upper、`/data/keel`)物理分开。只增分区即可(不变量 6 允许);决策 D23 里先做了预算 + 看门人,等真机用一段时间看清增长曲线再定 |

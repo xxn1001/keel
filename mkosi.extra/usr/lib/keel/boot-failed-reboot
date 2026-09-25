@@ -1,0 +1,54 @@
+#!/bin/bash
+# keel:启动没有到达 boot-complete ⇒ 自动重启,让引导器回退到上一个可用的槽(决策 D26)
+#
+# 由 keel-boot-failed-reboot.service 调用(挂在 emergency.target / rescue.target 上)。
+#
+# ── 为什么需要它 ────────────────────────────────────────────────────
+# "新槽起不来"有三类,兜底机制完全不同(2026-09 实测,坑 #50):
+#   1. **panic**(内核/initrd panic)          → cmdline 的 `panic=-1` 立即重启(决策 D24)
+#   2. **冻住**(PID1 不再喂看门狗)            → 运行时看门狗复位(决策 D25)
+#   3. **进 emergency/rescue 等人按键**       → **本脚本**(决策 D26)
+# 第 3 类是最常见的软失败(某个单元坏了、文件系统没挂上、配置写坏)。这时系统是"活的":
+# PID1 健康、还在喂看门狗,所以前两道兜底都不会动作 —— 机器就停在
+# `Press Enter for system maintenance` 前面,回退永远不会发生。
+#
+# 判定依据:`/run/keel/boot-complete` 由 keel-confirm 在 boot-complete.target 达成时写下。
+# 标记不在 ⇒ 这次启动没成功 ⇒ 等 60 秒(留出人工干预窗口)后重启。
+# 引导器那边:候选槽的 one-shot 在引导时就被消费掉了 ⇒ 下一次启动走持久默认(旧槽)
+# ⇒ 旧槽上的 keel-confirm 判定"更新失败已回滚"。
+set -uo pipefail
+# shellcheck source=/usr/lib/keel/lib.sh
+# shellcheck disable=SC1091
+. /usr/lib/keel/lib.sh
+
+MARKER=/run/keel/boot-complete
+
+if [ -e "$MARKER" ]; then
+    keel_log "本次启动已经到过 boot-complete,不做自动重启"
+    exit 0
+fi
+
+keel_log "================================================================================"
+keel_log "启动没有到达 boot-complete(当前在 emergency / rescue)。"
+keel_log "60 秒后会**自动重启**,让引导器回退到上一个可用的槽 —— 这是 A/B 的设计行为。"
+keel_log ""
+keel_log "想留在这里手工排查(不再自动重启),在下面那个提示符里执行:"
+keel_log "    systemctl stop keel-boot-failed-reboot"
+keel_log "排查完想继续:systemctl reboot(同样会回到可用的槽);"
+keel_log "彻底修好当前槽:os-rescue --mark-bad 之后重启。"
+keel_log "================================================================================"
+
+# 可中断:这 60 秒里 systemctl stop 会让本单元退出,sleep 被信号打断后我们直接结束
+if ! sleep 60; then
+    keel_log "自动重启被取消(本单元被停掉)"
+    exit 0
+fi
+
+# 这 60 秒里系统万一又走完启动(boot-complete 达成)就不重启了
+if [ -e "$MARKER" ]; then
+    keel_log "这 60 秒内 boot-complete 又达成了 ⇒ 取消自动重启"
+    exit 0
+fi
+
+keel_log "现在重启,回到上一个可用的槽"
+systemctl reboot

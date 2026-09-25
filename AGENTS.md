@@ -16,9 +16,10 @@
 
 演进路径:
 
-1. **现在**:装在一台笔记本上,边用边改(`main` = 无桌面的最小系统,`desktop` profile 紧随其后)。
-2. **未来**:装到一台"不可变基座 + 虚拟化宿主"上,GPU 直通给 VM ——
-   宿主**不需要**显卡驱动,所以 `server` 变体反而比 `desktop` 变体更小。
+1. **目标平台是服务器**:长期在线、尽量不重装、升级要能原子回退;未来还要当**虚拟化宿主**
+   (GPU 直通给 VM —— 宿主不需要显卡驱动,所以 `server` 变体比 `desktop` 更小)。
+2. **笔记本是「顺带兼任」**:所有者还没有服务器,于是先装到天天用的笔记本上,提前暴露 bug。
+   所以 `main` 保持「无桌面的最小系统」= 服务器形态;`desktop` profile 是可选加成,不是主线。
 
 术语与标识,改代码前先对齐:
 
@@ -81,6 +82,9 @@
      等基底 systemd 到 ≥261 再换回来(见 `docs/roadmap.md`)。
      另外 cmdline 里的 **`panic=-1` 是这套机制的前提**(内核 panic ⇒ 立即重启 ⇒ 那次失败
      之后机器还会再启动;决策 D24、坑 #46),别删它。
+     三类失败各有兜底,别删任何一个:panic ⇒ `panic=-1`;**冻住** ⇒ 运行时看门狗(D25);
+     **停在 emergency/rescue 等人** ⇒ `keel-boot-failed-reboot.service`(D26,判据是
+     `/run/keel/boot-complete` 标记,由 `keel-confirm` 写)。
    **v1 的底层是"直接写盘"**(`dd` 进目标分区),不是 `systemd-sysupdate` ——
    后者的 `Type=partition` 匹配语义还没在真机验证过,而写错分区是不可接受的失败模式。
    验证通过后再换底层,门面不动。
@@ -187,6 +191,11 @@ mkosi --profile install cat-config
 # 单独校验 repart 布局(真跑分区表求解,不写盘)
 systemd-repart --dry-run=yes --definitions=repart/install --empty=create --size=14G --json=pretty /tmp/t.raw
 
+# 在 libvirt 里做「真机前」的验证(virt-manager / libvirtd;见 docs/install.md §8)
+tools/libvirt-test.sh prepare && tools/libvirt-test.sh start
+tools/libvirt-test.sh console          # 串口控制台(Ctrl+] 退出)
+tools/libvirt-test.sh update-serve     # 在 libvirt 宿主上起本地更新源(guest 用 192.168.122.1:8000)
+
 # 烧到目标盘
 sudo tools/burn.sh /dev/nvme0n1
 ```
@@ -223,8 +232,8 @@ sudo tools/burn.sh /dev/nvme0n1
       演练顺带挖出并修掉坑 #41–#45(详见 `docs/traps.md` 与 `docs/update.md` §9)
 - [x] **第一次真机构建 / 虚拟机启动 / 装机**(2026-09,VM:构建 → live 启动 → `os-install` → 目标盘首启 ✓;
       途中修掉坑 #31–#34。**真机(U 盘 + 笔记本)仍未做过**)
-- [ ] `desktop` profile(笔记本用)
-- [ ] `server` profile(虚拟化宿主,GPU 直通)
+- [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
+- [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 
 ### 下一步要验证的事(结论回写到 `docs/architecture.md` §13.1)
 

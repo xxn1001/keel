@@ -259,3 +259,39 @@ os-status                     # 起来后:当前槽变成 b,last_result=success
 | 首启就没网 | 有线网卡/存储固件在 `firmware-misc-nonfree`;无线网络 main 不做,留给 `desktop` profile |
 | 指望图形界面 | main 没有图形栈,这是范围决定,不是 bug(§2) |
 | `/data` 没挂上 | `/var`、`/root` 是悬空符号链接,`/home`、`/nix` 是空目录,系统看起来"到处都是空目录" —— 见 `troubleshooting.md` |
+
+## 8. 在 libvirt 里做「真机前」的验证(推荐)
+
+`mkosi vm` 用的是 mkosi 自己的 QEMU 参数与临时固件变量;而最接近真机的模拟是 **libvirt**
+(持久可写的 NVRAM、两块 virtio 盘、NAT 网络 —— guest 能直接访问宿主的 `192.168.122.1`,
+更新源不需要绕 QEMU 的 SLIRP)。仓库里带了脚本,把它变成可重复的几条命令:
+
+```bash
+tools/build.sh                  # 产出 dist/keel-<版本>/
+tools/libvirt-test.sh prepare   # 造磁盘:安装镜像的 qcow2 overlay + 40 GiB 目标盘 + 域 XML
+tools/libvirt-test.sh start     # 启动(串口日志 → mkosi.output/libvirt/console.log,图形控制台也留着)
+tools/libvirt-test.sh console   # 串口控制台(virsh console;退出按 Ctrl+])
+```
+
+| # | 在哪 | 做什么 | 期望 |
+|---|---|---|---|
+| 1 | guest | `os-status` | 当前槽 a;`/data` 只有 1 GiB(live 镜像本来就这样) |
+| 2 | guest | `sudo os-install /dev/vdb` | 目标盘被整块重写:`esp` 1 G + `root-a` 6 G + `root-b` 6 G + `data` 剩余 |
+| 3 | 宿主 | `tools/libvirt-test.sh destroy && tools/libvirt-test.sh start --boot target` | 这次从**目标盘**启动 —— 就是"装好的系统" |
+| 4 | guest | `os-status`、`df -h /data` | 首启把 `data` 扩到整盘;骨架/ESP/machine-id 都正常 |
+| 5 | guest | `nix-shell -p fastfetch` | 装机后 nix 可用(不变量 7) |
+| 6 | 宿主 + guest | 宿主 `tools/libvirt-test.sh update-serve`;guest 里把 `UPDATE_SOURCE=http://192.168.122.1:8000` 写进 `/data/keel/config`,然后 `os-update check && fetch && stage --reboot` | 新槽启动、`last_result=success`、条目被 bless 成 `keel-b.efi` |
+| 7 | guest | `sudo os-update rollback` + 重启 | 回到旧槽(版本回退)—— 真机上的 A/B 就是这样 |
+
+### libvirt 能模拟什么、不能模拟什么
+
+| 能覆盖 | 覆盖不到(必须真机) |
+|---|---|
+| UEFI 启动 + **持久可写的 NVRAM**(和真机一样是固件变量) | 主板固件怪癖:只读 `LoaderEntryDefault`、忽略 NVRAM 写入、Fast Boot、CSM 残留 |
+| GPT / ESP / boot counting / 槽切换 / 更新与回滚的**软件全链路** | 真实驱动:网卡、NVMe/SATA 控制器、电源管理、温度与风扇 |
+| 两块盘(U 盘 + 内置盘)、整盘擦除、装机后首启 | USB 介质本身:枚举顺序、分区表差异、写得慢的 U 盘 |
+| 串口控制台(服务器带外管理的日常用法) | 物理键盘/显示、Secure Boot 密钥库、真实 TPM 行为 |
+| 有 NAT 网络(更新源、SSH 都能用) | 断电容错(可以在 QEMU 层模拟,但和真断电不同) |
+
+> **结论**:libvirt 能挡掉装机和 A/B 链路里绝大多数问题,适合每次改完都跑一遍;
+> 但它替代不了真机那一趟 —— 真机剩下的风险集中在固件、驱动、TPM 与物理介质上。

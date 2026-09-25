@@ -265,8 +265,10 @@ os-update stage
  ⑩ one-shot 在引导时就被引导器消费掉了 ⇒ 下次启动回到**持久默认**(旧槽,见 ⑨ 记下的
     `set-default`)—— 自动回退,不需要人工介入。**前提是「下次启动真的会发生」**:
     cmdline 里的 `panic=-1` 让内核 panic 立即重启(决策 D24 / 坑 #46);
-    **挂住**这类失败(initrd 冻结、卡死)则由运行时看门狗复位(决策 D25 / 坑 #50):
-    initrd 与主镜像各带一份 `RuntimeWatchdogSec=60`,PID1 喂不到狗就硬件复位
+    **冻住**(PID1 不再喂狗)由运行时看门狗复位(决策 D25 / 坑 #50):
+    `RuntimeWatchdogSec=60`;**停在 emergency/rescue 等人**这一类则由
+    `keel-boot-failed-reboot.service` 兜底(决策 D26):没到过 boot-complete 就 60 秒后自动重启
+    ⇒ 三类失败都能回到旧槽
  ⑪ 旧槽起来后 keel-confirm.service 发现"跑在旧槽,但 state 说 pending 新槽" → 判定失败:
     清 pending、把坏 UKI 挪成 keel-<目标>.efi.failed、state 记 failed 并 journal 告警
 ```
@@ -379,7 +381,7 @@ os-update gc               # 清理旧载荷(保留最近 2 个版本 + 当前)
 ```
 
 更新源由 `/data/keel/config` 里的 URL 决定,支持 `https://`、`file://` 和挂载的 U 盘目录。
-**v1 不做自动更新定时器**(手动触发,便于在笔记本上观察)。
+**v1 不做自动更新定时器**(手动触发,便于在真机上边用边观察;服务器形态以后再加保守策略)。
 
 ---
 

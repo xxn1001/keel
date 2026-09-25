@@ -10,6 +10,8 @@
 enable keel-mounts.service
 enable keel-firstboot.service
 enable keel-confirm.service
+# 启动失败进 emergency/rescue 时的自动重启(决策 D26)
+enable keel-boot-failed-reboot.service
 enable keel-swapfile.service
 # /data 的空间看门人与 nix GC(决策 D23):两个都是定时器,服务本身由定时器拉起
 enable keel-data-guard.timer

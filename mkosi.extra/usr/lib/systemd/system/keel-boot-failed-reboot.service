@@ -1,0 +1,22 @@
+[Unit]
+Description=keel: 启动没到 boot-complete 时自动重启(让引导器回退到旧槽)
+Documentation=file:/usr/share/doc/keel/update.md
+# 只在"启动失败进 emergency/rescue"这条路径上被拉起 —— 正常启动时这两个 target
+# 根本不在事务里,所以本单元不会跑(正常启动由 keel-confirm 在 boot-complete 上记 success)。
+#
+# 为什么不是常驻服务:"启动失败"这件事只有 emergency/rescue 愿意告诉我们;
+# 而"启动成功"由 keel-confirm 写 /run/keel/boot-complete 标记来定义。
+After=emergency.target rescue.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 控制台 + journal 双写:人能看到提示,systemd 里也留一份
+StandardOutput=journal+console
+StandardError=journal+console
+# 脚本里自己 sleep 60,给足余量
+TimeoutStartSec=300
+ExecStart=/usr/lib/keel/boot-failed-reboot
+
+[Install]
+WantedBy=emergency.target rescue.target

@@ -50,7 +50,7 @@ sudo os-update stage --reboot  # 同上,并立即重启
 
 `os-update` 是**门面**:下载/验签/版本比较/写分区交给 `systemd-sysupdate`,槽切换交给 `bootctl`,
 我们只写策略(迁移、保留、报告)(决策 D8)。
-v1 **没有自动更新定时器**(§8):手动触发,便于在笔记本上边用边观察。
+v1 **没有自动更新定时器**(§8):手动触发,便于在真机上边用边观察。
 
 ## 3. 回滚
 
@@ -59,6 +59,7 @@ v1 **没有自动更新定时器**(§8):手动触发,便于在笔记本上边用
 | 证据 | 在哪看 |
 |---|---|
 | 机器卡住一分钟左右之后**自己重启**并回到旧槽 | 运行时看门狗复位(`RuntimeWatchdogSec=60`,决策 D25);journal 里不会有那次失败的任何记录 |
+| 启动失败进了 emergency,一分钟左右之后**自己重启**并回到旧槽 | `keel-boot-failed-reboot.service`(决策 D26):没到过 boot-complete 就提示 + 等 60 秒 + 重启;想手工排查就按提示 `systemctl stop keel-boot-failed-reboot` |
 | 重启后槽和版本**都没变**(还是旧槽、旧版本) | `os-status`(one-shot 已被消费 ⇒ 回到持久默认);硬失败(panic)也会自动回来 —— cmdline 里有 `panic=-1`(决策 D24) |
 | ESP 上出现 `keel-<目标>.efi.failed` | `ls -l "$(bootctl --print-esp-path)/EFI/Linux/"` |
 | `state` 里 pending 被清空、记了 failed | `os-status`;`/data/keel/state` |
