@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # keel 装机:把构建好的安装镜像写到目标磁盘
 #
 # 用 mkosi 的 burn 动词而不是裸 dd:它会按目标盘的容量修正 GPT

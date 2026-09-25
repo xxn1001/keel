@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # keel-check —— 「装好之后,这台机器到底行不行」的体检脚本
 #
 # 在哪跑:装好的系统里(libvirt 虚拟机、真机都一样)。admin 家目录里有一个同名入口:

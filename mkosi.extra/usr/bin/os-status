@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # os-status —— 只读的系统状态报告:当前槽/版本/内核、pending 更新、上次更新结果、
 #              /data 用量与布局版本、槽位分区、ESP 上的 UKI、/etc overlay 状态。
 #

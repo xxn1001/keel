@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # keel 首启与自愈:幂等,每次启动都跑一遍
 #
 # 由 keel-firstboot.service 调用。设计原则:每一步都能安全重复执行,

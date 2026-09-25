@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # keel 静态校验 —— 不需要 loop 设备、不构建镜像
 #
 # 大部分检查不需要 root;只有「假镜像树实跑 mkosi.finalize」那条需要(它要 chown admin 家目录),
@@ -288,6 +288,17 @@ if [ "${#scripts[@]}" -gt 0 ] && have shellcheck; then
     fi
 elif ! have shellcheck; then
     skip "没装 shellcheck,跳过(建议装上)"
+fi
+# shebang 必须是 `#!/usr/bin/env bash`,不能是 `#!/bin/bash`(坑 #54):
+# NixOS 宿主**只有 /bin/sh,没有 /bin/bash** ⇒ `sudo tools/build-container.sh` 这类
+# "直接执行"的用法会在宿主上以 `bad interpreter: No such file or directory` 失败,
+# 而脚本本身一点问题都没有(2026-09 在项目所有者的机器上实测撞到)。
+hardcode_bash=$(grep -rl '^#!/bin/bash' mkosi.extra mkosi.extra-test mkosi.extra-initrd tools \
+                mkosi.finalize mkosi.postinst 2>/dev/null | tr '\n' ' ')
+if [ -z "$hardcode_bash" ]; then
+    ok "脚本 shebang 都是 /usr/bin/env bash(宿主没有 /bin/bash 也能直接执行,坑 #54)"
+else
+    no "还有脚本写着 #!/bin/bash(NixOS 宿主上直接执行会 bad interpreter):$hardcode_bash"
 fi
 
 # ---------------------------------------------------------------------------

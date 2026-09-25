@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # keel 自检:把"这台机器到底行不行"的关键证据打到**控制台**上。
 #
 # 只存在于 test profile(整个 mkosi.extra-test/ 只由 mkosi.profiles/test.conf 挂进来),

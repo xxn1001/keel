@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # keel:启动没有到达 boot-complete ⇒ 自动重启,让引导器回退到上一个可用的槽(决策 D26)
 #
 # 由 keel-boot-failed-reboot.service 调用(挂在 emergency.target / rescue.target 上)。

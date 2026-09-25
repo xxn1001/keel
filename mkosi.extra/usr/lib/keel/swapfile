@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # keel swapfile:在 /data 上创建并启用交换文件
 #
 # 决策 D9:根只读 ⇒ swap 只能是文件;不做休眠(swapfile 的物理偏移

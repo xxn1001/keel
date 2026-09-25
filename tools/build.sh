@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # keel 产物构建:一次跑三个 profile,组装出 dist/keel-<version>/
 #
 # 产物(docs/architecture.md §6):

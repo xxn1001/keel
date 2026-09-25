@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # os-update —— 更新门面:check / fetch / stage / switch / rollback / gc。
 #
 # 见 docs/architecture.md §5.3(槽切换与回滚的完整时序)、§8(更新流程)、§9(命令集);

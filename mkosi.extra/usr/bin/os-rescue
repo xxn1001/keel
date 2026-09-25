@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # os-rescue —— 救援与修复入口:重建 /data 骨架、请求重置 /etc、扩展 data 分区、
 #              标记当前槽为坏、重装引导器。
 #

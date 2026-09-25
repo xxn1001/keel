@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # /data 空间看门人(决策 D23)
 #
 # 为什么需要它:/data 写满 = **/etc 也写不进去**(overlay 的 upper 在同一个文件

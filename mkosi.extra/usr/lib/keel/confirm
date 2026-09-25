@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # keel 启动确认:把当前槽标成"首选",并识别"更新失败已回滚"
 #
 # 由 keel-confirm.service 在 boot-complete.target 达成后调用

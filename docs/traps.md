@@ -961,3 +961,27 @@
     要有一棵树把可选输入**去掉**再跑一遍。现在 `tools/verify.sh` 的第二棵假镜像树就是这样:
     它故意**不给** `authorized_keys`,同时把 hostname 写错 —— 只有"转发文件写成功 + hostname
     断言真的拦住"两件事同时成立,那条检查才会绿。
+
+54. **NixOS 宿主上**没有** `/bin/bash`** —— 脚本写死 `#!/bin/bash` 就等于"直接执行必失败"(2026-09,在项目所有者机器上实测)。**
+    现象:`sudo tools/build-container.sh -p keel-tmp` 报
+    ```
+    sudo: unable to execute tools/build-container.sh: No such file or directory
+    ```
+    文件明明在、`ls -l` 也明明有 x 位 —— 这是 `execve` 找不到**解释器**时的报错(不是找不到脚本)。
+    根因:NixOS 只提供 `/bin/sh`(`environment.binsh`),**不提供 `/bin/bash`**:
+    ```
+    $ ls -l /bin/bash
+    ls: cannot access '/bin/bash': No such file or directory
+    $ ./tools/build-container.sh
+    bash: ./tools/build-container.sh: /bin/bash: bad interpreter: No such file or directory
+    ```
+    `bash tools/build-container.sh` 却能跑 —— 因为那条路把解释器换成了 PATH 里的 bash,
+    所以这个坑**只在"直接执行"时出现**,而 `AGENTS.md`/文档里的命令恰好都是直接执行。
+    ⇒ 修法:全仓库脚本的 shebang 一律改成 `#!/usr/bin/env bash`(NixOS 上有 `/usr/bin/env`);
+    `tools/verify.sh` 加断言禁止再出现 `#!/bin/bash`。
+    **教训**:① 我们把"宿主是 NixOS"写进了文档,却一直用"Debian 的常识"写 shebang ——
+    **目标环境的一句话,要能落到具体的一行代码上**;
+    ② 报错信息("No such file or directory")指向的是**解释器**,不是文件本身 ——
+    看到"文件在、权限也对"就先怀疑 shebang / 动态链接器;
+    ③ 这条和坑 #15(`ToolsTree=default`,宿主只需要 mkosi + bubblewrap)是同一类:
+    宿主越"非主流",越要把能被宿主直接执行的东西(脚本、`mkosi.version`)写成人畜无害的形式。

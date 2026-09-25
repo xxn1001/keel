@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # os-install —— 从 live U 盘环境把当前运行的系统装到目标盘(docs/architecture.md §7.1 路径 B)。
 #
 # 见 docs/architecture.md §7(安装流程)、§3(磁盘布局);用户文档见 docs/install.md §2.2。

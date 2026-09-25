@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # keel —— 在 libvirt 里做「真机前」的验证(供 virt-manager / libvirtd 用户使用)
 #
 # 为什么要有它:mkosi 的 `vm` 用的是 mkosi 自己的 QEMU 参数与临时固件变量;

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # keel 构建:装完包之后的定制(在主系统上跑,不 chroot;镜像树在 $BUILDROOT)
 #
 # 注意:mkosi 的脚本类设置默认值是按源目录里的 mkosi.<名字> 文件解析的,

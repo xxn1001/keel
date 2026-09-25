@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # keel 启动早期挂载:挂 /data、在 /etc 上挂 overlayfs、把 /home 与 /nix 绑到 /data 下
 #
 # 由 keel-mounts.service 调用,必须极早运行(见 AGENTS.md 不变量 1/2/5、

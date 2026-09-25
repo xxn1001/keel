@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # keel 构建的最后一步:生成 /data 骨架,把 /var /root 换成符号链接,/home 与 /nix 留成真实目录
 #
 # 时机至关重要(docs/traps.md 坑 #2):必须在所有会写 /var、/etc 的构建步骤

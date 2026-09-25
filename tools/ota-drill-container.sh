@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # keel OTA 演练:容器侧编排(由 tools/build-container.sh 的 drill 模式调用)
 #
 # 这个脚本**在构建容器里以 root 运行**(cwd = /work = 仓库挂载点),它负责:
