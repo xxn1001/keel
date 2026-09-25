@@ -926,8 +926,11 @@ if grep -q 'findmnt -no OPTIONS /sys/firmware/efi/efivars' mkosi.extra/usr/share
 else
     no "keel-check 用 [ -w efivars ] 判可写性 ⇒ 非 root 下会说错"
 fi
-# 非 root 实跑:整份脚本必须能跑到汇总(不崩、也不半途而废)
-if have setpriv; then
+# 非 root 实跑:整份脚本必须能跑到汇总(不崩、也不半途而废)。
+# 注意:这条要**从 root 掉到别的 uid** 才跑得起来(setpriv 需要特权),所以非 root 调用者跳过。
+if [ "$(id -u)" != 0 ]; then
+    skip "非 root:跳过「以 uid 65534 实跑 keel-check」(setpriv 掉权限需要 root)"
+elif have setpriv; then
     setpriv --reuid=65534 --regid=65534 --clear-groups bash mkosi.extra/usr/share/keel/keel-check >"$cld/nonroot.out" 2>&1 || true
     if grep -q '汇总' "$cld/nonroot.out"; then
         ok "以非 root(uid 65534)实跑 keel-check 能跑完整份并给出汇总"
