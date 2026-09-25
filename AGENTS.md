@@ -749,8 +749,14 @@ sudo tools/burn.sh /dev/nvme0n1
 6. ~~**ESP 在装机后的系统里没挂上**~~ **已修(2026-09,坑 #36 / 决策 D18)**:
    `keel-mounts` 自己扫 `PARTNAME=esp` 以 rw 挂到 `/boot`,cmdline 加 `systemd.gpt_auto=no`,
    `lib.sh` 只认真实挂载点(`KEEL_ESP_MOUNTED`),没挂上时 os-status / os-update / keel-confirm
-   分别明确报错或自救。**待复验**(下一轮 VM):`findmnt /boot` 是 vfat、`/boot/EFI/Linux/` 里
-   能看到 `keel-a.efi`、`os-status` 打出「ESP 挂载: …vfat」,并且真的能 `os-update` 写进一个新 UKI。
+   分别明确报错或自救。**已实测(2026-09,VM,test profile 自检)**:
+   `findmnt /boot` → `/boot /dev/vdb1 vfat rw,relatime,fmask=0133,dmask=0022,…`,
+   `bootctl --print-esp-path = /boot`,`/boot/EFI/Linux/` 里有 163 MB 的 UKI,
+   `os-status` 打出 `ESP 挂载 : /boot(/dev/vdb1 vfat)`;同一轮里 `/data` 正常(
+   swapfile 按 `/data` 的可用空间压到 471 MiB 并启用)、machine-id 32 位、DHCP `routable`、
+   失败单元只剩 6 个 `systemd-pcrlock-*`(VM 没 TPM)。**仍未实测**:`os-update` 真正往 ESP
+   写一个新 UKI(要凑一趟 OTA 载荷)—— 不过它现在写之前会 remount rw 并检查挂载点,
+   所以"写到空目录还报成功"这条已经堵住了。
 7. ~~**networkd 原生 DHCP 真能拿到租约**~~ **已实测通过(2026-09,VM,坑 #29 修好后)**:
    `keel-mounts` 日志 `已固化 machine-id(取自 PID1 本次启动使用的 ID)` + `machine-id = f9324ac0…`;
    `networkctl list` → `enp0s1 ether routable configured`,`networkctl status` →
