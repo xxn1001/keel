@@ -604,3 +604,29 @@
       `mkosi.finalize` 会回读断言)。
 
 ---
+
+41. **`WantedBy=boot-complete.target` 的单元在"非计数启动"上永远不会跑 —— 而回滚恰恰发生在非计数启动上(2026-09,准备 OTA 演练时发现)。**
+    现象:VM 里 `keel-confirm.service` 明明被启用了(构建日志里有
+    `boot-complete.target.wants/keel-confirm.service` 那条 symlink),却**从来没有运行过**——
+    `os-status` 的「上次启动结果」永远是"无记录",journal 里找不到它的任何输出,
+    启动日志里也从来**没有** `Reached target boot-complete.target`(只有
+    `first-boot-complete.target`,那是 systemd-firstboot 的,完全另一回事)。
+    原因(读 systemd 的单元文件与 generator 得到的):
+    * `boot-complete.target` 是个**被动目标**:没有任何 unit 默认拉它;
+    * 只有 `systemd-bless-boot-generator` 在"boot counting 生效"时才会把
+      `systemd-bless-boot.service` 放进 `boot-complete.target.wants/`,而那个 service
+      `Requires=boot-complete.target` ⇒ **只有计数启动**才会把目标带进事务;
+    * 更新失败自动回滚后,引导器启动的是**旧槽**:旧槽条目早就被 bless 成 `keel-a.efi`
+      (名字里没有 `+tries` 计数器)⇒ 那次启动不是"计数启动" ⇒ 目标到不了 ⇒ `keel-confirm` 不跑
+      ⇒ `state` 里的 pending 永远挂着、坏 UKI 不会被挪成 `.failed`、
+      `LoaderEntryPreferred` 也不会被改回旧槽的正式名字。**机器能用,但状态是错的** ——
+      这正是"自动回滚"这条承诺里最容易漏掉的一半。
+    ⇒ 修法:`keel-confirm.service` 的 `[Install]` 同时写
+      `WantedBy=boot-complete.target multi-user.target`。它本身
+      `Requires=boot-complete.target`,所以被 multi-user 拉起时会把目标一起带进事务;
+      `After=systemd-bless-boot.service` 保持不变 ⇒ 计数启动时我们仍然等 bless 改完名。
+      `tools/verify.sh` 有断言(两个 `WantedBy` 都必须在)。
+    **教训**:凡是"挂在某个 target 上"的单元,先问一句**谁拉这个 target**。
+    systemd 里 `boot-complete.target` / `first-boot-complete.target` 这类**被动目标**不会自己出现,
+    它们只被特定的 generator/单元按条件拉进事务 —— 条件不成立时,你的单元就**静默不执行**
+    (和坑 #36 的"每步都成功"、坑 #29 的"退出码 0"是同一个形状:**没跑 ≠ 跑成功了**)。

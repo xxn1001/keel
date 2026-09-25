@@ -15,4 +15,15 @@ RemainAfterExit=yes
 ExecStart=/usr/lib/keel/confirm
 
 [Install]
-WantedBy=boot-complete.target
+# **两个 WantedBy 都要,缺一不可**(2026-09 发现,见 docs/traps.md 坑 #41):
+#   * boot-complete.target —— systemd 的惯例位置(计数启动时 generator 会把
+#     systemd-bless-boot.service 放进这个 target 的 wants/ 里);
+#   * multi-user.target   —— 靠它把 boot-complete.target **每次启动**都拉进事务。
+#     平时没有任何东西拉 boot-complete.target:只有"计数启动"才会(由
+#     systemd-bless-boot-generator 带进来)。而**回滚恰恰发生在非计数启动上** ——
+#     更新失败后引导器退回旧槽,旧槽条目早被 bless 成 keel-a.efi(没有计数器)
+#     ⇒ 那次启动到不了 boot-complete ⇒ 本单元不跑 ⇒ "已回滚"永远没人记录、
+#     state 里的 pending 一直挂着、坏 UKI 也不会被挪成 .failed。
+#     本单元 Requires=boot-complete.target,所以被 multi-user 拉起时会把目标一起拉起;
+#     After=systemd-bless-boot.service 保证计数启动时我们等它改完名再干活。
+WantedBy=boot-complete.target multi-user.target

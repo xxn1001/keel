@@ -651,6 +651,17 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# keel-confirm 必须**同时**挂在 boot-complete.target 与 multi-user.target 上(坑 #41):
+# boot-complete.target 只在"计数启动"时被 generator 拉进事务,而回滚发生在非计数启动上。
+CONFIRM=mkosi.extra/usr/lib/systemd/system/keel-confirm.service
+if grep -qE '^WantedBy=.*boot-complete\.target' "$CONFIRM" &&
+   grep -qE '^WantedBy=.*multi-user\.target' "$CONFIRM" &&
+   grep -q '^Requires=.*boot-complete\.target' "$CONFIRM"; then
+    ok "keel-confirm 由 multi-user 拉起(并 Requires=boot-complete.target)⇒ 回滚那次非计数启动也会记录失败"
+else
+    no "keel-confirm 少了 multi-user.target 那条 WantedBy ⇒ 回滚后不会记录失败/清理坏条目(坑 #41)"
+fi
+
 head1 "7. 账号模型(决策 D21:admin 是唯一交互账号,root 锁定)"
 # ---------------------------------------------------------------------------
 if grep -qE '^[[:space:]]*sudo$' mkosi.conf.d/20-packages.conf; then

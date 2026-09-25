@@ -54,6 +54,18 @@ echo "  hostnamectl --static = $(hostnamectl --static 2>&1)"
 echo "--- pcrlock(决策 D20:应当全部 masked,不再是 failed)"
 systemctl is-enabled systemd-pcrlock-file-system.service systemd-pcrlock.socket 2>&1 | sed 's/^/  /'
 echo "  /etc/systemd/system 下的 pcrlock mask 链接数 = $(ls /etc/systemd/system/ 2>/dev/null | grep -c pcrlock)"
+echo "--- 磁盘与分区尺寸(验「dd 到更大的盘 → 首启把 data 扩到整盘」,不变量 14)"
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS 2>&1 | sed 's/^/  /'
+data_dev="$(keel_part_dev data 2>/dev/null || true)"
+if [ -n "$data_dev" ]; then
+    echo "  data 分区 = $data_dev,大小 = $(blockdev --getsize64 "$data_dev" 2>&1) 字节"
+    pk="$(lsblk -ndo PKNAME "$data_dev" 2>/dev/null | head -n1)"
+    [ -n "$pk" ] && echo "  所在磁盘 /dev/$pk 大小 = $(blockdev --getsize64 "/dev/$pk" 2>&1) 字节"
+else
+    echo "  找不到 PARTNAME=data 的分区"
+fi
+echo "  keel-firstboot 的扩容日志:"
+journalctl -b -u keel-firstboot --no-pager 2>/dev/null | tail -n8 | sed 's/^/    /'
 echo "--- /data 预算与看门人(决策 D23)"
 df -h /data 2>&1 | sed 's/^/  /'
 systemctl list-timers 'keel-*' --no-pager 2>/dev/null | sed 's/^/  /'
