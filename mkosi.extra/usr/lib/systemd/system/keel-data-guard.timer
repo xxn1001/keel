@@ -1,0 +1,13 @@
+[Unit]
+Description=keel: 定期检查 /data 剩余空间
+Documentation=file:/usr/share/doc/keel/architecture.md
+
+[Timer]
+# 每次启动 3 分钟后先看一眼(上次非正常关机、日志暴涨之类的情况),
+# 之后每 24 小时一次。
+OnBootSec=3min
+OnUnitActiveSec=1d
+AccuracySec=10min
+
+[Install]
+WantedBy=timers.target

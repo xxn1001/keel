@@ -28,6 +28,7 @@
 | 持久状态目录 | `/data/keel/` |
 | 分区标签 | `esp`、`root-a`、`root-b`、`data` |
 | ESP 上的 UKI | `/efi/EFI/Linux/keel-a.efi`、`keel-b.efi`(带计数时 `keel-a+3.efi`) |
+| 唯一登录账号 | `admin`(uid 1000,`sudo` 需要密码);**root 锁定**,SSH 侧 `PermitRootLogin no` |
 
 ---
 
@@ -99,6 +100,15 @@
    分区一旦安装就不能在中间插入/搬移,所以 `root-a`/`root-b` 的尺寸必须在**第一次装机前**就按
    "最大的变体"留足。main 默认每个槽 6 GiB(见 `docs/architecture.md` §3 的推算)。
    改这个数字意味着老机器要重装,不是一次普通更新。
+
+10. **`/data` 写满 = `/etc` 也写不进去 —— 凡是"一次性写一大块"的东西都必须先问可用空间。**
+   `/etc` 的 overlay upper 在 `/data` 上,所以持久分区满掉之后,machine-id 固化、SSH 主机密钥、
+   sysusers/tmpfiles 会一起失败,而 machine-id 写不进去就等于 DHCP/IPv6/DNSSEC 全坏
+   (坑 #29 复活;坑 #37 已经吃过一次,当时是 swapfile 干的)。
+   现在的预算与看门人见决策 D23(journald drop-in、`keel-nix-gc.timer`、看门人
+   `keel-data-guard.timer`、256 MiB 应急空间、`os-update fetch` 前的空间检查)。
+   新增任何往 `/data` 写大块数据的代码(下载、镜像、日志、缓存)时:
+   **先 `df` 问空间**,并且"先写临时文件、成功再改名",失败要清理。
 
 ---
 
@@ -579,7 +589,7 @@
     **教训**:`lsblk` 的 PARTLABEL/PARTTYPE 这些列是 udev 的产物,不是内核的;
     对"刚刚才发生"的设备变化要用 sysfs(`/sys/class/block/*/uevent`)或 `/proc/partitions`。
     (根因未最终确认:也可能是内核当时拒绝了 `BLKRRPART`(比如 repart 的 loop 设备还没放手),
-    所以现在额外显式做一次 `blockdev --rereadpt`;真机现场见 `docs/troubleshooting.md` §2.4。)
+    所以现在额外显式做一次 `blockdev --rereadpt`;真机现场见 `docs/troubleshooting.md` §2.6。)
 
 34. **`/nix` 不能是符号链接 —— nix 硬性拒绝,装好的系统上所有 nix 命令立刻失败。**
     现象(装机后第一次用 nix):
@@ -695,6 +705,37 @@
     keel-swapfile 正常;`tools/verify.sh` 里 repart 的两次真跑也确认分区名是 `data`。
     **注意**:改名**之前**装好的实验盘(标签还是 `volume`)在新镜像下找不到分区,要重新装机。
 
+39. **`--root-password` 落在 root 名下,而 `systemd-firstboot.service` **每次启动**都会跑 —— 只改 shadow 是
+    改不干净的(2026-09,做 D21「admin 账号 + 锁 root」时发现)。**
+    链条:mkosi 的 `-p` / `mkosi.rootpw` → 构建期 `systemd-firstboot --root=<镜像树>
+    --root-password-hashed` 写进 **root** 的 shadow 条目,同时把
+    `passwd.hashed-password.root` 放进镜像的 `/usr/lib/credstore/`;而镜像里的
+    `systemd-firstboot.service` 是**开机就跑**的(VM 日志里每次启动都有
+    `Starting systemd-firstboot.service - First Boot Wizard` + `first-boot-complete.target`),
+    它通过 `ImportCredential=passwd.hashed-password.root` 拿那份 credential,
+    "发现 root 没设密码"时会**把它设上** —— 也就是把我们锁掉的 root 又解开。
+    ⇒ 所以 `mkosi.finalize` 里锁 root 的最后一步是
+    `rm -f $R/usr/lib/credstore/passwd.hashed-password.root`(plaintext 那份一并删)。
+    `tools/verify.sh` 有断言(删 credential 那一行必须在 finalize 里)。
+    **教训**:① mkosi 的"首启设置"是**双份**的(镜像里的文件 + credstore 里的 credential),
+    改一份要问另一份会不会把改动撤销;② 判断"某个单元的密码/配置从哪来"时,
+    先看它的 `ImportCredential=`,`/usr/lib/credstore/` 是最容易被忘掉的第二来源。
+
+40. **别以为实验虚拟机"没有 TPM",也别拿虚拟机里的时区/locale 当证据(2026-09,pcrlock 排查得到)。**
+    两件事都来自 mkosi 的 QEMU 启动参数,不看源码猜不到:
+    * **vTPM 是默认开的**:`qemu.py` 里 `config.tpm == auto`(默认值)且 tools tree 里有 `swtpm` 时,
+      会 `start_swtpm` + `-tpmdev emulator -device tpm-tis`。所以 guest 里 `tpm2.target` 会到达、
+      `systemd-tpm2-setup{,-early}` 会成功 —— 于是那些带 `ConditionSecurity=measured-uki` 的
+      `systemd-pcrlock*` 单元**会真的执行**(它们在没有 TPM 的机器上是"条件不满足直接跳过"),
+      并在 QEMU 的 vTPM 上因为拿不到固件测量结果而失败(决策 D20 把它们 mask 掉了)。
+      排查这类"预期不该跑却跑了/预期该失败却成功了"的单元时,**先看 `Condition…` 是不是被满足了**,
+      不要先假定环境里没有 TPM。
+    * **首启 credential 会被注入**:`qemu.py` 的 `finalize_credentials()` 会往 guest 传
+      `firstboot.timezone=<宿主时区>` 与 `firstboot.locale=C.UTF-8`。
+      所以 VM 里 `timedatectl` 显示宿主时区**不代表镜像里的 `Timezone=` 生效了** ——
+      判据是 `/etc/localtime` 指向哪、`/etc/locale.conf` 里写了什么(决策 D22,
+      `mkosi.finalize` 会回读断言)。
+
 ---
 
 ## 4. 常用命令
@@ -708,8 +749,8 @@ tools/build.sh                       # 一次产出:安装镜像 + A/B 载荷 + 
 tools/build.sh --profile desktop     # 变体
 
 # 宿主不是 mkosi 支持的发行版时(NixOS 等):把构建放进容器(见已知的坑 #15)
-sudo tools/build-container.sh               # 构建(产物里 root 无密码)
-sudo tools/build-container.sh -p <密码> vm  # 构建并在容器里起 QEMU(控制台用 root / 该密码登录)
+sudo tools/build-container.sh               # 构建(产物里 admin 无密码,只能靠 authorized_keys 进)
+sudo tools/build-container.sh -p <密码> vm  # 构建并在容器里起 QEMU(控制台用 admin / 该密码登录;root 锁定)
 sudo tools/build-container.sh shell         # 进容器手敲 mkosi
 
 # 排错第一步:只看配置解析结果,不构建
@@ -731,10 +772,15 @@ sudo tools/burn.sh /dev/nvme0n1
 - [x] `mkosi.profiles/{install,slot-a,slot-b,test}.conf`
 - [x] `repart/install/` + `repart/slot-{a,b}/`
 - [x] `mkosi.extra/`、`mkosi.postinst`、`mkosi.finalize`
-- [x] 单元:`keel-mounts`、`keel-firstboot`、`keel-confirm`、`keel-swapfile` + preset
+- [x] 单元:`keel-mounts`、`keel-firstboot`、`keel-confirm`、`keel-swapfile` +
+      `keel-data-guard.timer`、`keel-nix-gc.timer` + preset
 - [x] `mkosi.extra/usr/bin/`:`os-status`、`os-update`、`os-rescue`、`os-install`
 - [x] `tools/`:`verify.sh`、`build.sh`、`burn.sh`、`build-container.sh`(给不被 mkosi 支持的宿主用)
-- [x] `docs/`:`architecture.md`、`decisions.md`、`install.md`、`update.md`、`troubleshooting.md`
+- [x] `docs/`:`architecture.md`、`decisions.md`、`install.md`、`update.md`、`troubleshooting.md`、`roadmap.md`
+- [x] **账号模型 / 系统标识 / pcrlock / `/data` 预算(2026-09,决策 D20–D23)**:
+      `admin` 是唯一交互账号(root 锁定)、`keel` + `Asia/Shanghai` + `C.UTF-8` 由构建期落地并回读断言、
+      `systemd-pcrlock*` disable + mask、journald/nix/OTA 的磁盘预算 + `keel-data-guard` + 256 MiB 应急空间。
+      静态校验 103 项全绿;**VM 复验待做**(下一轮构建)
 - [x] **第一次真机构建 / 虚拟机启动 / 装机**(2026-09,VM:构建 → live 启动 → `os-install` → 目标盘首启 ✓;
       途中修掉坑 #31–#34。**真机(U 盘 + 笔记本)仍未做过**)
 - [ ] `desktop` profile(笔记本用)
@@ -754,8 +800,9 @@ sudo tools/burn.sh /dev/nvme0n1
    #32(镜像里没有 `dosfstools`,repart 格式化 ESP 失败)、#33(建表后 `find_part` 查 `lsblk` 的
    PARTLABEL 扑空,已改成先扫 sysfs + 重试)。
 5. **装机后 nix 真的能用**(`nix-shell -p vim` 等)—— 第一次跑就撞上坑 #34(`/nix` 是符号链接),
-   已改成「真实目录 + bind mount」。**待复验**:新镜像里 `/nix` 是真目录、bind 生效、
-   `nix-shell -p …` 能装能跑;以及 `df -h /data` 确认首启把 data 分区扩到了整盘(不变量 14)。
+   已改成「真实目录 + bind mount」。**已复验(2026-09,由项目所有者在自己机器上实测)**:
+   `nix-shell -p fastfetch` 能进 shell、能跑起来。**仍待补**:`df -h /data` 确认首启把 data
+   分区扩到了整盘(不变量 14)—— 这条并进下一轮装机演练。
 6. ~~**ESP 在装机后的系统里没挂上**~~ **已修(2026-09,坑 #36 / 决策 D18)**:
    `keel-mounts` 自己扫 `PARTNAME=esp` 以 rw 挂到 `/boot`,cmdline 加 `systemd.gpt_auto=no`,
    `lib.sh` 只认真实挂载点(`KEEL_ESP_MOUNTED`),没挂上时 os-status / os-update / keel-confirm
@@ -763,10 +810,12 @@ sudo tools/burn.sh /dev/nvme0n1
    `findmnt /boot` → `/boot /dev/vdb1 vfat rw,relatime,fmask=0133,dmask=0022,…`,
    `bootctl --print-esp-path = /boot`,`/boot/EFI/Linux/` 里有 163 MB 的 UKI,
    `os-status` 打出 `ESP 挂载 : /boot(/dev/vdb1 vfat)`;同一轮里 `/data` 正常(
-   swapfile 按 `/data` 的可用空间压到 471 MiB 并启用)、machine-id 32 位、DHCP `routable`、
-   失败单元只剩 6 个 `systemd-pcrlock-*`(VM 没 TPM)。**仍未实测**:`os-update` 真正往 ESP
-   写一个新 UKI(要凑一趟 OTA 载荷)—— 不过它现在写之前会 remount rw 并检查挂载点,
-   所以"写到空目录还报成功"这条已经堵住了。
+   swapfile 按 `/data` 的可用空间压到 471 MiB 并启用)、machine-id 32 位、DHCP `routable`。
+   **仍未实测**:`os-update` 真正往 ESP 写一个新 UKI(要凑一趟 OTA 载荷)—— 不过它现在写之前会
+   remount rw 并检查挂载点,所以"写到空目录还报成功"这条已经堵住了。
+   (当时记的"失败单元只剩 6 个 `systemd-pcrlock-*`,VM 没 TPM"**是错的**:mkosi 的 QEMU
+   **默认带 vTPM**,那 6 个单元是"条件通过、真的跑了但拿不到固件测量结果"才失败的 ——
+   见坑 #40。2026-09 已按决策 D20 把它们 disable + mask,所以现在的预期是**失败单元为空**。)
 7. ~~**networkd 原生 DHCP 真能拿到租约**~~ **已实测通过(2026-09,VM,坑 #29 修好后)**:
    `keel-mounts` 日志 `已固化 machine-id(取自 PID1 本次启动使用的 ID)` + `machine-id = f9324ac0…`;
    `networkctl list` → `enp0s1 ether routable configured`,`networkctl status` →

@@ -38,6 +38,14 @@ need_root() {
     fi
 }
 
+# /data 上的可用字节数(读不到就当 0 —— 宁可不下载,也不要把 /data 写满)
+free_bytes() {
+    local v
+    v="$(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $4}')" || v=""
+    case "${v:-}" in ''|*[!0-9]*) v=0 ;; esac
+    printf '%s' "$v"
+}
+
 # ---------------------------------------------------------------------------
 # manifest 解析
 #
@@ -163,10 +171,20 @@ cmd_check() {
 # 这一步不写任何槽,所以失败可以直接重来。三道闸:sha256、签名(可选)、schema。
 # ---------------------------------------------------------------------------
 cmd_fetch() {
-    local rv rs schema h actual a
+    local rv rs schema h actual a fb
     [ -e "$LOCAL_SRC/$MANIFEST" ] || [ "$REMOTE" -eq 1 ] || keel_die "更新源里找不到 $MANIFEST:${LOCAL_SRC}"
 
     install -d -m 0755 "$KEEL_OTA"
+    # 下载之前先问空间(决策 D23)。4 个产物约 13 GiB(slot-a/b 的根原始镜像各 6 GiB
+    # + 两个 163 MB 的 UKI),下到一半 ENOSPC 只会留下半个载荷;更糟的是把 /data 填满
+    # 会连带 /etc 也写不进去(坑 #37),那会连累 machine-id 固化与 SSH 主机密钥。
+    fb="$(free_bytes)"
+    if [ "$fb" -lt $((2 * 1024 * 1024 * 1024)) ]; then
+        keel_die "/data 可用空间只有 $((fb / 1048576)) MiB,放不下更新载荷(4 个产物约 13 GiB)。先跑 os-update gc,或删掉 /data/ota 下的旧版本。"
+    fi
+    if [ "$fb" -lt $((16 * 1024 * 1024 * 1024)) ]; then
+        keel_log "警告:/data 可用空间只有 $((fb / 1048576)) MiB,而这次要下约 13 GiB —— 下完可能就满了;建议先 os-update gc"
+    fi
     DEST="$(mktemp -d "$KEEL_OTA/.fetch.XXXXXX")"
     # 任何提前退出都清掉半成品目录;成功路径最后把 DEST 改名成正式目录并摘掉 trap。
     # 单引号是故意的:延迟到 trap 触发时再展开 $DEST,否则拿到的是空值(SC2064)。
@@ -359,6 +377,11 @@ cmd_stage() {
     keel_state_set pending_slot "$target"
     keel_state_set pending_version "$OTA_PAYLOAD_VERSION"
     keel_state_set running_slot "$CURRENT_SLOT"
+
+    # 载荷已经写进槽里了,下载目录留着没意义 ⇒ 顺手清掉旧版本(决策 D23)。
+    # 每次成功的 stage 都会留下一个"可以重新下载"的旧载荷,不清就会一直堆积;
+    # cmd_gc 保留最近的 2 个版本 + pending 的那个,所以刚 stage 的这个不会被删。
+    cmd_gc >/dev/null 2>&1 || keel_log "注意:自动清理旧载荷失败(不影响本次更新;可手动跑 os-update gc)"
 
     echo "已安排:下次启动使用槽 ${target}(版本 ${OTA_PAYLOAD_VERSION})。"
     echo "重启后 os-status 会显示 pending 状态;启动成功自动确认,失败自动回退。"

@@ -57,8 +57,8 @@
 ### 1.2 启动、退出与追加 QEMU 参数
 
 ```bash
-# -p 给 root 设一个**临时密码**,才能从文本控制台登录(用户名 root / 你给的那个密码)。
-# 不加 -p 就没有密码:发布镜像里 root 是锁的、也没有你的公钥,会一直卡在 keel login:(见 §2.5)
+# -p 给 **admin** 设一个**临时密码**,才能从文本控制台登录(用户名 admin / 你给的那个密码)。
+# 不加 -p 就没有密码:这时只能靠 authorized_keys 里的 SSH 公钥进(见 §2.5)。
 # 密码只从这个命令行参数来,仓库里不存(公开仓库 = 密码公开);它会同时传给 build 与 vm 两步 —— 
 # mkosi 的 vm 读的是上一次 build 的 history,只在 vm 上传会被忽略(AGENTS.md 坑 #30)。
 sudo tools/build-container.sh -p <临时密码> vm     # = verify + --force build + vm
@@ -68,7 +68,8 @@ sudo mkosi --profile install --profile test --root-password=<临时密码> --for
 sudo mkosi --profile install --profile test --root-password=<临时密码> vm
 ```
 
-> **进虚拟机**:等 `keel login:`,输 `root` / 你刚给的那个临时密码。
+> **进虚拟机**:等 `keel login:`,输 `admin` / 你刚给的那个临时密码。
+> root 是**锁定**的(凭密码和密钥都进不去,`PermitRootLogin no`,决策 D21);要提权用 `sudo`。
 > (以前用 mkosi 的 `Autologin=yes`,因为镜像里缺 `/bin/login` 而变成死循环,见 `AGENTS.md` 坑 #26/#28;
 > VSock ssh 那条路也去掉了,见坑 #27。)
 
@@ -141,17 +142,24 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 
 ### 2.5 让新装好的系统能登录(必做)
 
-新镜像里**没有任何可用的登录凭据**:root 密码是锁的、没有普通用户、也没有你的 SSH 公钥。
-所以第一次装机前,至少做下面一件事,否则装完只能看着登录提示发呆:
+镜像里唯一的登录账号是 **`admin`**(决策 D21),它的凭据有两个来源 ——
+**装机前至少要准备一个**,否则装完只能看着登录提示发呆(root 是锁定的,进不去):
 
 | 方式 | 做法 | 效果 |
 |---|---|---|
-| **首启 SSH 公钥(推荐)** | 把你的公钥放到仓库根目录的 `authorized_keys`(该文件已被 `.gitignore` 排除)。`mkosi.finalize` 会把它放进 `/data` 骨架的 `root/.ssh/authorized_keys` | 装完开机就能 `ssh root@<ip>`(sshd 默认已启用、`PermitRootLogin prohibit-password` 允许密钥登录) |
-| root 控制台密码 | 在仓库根目录建 `mkosi.rootpw`,内容写密码(mkosi 原生支持,同样已被 gitignore 排除) | 可以在文本控制台以 root 登录 |
-| 仅本地测试 | `sudo tools/build-container.sh -p <临时密码> build`(把密码烤进产物) | 只适合虚拟机/临时排查;**真机别这么干** —— 密码会进 shell 历史,而且产物一旦泄露就是明文口令 |
+| **首启 SSH 公钥(推荐)** | 把你的公钥放到仓库根目录的 `authorized_keys`(已被 `.gitignore` 排除)。`mkosi.finalize` 会把它放进 `/data` 骨架的 `home/admin/.ssh/authorized_keys` | 装完开机就能 `ssh admin@<ip>`,然后 `sudo -i` 提权 |
+| admin 初始密码 | 在仓库根目录建 `mkosi.rootpw`,内容写密码(mkosi 原生支持,同样被 gitignore 排除);或构建时 `-p <密码>` | 可以在文本控制台以 `admin` 登录(密码同样用于 `sudo`) |
+| 仅本地测试 | `sudo tools/build-container.sh -p <临时密码> build` | 只适合虚拟机/临时排查;**真机别这么干** —— 密码会进 shell 历史,而且产物一旦泄露就是明文口令 |
 
-> 公钥文件放在仓库根目录而不是 `mkosi.extra/` 里:因为镜像里的 `/root` 是指向 `/data` 的符号链接,
-> 往 `mkosi.extra/root/...` 放的东西会在 finalize 换符号链接时丢掉(见 `AGENTS.md` 坑 #2/#3)。
+> 公钥文件放在仓库根目录而不是 `mkosi.extra/` 里:因为镜像里的 `/home` 是 `/data/home` 的
+> bind mount、骨架在首启用 `cp -a -n` 播种,往 `mkosi.extra/home/...` 放的东西不会到 `/data` 上
+> (见 `AGENTS.md` 坑 #2/#3)。
+
+**关于 root**:v1 里 root 是**完全锁定**的 —— `/etc/shadow` 里是 `!`、`PermitRootLogin no`、
+连 mkosi 塞进 `/usr/lib/credstore/` 的那份 root 密码 credential 也在构建时删掉了
+(不删的话 `systemd-firstboot` 每次启动都可能把它解开)。这么做的底气是:
+admin 的账号与密码哈希都在**镜像的只读 `/etc`** 里,所以即使 `/data` 坏了、`/home` 是空的,
+控制台照样能以 admin 登录(只是没有家目录)。**代价**:系统级后路只剩救援 U 盘(§7.1 B)。
 
 ## 3. 装之前必须确认
 
@@ -165,7 +173,7 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 
 ## 4. 首次启动会自动发生什么
 
-`keel-firstboot.service` 幂等地做五件事(§7.2):
+`keel-firstboot.service` 幂等地做六件事(§7.2):
 
 | # | 动作 | 说明 |
 |---|---|---|
@@ -174,6 +182,11 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 | 3 | `bootctl install` 建立本机 NVRAM 启动项 | 装机镜像里不可能带;已有则跳过 |
 | 4 | 创建并启用 swapfile(`/data/keel/swapfile`) | 不做休眠(决策 D9) |
 | 5 | 记录 `/data/keel/state` 与 `schema-version` | 之后 `os-status` 从这里读 |
+| 6 | 空间宽裕时预留 256 MiB 应急空间(`/data/keel/.reserve`) | `/data` 写满会连带 `/etc` 写不进去(坑 #37),这是留给"最后一次写入"的余量;由 `keel-data-guard` 在临界时交还(决策 D23) |
+
+主机名 / 时区 / locale 不在这里设:它们是**构建期**由 mkosi 的 `Hostname=keel`、
+`Timezone=Asia/Shanghai`、`Locale=C.UTF-8` 写进镜像 `/etc` 的(决策 D22),装好即生效 ——
+`hostnamectl`、`timedatectl` 应该分别显示 `keel` 与 `Asia/Shanghai`。
 
 > 同一次 `keel-mounts` 还会把 **ESP(`PARTNAME=esp`)以可写方式挂到 `/boot`** —— `os-status` 的
 > 「ESP 挂载」与 UKI 列表都靠它;没挂上的话 `os-update` 会在写分区之前直接拒绝、槽确认也会失效
@@ -192,10 +205,13 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 | UEFI 文本控制台 | `main` 不含 GPU 驱动/固件,靠内核 `simpledrm`/`efifb` 出文本;**没有图形界面是预期行为**(§7.3) |
 | 启动日志 | v1 的 cmdline 不加 `quiet`(§5.1),第一次真机跑能看见全部日志比"干净"重要 |
 | SSH | 镜像含 `openssh-server`;有线网络走 `systemd-networkd` + `systemd-resolved`(决策 D15) |
-| 找 IP | 控制台里 `ip a`、`networkctl status`,或直接 `os-status`(有「网络」一节);拿到 IP 后从别的机器 `ssh <user>@<ip>` |
+| 找 IP | 控制台里 `ip a`、`networkctl status`,或直接 `os-status`(有「网络」一节);拿到 IP 后从别的机器 `ssh admin@<ip>` |
+| 主机名 / 时区 | `hostnamectl` → `keel`;`timedatectl` → `Asia/Shanghai`(决策 D22,构建期就写好了) |
+| 登录 | 控制台与 SSH 都只用 `admin`;root 锁定(§2.5)。`sudo` 需要密码,规则在 `/etc/sudoers.d/10-keel-admin` |
+| 失败单元 | 应为空(`systemctl --failed`)。`systemd-pcrlock*` 已被 mask(决策 D20),不再出现在这里 |
+| `/data` 余量 | `os-status` 的「空间看门人」一节;`keel-data-guard.timer` 每天看一次,低于阈值会自动回收(决策 D23) |
 
-> 待验证:**初始登录凭据**在 `architecture.md` 里还没规定(是否预置普通用户、root 是否可登录)。
-> 以实际镜像和 `mkosi.conf` 的 credential 配置为准;进不去就用 U 盘 live 环境挂上来看(§7.1 B)。
+> 进不去就用 U 盘 live 环境挂上来看(§7.1 B),或按 `docs/troubleshooting.md` §2.5 排查。
 
 ## 5. 装完之后的第一步
 

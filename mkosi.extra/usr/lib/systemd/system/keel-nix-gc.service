@@ -1,0 +1,20 @@
+[Unit]
+Description=keel: 回收 nix store 里的垃圾(每周一次)
+Documentation=file:/usr/share/doc/keel/architecture.md
+# nix 的 store 在 /data(/data/nix 由 keel-mounts bind 到 /nix),
+# 而 /data 写满会连带 /etc 写不进去(坑 #37)。Debian 的 nix-setup-systemd
+# **只提供 nix-daemon,没有任何 GC 定时器**(2026-09 查过包文件清单),
+# 所以这个定时器由我们自己带。
+#
+# 清什么:
+#   1. 30 天前的 generation(nix-collect-garbage --delete-older-than);
+#   2. 再由 nix-store --gc 回收失去引用的路径,**最多回收 2 GiB**
+#      (--max-freed 避免在大 store 上把 IO 打满)。
+# 正在运行的 nix-shell 持有 GC root,不会被清掉。
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/usr/bin/nix-collect-garbage --delete-older-than 30d
+ExecStart=/usr/bin/nix-store --gc --max-freed=2G

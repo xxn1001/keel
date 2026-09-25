@@ -230,3 +230,95 @@
 - **决策**:面向用户的命令用 `os-` 前缀:`os-status`、`os-update`、`os-install`、`os-rescue`;
   项目内部单元与目录用 `keel-` 前缀:`keel-*.service`、`/usr/lib/keel/`。
 - **理由**:`os-` 好记、无 CLI 冲突;内部单元带项目前缀便于在 `systemctl` 输出里一眼认出归属。
+
+## D20 v1 不做 Secure Boot / measured boot:`systemd-pcrlock` 单元 mask 掉
+
+- **决策**:把 9 个 `systemd-pcrlock*` 单元(7 个服务 + socket + `@` 模板)
+  **disable + mask 成 `/dev/null`**(preset 里 disable,`mkosi.postinst` 里建 mask)。
+- **背景(2026-09 查清)**:这些是 systemd 上游单元,由**发行版自己的 preset** 挂进
+  `sysinit.target.wants`(构建日志里能看到那 7 条 `Created symlink …`),不是我们启用的。
+  它们预测/校验 TPM2 各 PCR 的测量值(固件代码/配置、Secure Boot 策略、文件系统、machine-id),
+  给"把密钥封印到启动链上"(配合 `systemd-measure`)用。
+- **为什么它们在实验环境里是红的**:mkosi 起的 QEMU **带 vTPM**(`qemu.py`:`TPM=auto` +
+  tools tree 里有 swtpm ⇒ `-tpmdev emulator -device tpm-tis`),所以单元上的
+  `ConditionSecurity=measured-uki` 通过、它们**真的执行**,又因为拿不到固件测量的
+  event log / PCR 值而失败(6 个失败,只有不需要 PCR 值的 `lock-secureboot-authority` 成功)。
+  即:这条红字与"有没有 TPM"无关,是"vTPM 没有真实测量链"。
+- **理由**:v1 既没有 Secure Boot,也没有 TPM 封印的密钥,**没有任何东西依赖它们**;
+  留着只会污染"启动后 `systemctl --failed` 应为空"这条检查项,而真机上的行为
+  (可能成功、可能往 TPM NV 里写策略)完全未知。
+- **代价**:将来做 Secure Boot / measured boot 时要记得解封 —— 已写进
+  `docs/roadmap.md`,并在 `mkosi.postinst` 的注释里标了"解封是那个工作项的一部分"。
+- **否决**:留着当"预期噪音"(会让"失败单元为空"这条检查失去意义);
+  加更严的 `Condition`(条件已经是上游给的最严的那条,再收紧就会挡住将来合法的用法)。
+
+## D21 账号模型:`admin` 是唯一交互账号,root 锁定
+
+- **决策**:镜像里只建一个交互账号 `admin`(uid 1000,组 `sudo` + `video`/`audio`/`render`
+  留待 desktop profile,家目录 `/home/admin`,shell `/bin/bash`);
+  **初始密码 = 构建时 `-p <密码>` / 仓库根目录 `mkosi.rootpw` 给的那个值**;
+  SSH 公钥(仓库根目录 `authorized_keys`)进 `/data` 骨架的 `home/admin/.ssh/`;
+  **root 完全锁定**(`/etc/shadow` 里是 `!`)+ `PermitRootLogin no`;`sudo` **需要密码**。
+- **实现要点**(顺序很关键):账号由 `mkosi.extra/usr/lib/sysusers.d/keel.conf` 交给
+  `systemd-sysusers` 建(它在 finalize 之前跑);密码与公钥在 `mkosi.finalize` 里处理 ——
+  mkosi 的 `--root-password=` 写在 **root** 的 shadow 条目里(并往 `/usr/lib/credstore/` 放
+  `passwd.hashed-password.root`),所以最后一步把那个哈希**搬给 admin**、把 root 置成 `!`、
+  再**删掉 credstore 里的 root credential**(不删的话 `systemd-firstboot.service` 每次启动
+  都可能把 root 又解开 —— 它就是靠 `ImportCredential` 拿那个名字的;见 AGENTS.md 坑 #39)。
+- **为什么敢把 root 完全锁掉**:`admin` 的账号在**镜像的 `/etc/passwd`(只读 lower)**里,
+  它的密码哈希也在 lower 的 `/etc/shadow` 里 ⇒ 即使 `/data` 坏了、`/home` 是空的、`/etc`
+  overlay 都没挂上,控制台**照样能以 admin 登录**(只是没有家目录、会有告警)。
+  root 平时没有任何用途,留着只是多一个可被爆破的口令。
+- **代价(要记住的)**:① 系统级后路只剩救援 U 盘(那是设计里本来就有的);
+  ② 忘记在仓库里放 `authorized_keys`、又不给 `-p` 时,产物**登不进去** ——
+  `mkosi.finalize` 会为这两种情况各打一条明确警告(选择"警告 + 继续"而不是"拒绝构建",
+  因为"故意构建一个只能靠串口/救援盘进的无凭据镜像"是合法需求)。
+- **否决**:
+  - 保留 root 的控制台密码(与"禁用 root"相悖,而且上面那条已经证明不需要);
+  - NOPASSWD(项目所有者拍板:sudo 要密码);
+  - 首启用 credential 动态建号(绕远;而且密码不会落在 lower 的 `/etc/shadow` 里 ⇒
+    丢掉"`/data` 坏掉也能登录"这条性质)。
+
+## D22 系统标识:hostname `keel` / 时区 `Asia/Shanghai` / locale `C.UTF-8`
+
+- **决策**:三个都用 mkosi 的原生设置(`Hostname=` / `Timezone=` / `Locale=`)写在
+  `mkosi.conf.d/30-content.conf`;`mkosi.finalize` **逐个回读断言**(`/etc/hostname`、
+  `/etc/localtime`、`/etc/locale.conf`),不对就让构建失败。
+- **理由**:mkosi 在构建期用 `systemd-firstboot --force` 落地这三个文件(在 finalize 之前),
+  所以它们和别的 `/etc` 内容一样在只读 lower 里 —— 机器专属的改动仍然走 `/etc` overlay。
+  回读断言是必须的:坑 #29 的教训是 systemd 那批工具**把"我什么都没干"也当成功**。
+- **locale 为什么是 `C.UTF-8`**:glibc 自带,不需要 `locales` 包、不需要 `localedef`,
+  而 UTF-8 文件名/输出照常。`zh_CN.UTF-8` 要额外装包生成 locale 数据,留给 desktop profile。
+- **时区依赖 `tzdata`**:`/usr/share/zoneinfo` 不在 Essential 里、也不被 systemd 依赖带进来,
+  必须显式写进包清单;少了它时区会**静默**落回 UTC(所以 finalize 里那条断言是必要的,不是多余的)。
+- **验证注意**:在 `mkosi vm` 里看时区**不能作为证据** —— mkosi 的 `qemu.py` 会往 guest 注入
+  `firstboot.timezone=<宿主时区>` 与 `firstboot.locale=C.UTF-8` 两个 credential。
+  判据是 `/etc/localtime` 指向哪、`/etc/locale.conf` 里写了什么。
+
+## D23 `/data` 的磁盘预算、看门人与应急空间
+
+- **决策**:
+  1. **给每个消费者写死预算**:journald(`Storage=persistent`、`SystemMaxUse=256M`、
+     `SystemKeepFree=2G`、`MaxRetentionSec=1month`);nix 由 `keel-nix-gc.timer` 每周
+     `nix-collect-garbage --delete-older-than 30d` + `nix-store --gc --max-freed=2G`;
+     `os-update stage` 成功后自动清旧载荷(保留最近 2 个版本 + pending);
+     `os-rescue --reset-etc` 的 `etc.bak-*` 只留最近一份;`os-update fetch` 前先查可用空间。
+  2. **看门人** `keel-data-guard.timer`(启动 3 分钟后 + 每天一次):把结论写进
+     `/data/keel/data-guard.state`,`os-status` 显示。分级**按绝对字节数**:
+     `< 2 GiB` 警告并回收 journal + nix;`< 512 MiB` 交还应急空间;`< 128 MiB` 连 OTA
+     载荷也只留最新一份。小于 4 GiB 的 `/data`(live 镜像)只看不治。
+  3. **应急空间**:`keel-firstboot` 在空间宽裕时 `fallocate` 256 MiB 到
+     `/data/keel/.reserve`,临界时由看门人删掉它,换一次"还能把 machine-id / SSH 主机密钥
+     写下去"的机会;用掉后留一条 `/data/keel/reserve-consumed` 记录,空间恢复后自动重建。
+- **理由**:坑 #37 已经证明 **`/data` 写满 = `/etc` 也写不进去**(overlay 的 upper 在同一个
+  文件系统上)⇒ machine-id 固化失败 ⇒ DHCP/IPv6/DNSSEC 一起坏(坑 #29 复活),
+  SSH 主机密钥、sysusers、tmpfiles 一起失败。所以这不是"省空间",是**可用性**问题。
+- **为什么按绝对字节而不是百分比**:在 500 GB 的盘上"剩余 2%"是 10 GB,根本不算紧张 ——
+  百分比会骗人。
+- **边界**:看门人只清**可再生**的东西(旧日志、nix 垃圾、下载回来的 OTA 载荷);
+  `/home`、`/etc` overlay 的 upper、`/data/keel` 一律不碰。
+- **否决 / 留待以后**:
+  - ext4 project quota(要 `prjquota`、动 mkfs 参数与挂载选项,复杂度不值);
+  - 现在就加一个 `cache` 分区把 `/nix` 与 journal 挪出去(结构性做法,只增分区可以后加;
+    已写进 `docs/roadmap.md`,等真机用一段时间、看清增长曲线再定);
+  - 用百分比阈值(见上)。

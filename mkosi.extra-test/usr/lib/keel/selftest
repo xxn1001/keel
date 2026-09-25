@@ -31,6 +31,41 @@ for d in /sys/class/net/*; do
 done
 [ -n "$iface" ] || iface="(没有 en*/eth* 接口)"
 
+# ---------------------------------------------------------------------------
+# 启动现场(一次性)—— 决策 D20/D21/D22/D23 的验证点
+#
+# 账号、系统标识、pcrlock 的 mask 状态、/data 的预算这些**不随时间变化**,
+# 打一次就够;放进 10 轮循环里只会把控制台日志淹没。
+# ---------------------------------------------------------------------------
+echo
+echo "################ keel-selftest 启动现场(一次性)################"
+echo "--- 登录账号(决策 D21:admin 是唯一交互账号,root 锁定)"
+echo "  id admin   : $(id admin 2>&1)"
+echo "  admin shadow 字段: $(awk -F: '$1=="admin"{print $2}' /etc/shadow 2>/dev/null)"
+echo "  root  shadow 字段: $(awk -F: '$1=="root"{print $2}' /etc/shadow 2>/dev/null)"
+ls -l /etc/sudoers.d/10-keel-admin 2>&1 | sed 's/^/  /'
+echo "  sshd drop-in : $(grep -h '^PermitRootLogin' /etc/ssh/sshd_config.d/*.conf 2>/dev/null)"
+echo "  credstore 残留(root 密码 credential 必须已被删): $(ls /usr/lib/credstore/ 2>&1 | tr '\n' ' ')"
+echo "--- 系统标识(决策 D22;⚠ VM 里 timedatectl 可能被 mkosi 注入宿主时区,见坑 #40)"
+echo "  /etc/hostname  = $(cat /etc/hostname 2>&1)"
+echo "  /etc/localtime -> $(readlink /etc/localtime 2>&1)"
+echo "  /etc/locale.conf = $(tr '\n' ' ' </etc/locale.conf 2>&1)"
+echo "  hostnamectl --static = $(hostnamectl --static 2>&1)"
+echo "--- pcrlock(决策 D20:应当全部 masked,不再是 failed)"
+systemctl is-enabled systemd-pcrlock-file-system.service systemd-pcrlock.socket 2>&1 | sed 's/^/  /'
+echo "  /etc/systemd/system 下的 pcrlock mask 链接数 = $(ls /etc/systemd/system/ 2>/dev/null | grep -c pcrlock)"
+echo "--- /data 预算与看门人(决策 D23)"
+df -h /data 2>&1 | sed 's/^/  /'
+systemctl list-timers 'keel-*' --no-pager 2>/dev/null | sed 's/^/  /'
+echo "  data-guard.state:"
+cat /data/keel/data-guard.state 2>&1 | sed 's/^/    /'
+ls -l /data/keel/.reserve /data/keel/reserve-consumed 2>&1 | sed 's/^/  /'
+journalctl -b -u keel-data-guard --no-pager 2>/dev/null | tail -n5 | sed 's/^/  /'
+echo "  os-status 里那几行:"
+os-status 2>/dev/null \
+    | grep -E "登录账号|admin 密码|sudo|root  |空间看门人|应急空间|布局版本" | head -n10 | sed 's/^/  /'
+echo "################################################################"
+
 for (( i = 1; i <= rounds; i++ )); do
     echo
     echo "################ keel-selftest 第 $i/$rounds 轮(uptime $(cut -d' ' -f1 /proc/uptime 2>/dev/null)s)################"

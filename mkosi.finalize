@@ -55,20 +55,39 @@ fi
 rm -rf "$SKEL/var/lib/dpkg" "$SKEL/var/lib/apt" "$SKEL/var/cache/apt" \
        "$SKEL/var/cache/debconf" "$SKEL/var/log/apt" "$SKEL/var/lib/systemd/coredump"
 
-# 必须存在的目录
+# 必须存在的目录(坑 #3:不预建 /var/log/journal 的话,第一次启动的日志是易失的)
 install -d -m 0755 "$SKEL/var/log/journal"
-install -d -m 0755 "$SKEL/home"
-install -d -m 0700 "$SKEL/home/root"
 
-# 首启的 SSH 公钥:如果仓库根目录有 authorized_keys,就把它放进 /data 骨架的 root 家目录。
-# 为什么必须放在骨架里:镜像里的 /root 是指向 /data/home/root 的符号链接,
-# 构建期往镜像的 /root 放东西会在 finalize 换符号链接时被丢掉(AGENTS.md 坑 #2/#3)。
-# 没有这一步,新装好的系统是**进不去**的 —— root 密码是锁的、没有普通用户、也没有你的公钥。
+# 首启的 SSH 公钥:如果仓库根目录有 authorized_keys,就把它放进 /data 骨架里
+# **admin 的家目录**(决策 D21:root 是锁定的,不再接受任何登录)。
+# 为什么必须放在骨架里:镜像里的 /home 是 /data/home 的 bind mount(不变量 1),
+# 构建期往镜像的 /home/admin 放东西会在首启被骨架的 cp -a -n 盖掉/丢掉
+# (AGENTS.md 坑 #2/#3)。没有这一步,新装好的系统**进不去** ——
+# admin 没密码 + 没公钥 = 只能抱着键盘看登录提示。
+install -d -m 0755 "$SKEL/home"
+install -d -m 0700 "$SKEL/home/root"          # /root 仍然指向这里(见下面第 2 节)
 if [ -n "${SRCDIR:-}" ] && [ -f "$SRCDIR/authorized_keys" ]; then
-    install -d -m 0700 "$SKEL/home/root/.ssh"
-    install -m 0600 "$SRCDIR/authorized_keys" "$SKEL/home/root/.ssh/authorized_keys"
-    log "已把 authorized_keys 放进 /data 骨架(首启即可用该密钥以 root 身份 SSH 登录)"
+    install -d -m 0700 "$SKEL/home/admin/.ssh"
+    install -m 0600 "$SRCDIR/authorized_keys" "$SKEL/home/admin/.ssh/authorized_keys"
+    log "已把 authorized_keys 放进 /data 骨架的 home/admin/.ssh(首启即可用该密钥以 admin 身份 SSH 登录)"
+else
+    log "警告:仓库根目录没有 authorized_keys(它被 .gitignore 排除,不会进版本库)"
+    log "      如果这次构建也没给初始密码(-p / mkosi.rootpw),装出来的系统**无法登录**;"
+    log "      见 docs/install.md §2.5"
 fi
+
+# admin 的家目录必须归 admin 所有:骨架首启是 `cp -a`,属主会原样带进 /data。
+# uid/gid 从**镜像里**的 passwd 读,不写死 1000(sysusers 的分配结果才是事实)。
+admin_ids=$(awk -F: '$1=="admin"{print $3":"$4; exit}' "$R/etc/passwd")
+if [ -n "$admin_ids" ]; then
+    install -d -m 0755 -o "${admin_ids%%:*}" -g "${admin_ids##*:}" "$SKEL/home/admin"
+    chown -R "${admin_ids%%:*}:${admin_ids##*:}" "$SKEL/home/admin"
+    log "骨架里的 home/admin 属主已设为 admin($admin_ids)"
+else
+    log "致命:镜像的 /etc/passwd 里没有 admin —— systemd-sysusers 没跑到我们的 sysusers.d?"
+    exit 1
+fi
+
 install -d -m 0755 "$SKEL/nix"
 for d in store var var/nix var/nix/db var/nix/gcroots var/nix/profiles \
          var/nix/temproots var/nix/trash var/nix/daemon-socket var/nix/builds; do
@@ -106,6 +125,102 @@ UPDATE_SOURCE=
 SWAPFILE_SIZE=
 EOF
 fi
+
+# ---------------------------------------------------------------------------
+# 1b) 账号:把初始密码从 root 搬到 admin,然后把 root 锁掉(决策 D21)
+#
+# 背景:mkosi 的 `-p <密码>` / 仓库根目录的 mkosi.rootpw 走的是
+# systemd-firstboot 的 `--root-password-hashed`,写进的是**root** 的 shadow 条目
+# (mkosi 的 run_firstboot 在 finalize 之前跑,同时还把
+#  passwd.hashed-password.root 放进镜像的 /usr/lib/credstore/)。
+# 我们要的却是"admin 有初始密码、root 完全锁定",所以在最后一步搬一次家。
+#
+# 为什么在构建期搬、而不是首启用 credential 慢慢来:搬完之后密码就在镜像的
+# /etc/shadow(lower)里 —— 即使 /data 坏了、/home 是空的,控制台照样能登录。
+#
+# 同时**删掉 credstore 里的 root 密码 credential**:systemd-firstboot.service
+# 每次启动都会跑(镜像里实测有 First Boot Wizard),它会 ImportCredential 这些名字;
+# 留着的话哪天它认为 root 的密码"该设而没设",就会把我们锁掉的 root 又解封。
+# 删除它才是"root 锁定"这个承诺的完整实现。
+# ---------------------------------------------------------------------------
+SH="$R/etc/shadow"
+if [ ! -f "$SH" ]; then
+    log "致命:镜像里没有 /etc/shadow,无法设置 admin 密码"
+    exit 1
+fi
+root_hash=$(awk -F: '$1=="root"{print $2}' "$SH")
+case "$root_hash" in
+    \$*)
+        tmp=$(mktemp)
+        awk -F: -v OFS=: -v h="$root_hash" '
+            $1=="admin" { $2=h }
+            $1=="root"  { $2="!" }
+            { print }
+        ' "$SH" >"$tmp"
+        # 用 cat > 而不是 mv:保留原文件的 inode / 属主 / 权限(Debian 是 0640 root:shadow)
+        cat "$tmp" >"$SH"
+        rm -f "$tmp"
+
+        # 回读校验 —— 写完不看等于没写(坑 #29 的教训)
+        new_admin=$(awk -F: '$1=="admin"{print $2}' "$SH")
+        new_root=$(awk -F: '$1=="root"{print $2}' "$SH")
+        if [ "$new_admin" != "$root_hash" ] || [ "$new_root" != "!" ]; then
+            log "致命:搬运初始密码失败(admin='$new_admin' root='$new_root')"
+            exit 1
+        fi
+        rm -f "$R/usr/lib/credstore/passwd.hashed-password.root" \
+              "$R/usr/lib/credstore/passwd.plaintext-password.root"
+        log "初始密码已设给 admin;root 已锁定(shadow='!');credstore 里的 root 密码 credential 已删除"
+        ;;
+    *)
+        # 没给密码(没传 -p、也没有 mkosi.rootpw):root 保持锁定,admin 也没有密码
+        log "注意:这次构建没有初始密码(root shadow='$root_hash')⇒ admin 同样没有密码,"
+        log "      装完机只能用 authorized_keys 里的公钥 SSH 登录(见 docs/install.md §2.5)"
+        ;;
+esac
+
+admin_final=$(awk -F: '$1=="admin"{print $2}' "$SH")
+case "$admin_final" in
+    \$*) log "admin 的初始密码已就位" ;;
+    *)   log "admin 没有密码(shadow 字段 '$admin_final')⇒ 本次产物只认 SSH 公钥登录" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 1c) 系统标识回读断言(决策 D22)
+#
+# mkosi 用 `systemd-firstboot --force` 把 Hostname= / Timezone= / Locale= 写进镜像,
+# 但那三步"退出码 0"什么也证明不了(坑 #29 的教训:systemd 那批工具把"我什么都没干"
+# 也当成功)。这里逐个回读;任何一条不对就让构建失败 —— 时区尤其容易静默落回 UTC
+# (tzdata 没装时 systemd-firstboot 只会警告)。
+# ---------------------------------------------------------------------------
+ident_fail=0
+hn=$(cat "$R/etc/hostname" 2>/dev/null || true)
+if [ "$hn" != "keel" ]; then
+    log "致命:/etc/hostname 不是 'keel'(实际:'${hn:-<文件不存在>}')"
+    ident_fail=1
+fi
+# /etc/localtime:systemd-firstboot 通常建符号链接,但也可能拷贝一份 ⇒ 两种都接受
+if [ -L "$R/etc/localtime" ]; then
+    tz_target=$(readlink "$R/etc/localtime")
+    case "$tz_target" in
+        *Asia/Shanghai) : ;;
+        *) log "致命:/etc/localtime 指向 '$tz_target',不是 Asia/Shanghai(tzdata 装了吗?)"; ident_fail=1 ;;
+    esac
+elif [ -f "$R/etc/localtime" ]; then
+    if ! cmp -s "$R/etc/localtime" "$R/usr/share/zoneinfo/Asia/Shanghai"; then
+        log "致命:/etc/localtime 的内容不是 Asia/Shanghai 的时区数据(tzdata 装了吗?)"
+        ident_fail=1
+    fi
+else
+    log "致命:/etc/localtime 不存在(Timezone= 没生效?)"
+    ident_fail=1
+fi
+if ! grep -q '^LANG=C\.UTF-8' "$R/etc/locale.conf" 2>/dev/null; then
+    log "致命:/etc/locale.conf 里没有 LANG=C.UTF-8(实际内容:$(tr '\n' ' ' <"$R/etc/locale.conf" 2>/dev/null || echo '<无文件>'))"
+    ident_fail=1
+fi
+[ "$ident_fail" -eq 0 ] || exit 1
+log "系统标识:/etc/hostname=keel;/etc/localtime→Asia/Shanghai;/etc/locale.conf 里 LANG=C.UTF-8"
 
 # ---------------------------------------------------------------------------
 # 2) 把 /var /root 换成符号链接;/home 与 /nix 保持**真实目录**(不变量 1)
@@ -151,4 +266,4 @@ fi
 log "已清掉 dpkg 工具链(镜像里没有 apt/dpkg,决策 D10)"
 
 
-log "完成:/data 骨架已生成;/var /root 是符号链接;/home 与 /nix 是真实目录(由 keel-mounts bind)"
+log "完成:/data 骨架已生成(含 home/admin);/var /root 是符号链接;/home 与 /nix 是真实目录(由 keel-mounts bind)"

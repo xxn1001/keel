@@ -65,7 +65,7 @@ fi
 # 为什么要两步:systemd-repart 只扩**分区**,它从不改动已存在分区的文件系统
 # (源码里 context_mkfs() 对已存在的分区直接 continue)。repart 定义里的
 # GrowFileSystem= 只是打一个 GPT 标志位,而那个标志只被 systemd-gpt-auto-generator
-# 消费 —— 我们的 /data 是 cmdline 里 systemd.mount-extra= 显式挂载的,
+# 消费 —— 我们的 /data 是 keel-mounts 自己用 `mount` 挂的(不变量 2),
 # 根本不过 gpt-auto-generator。所以文件系统必须自己调 systemd-growfs 扩。
 # (AGENTS.md 已知的坑 #14;真机首启后请用 df -h /data 复核。)
 #
@@ -82,6 +82,40 @@ if [ -n "$vol" ] && [ -b "$vol" ]; then
     fi
     # 分区弄好之后再把文件系统顶满(需要 e2fsprogs 的 resize2fs)
     if ! systemd-growfs /data >/dev/null 2>&1; then
-        keel_log "data 文件系统扩容失败(resize2fs 在吗?df -h /data 看看;也可手动跑 systemd-growfs /data)"
+        # live/实验镜像里 data 分区本来就是"整盘剩下的 1 GiB",没有可扩的余地 ⇒ 这条是预期噪音。
+        # 真机上如果一直看到它,再按提示排查(见 docs/troubleshooting.md)。
+        keel_log "注意:data 文件系统没能扩容(镜像/实验环境里通常因为已经没有剩余空间)"
+        keel_log "      真机上请看 df -h /data;需要时手动跑 os-rescue --grow-data 或 systemd-growfs /data"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 6) 应急空间(reserve,决策 D23)
+#
+# 在 /data 上占住 256 MiB,等它**真的**快写满时由 keel-data-guard 交还 ——
+# 换一次"还能把 machine-id / SSH 主机密钥写下去"的机会。
+# 为什么值得:坑 #37 已经证明 /data 写满 = /etc 也写不进去(overlay 的 upper 在同一个
+# 文件系统上),而 /etc/machine-id 写不下去就等于 DHCP/IPv6/DNSSEC 一起坏掉(坑 #29)。
+#
+# 幂等:每次启动检查,存在就不动;被 guard 用掉之后,等空间恢复健康会在这里重建
+# (/data/keel/reserve-consumed 保留"曾经用过"的记录,由 os-status 呈现)。
+# 保守:小文件系统(镜像/实验环境)不创建 —— 那里本来就没什么值得保护的状态。
+# ---------------------------------------------------------------------------
+RESERVE="$KEEL_STATE_DIR/.reserve"
+if [ ! -e "$RESERVE" ]; then
+    read -r dsize davail < <(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $2, $4}')
+    case "${dsize:-}" in ''|*[!0-9]*) dsize=0 ;; esac
+    case "${davail:-}" in ''|*[!0-9]*) davail=0 ;; esac
+    if [ "$dsize" -ge $((4 * 1024 * 1024 * 1024)) ] && [ "$davail" -ge $((1024 * 1024 * 1024)) ]; then
+        if fallocate -l 256M "$RESERVE" 2>/dev/null ||
+           dd if=/dev/zero of="$RESERVE" bs=1M count=256 status=none 2>/dev/null; then
+            chmod 0600 "$RESERVE"
+            keel_log "已预留 256 MiB 应急空间(/data/keel/.reserve;写满时由 keel-data-guard 交还)"
+        else
+            rm -f "$RESERVE"
+            keel_log "注意:应急空间没能创建(可用空间不足?)"
+        fi
+    else
+        keel_log "跳过应急空间:/data 只有 $((dsize / 1048576)) MiB 或可用空间不足(小分区/实验环境,预期行为)"
     fi
 fi

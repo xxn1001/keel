@@ -72,6 +72,15 @@ if [ -e /data/overlayfs/.reset-etc-requested ]; then
     rm -rf /data/overlayfs/etc/work
     install -d -m 0755 /data/overlayfs/etc/upper /data/overlayfs/etc/work
     rm -f /data/overlayfs/.reset-etc-requested
+    # 备份只留最近一份(决策 D23)。旧备份里同样是"账号 + SSH 主机密钥 + machine-id",
+    # 留着既是隐私负担也是磁盘负担;真要找回上一份,一份就够。
+    # `ls -1dt` 按时间倒序,`tail -n +2` 跳过最新那份;xargs -r 保证没有旧备份时不报错。
+    # shellcheck disable=SC2012  # 名字都是我们自己生成的时间戳,没有怪字符
+    ls -1dt /data/overlayfs/etc.bak-* 2>/dev/null | tail -n +2 | xargs -r rm -rf
+    kept=$(ls -1dt /data/overlayfs/etc.bak-* 2>/dev/null | head -n1) || kept=""
+    if [ -n "$kept" ]; then
+        keel_log "保留的 /etc 备份:$kept(更早的已清理)"
+    fi
 fi
 
 # ---------------------------------------------------------------------------

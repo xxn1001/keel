@@ -178,7 +178,22 @@ sudo systemctl restart keel-mounts   # 只是想把挂载重做一遍
 > 旧文档/旧日志里的 `/Volume` 就是现在的 `/data`(2026-09 改名,决策 D17);
 > 分区标签就是 `data`,所以 `lsblk` 里 `PARTLABEL` 也是 `data`。
 
-### 2.4 装机时 `os-install` 报错
+### 2.5 登录不了(`keel login:` 上输什么都不对)
+
+镜像里唯一的账号是 **`admin`**,root 是**锁定**的(决策 D21)—— 所以"用 root 试一下"永远不会成功。
+
+| 现象 | 原因 | 修 |
+|---|---|---|
+| 输 `root` + 任何密码都失败 | 预期行为:root 的 `/etc/shadow` 字段是 `!`,`PermitRootLogin no`,连 mkosi 塞进 credstore 的那份 root 密码 credential 都在构建时删了 | 用 `admin` 登录;要 root shell 就 `sudo -i` |
+| `admin` 也没密码(登录时提示密码错误) | 构建时既没给 `-p` / `mkosi.rootpw`,也没放 `authorized_keys` —— `mkosi.finalize` 在构建日志里为此打过明确警告 | 只能从 U 盘 live 环境挂上目标盘处理;或者重新构建一个带凭据的产物再装 |
+| SSH:`Permission denied (publickey)` | `authorized_keys` 放的位置不对,或者放晚了(它必须**在构建前**就在仓库根目录,`mkosi.finalize` 才会把它写进 `/data` 骨架的 `home/admin/.ssh/`) | 确认仓库根目录有 `authorized_keys` 后**重新构建**;已经装好的机器可以直接把公钥写到 `/data/home/admin/.ssh/authorized_keys`(`/data` 坏了才需要救) |
+| 有 `admin`、也有密码,但 `sudo` 报 `admin is not in the sudoers file` | `/etc/sudoers.d/10-keel-admin` 丢了,或权限不对(sudo 会忽略组/其他人可写的文件) | `ls -l /etc/sudoers.d/10-keel-admin` 应为 `0440 root root`;丢了就 `os-rescue --reset-etc` 从镜像重新播种(会丢本机 `/etc` 改动,先备份) |
+| `/data` 坏掉时登录提示"could not chdir to home directory" | 预期行为:账号在镜像的只读 `/etc` 里,但 `/home/admin`(=`/data/home/admin`)没挂上 | 能登进去就先用着;按 §3 修 `/data` |
+
+线上自查(不用登录也能看):`os-status` 的「登录账号」一节会打印 admin 是否存在、
+密码字段是不是哈希、root 是否锁定、sudoers 文件在不在。
+
+### 2.6 装机时 `os-install` 报错
 
 | 现象 | 原因 | 修 |
 |---|---|---|
@@ -200,18 +215,21 @@ sudo systemctl restart keel-mounts   # 只是想把挂载重做一遍
 findmnt /data                          # 挂上了吗(由 keel-mounts 挂,见 AGENTS.md 坑 #24)
 ls /data                               # var home nix overlayfs ota keel ...
 systemctl status keel-mounts.service     # 挂 /data + bind /home + 挂 /etc overlay
-systemctl status keel-firstboot.service  # 首启五件事:骨架 / 扩容 / NVRAM / swapfile / state
+systemctl status keel-firstboot.service  # 首启六件事:骨架 / 扩容 / NVRAM / swapfile / state / 应急空间
+systemctl status keel-data-guard.timer   # /data 空间的看门人(启动 3 分钟后 + 每天一次,决策 D23)
+cat /data/keel/data-guard.state          # 它上次看到的结论:verdict / avail / reserve
 lsblk -o NAME,SIZE,TYPE,PARTLABEL,FSTYPE,LABEL   # PARTLABEL=data 的分区在不在
 du -xh -d1 /data | sort -h             # 空间去哪了
-journalctl --disk-usage                  # journal 占了多少
+journalctl --disk-usage                  # journal 占了多少(上限由 journald.conf.d/keel.conf 定)
 ```
 
 | 症状 | 处理 |
 |---|---|
 | 骨架不见了(目录缺失、`/var/log` 空) | `sudo os-rescue --init-data`(幂等重建/修复骨架,§9) |
-| `/etc` 被改坏、回滚后行为异常 | `sudo os-rescue --reset-etc`:清空 overlay upper,下次启动从镜像重新播种。**先备份**:它会丢掉 ssh 主机密钥、machine-id、账号、网络配置 —— 把要留的东西复制到 `/data/home/<user>/` 下(那不在 upper 里) |
+| `/etc` 被改坏、回滚后行为异常 | `sudo os-rescue --reset-etc`:清空 overlay upper,下次启动从镜像重新播种。**先备份**:它会丢掉 ssh 主机密钥、machine-id、账号、网络配置 —— 把要留的东西复制到 `/data/home/<user>/` 下(那不在 upper 里)。旧的可写层会被保留成**一份**备份(`/data/overlayfs/etc.bak-<时间戳>`,更早的自动清理) |
 | 装机后 `/data` 还是很小 | 正常应由首启的 `keel-firstboot` 自动扩盘(§7.2 ②);没扩成就用手动入口 `sudo os-rescue --grow-data`,再 `lsblk` 确认 |
-| `/data` 满了 | 先清 `/data/ota/`(用 `os-update gc`,§8),再清 journal(`journalctl --vacuum-size=`) |
+| `/data` 快满了 | 先看 `os-status` 的「空间看门人」:低于 2 GiB 时 `keel-data-guard` 已经自动回收过 journal 与 nix;手动版本是 `os-update gc`(清旧载荷)、`journalctl --vacuum-size=128M`、`nix-store --gc`。低于 512 MiB 时它会交还 `/data/keel/.reserve`(256 MiB 应急空间),并留下 `/data/keel/reserve-consumed` 记录 |
+| `/data` 已经写满,`/etc` 也写不进去(服务开始报 ENOSPC) | 这是坑 #37 的形状。应急顺序:① `rm -f /data/keel/.reserve`;② `journalctl --vacuum-size=32M`;③ `os-update gc` 删掉 `/data/ota` 里的旧载荷;④ `nix-store --gc`。**别删 `/data/overlayfs/etc/upper`** —— 那里面是账号、SSH 主机密钥、machine-id |
 
 ## 4. nix 相关
 

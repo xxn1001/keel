@@ -57,6 +57,13 @@ read_file() {
     printf '%s\n' "$v"
 }
 
+# 从 key=value 文件里取一个键(状态文件都是这个格式,见 lib.sh 的说明)
+kv() {
+    local v
+    v="$(sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n1)" || v=""
+    printf '%s\n' "$v"
+}
+
 hr() { printf '%s\n' "------------------------------------------------------------"; }
 
 # ---------------------------------------------------------------------------
@@ -120,6 +127,35 @@ fi
 
 schema="$(read_file /data/keel/schema-version)"
 echo "布局版本     : ${schema:-未知}(/data/keel/schema-version;当前镜像骨架是 1)"
+
+# /data 空间的看门人结论(由 keel-data-guard.timer 写;决策 D23)。
+# 为什么不在这里现算:回收动作只有定时器/启动时做,状态报告该显示"它上次看到了什么"。
+guard=/data/keel/data-guard.state
+if [ -r "$guard" ]; then
+    gv="$(kv "$guard" verdict)"
+    gavail="$(kv "$guard" avail_after)"
+    case "$gv" in
+        ok)        gtext="正常" ;;
+        small)     gtext="正常(小分区/live 环境,只看不治)" ;;
+        warn)      gtext="偏低" ;;
+        critical)  gtext="严重不足(已自动回收)" ;;
+        emergency) gtext="已耗尽(已自动回收 + 清掉 OTA 载荷)" ;;
+        *)         gtext="未知" ;;
+    esac
+    if [ -n "$gavail" ]; then
+        echo "空间看门人   : $gtext(上次检查时可用 $(awk -v b="$gavail" 'BEGIN{printf "%.0f MiB", b/1048576}'))"
+    else
+        echo "空间看门人   : $gtext"
+    fi
+    echo "               (keel-data-guard.timer 每次启动 3 分钟后 + 每天一次;日志 journalctl -u keel-data-guard)"
+else
+    echo "空间看门人   : 还没有结论(定时器没跑过?systemctl status keel-data-guard.timer)"
+fi
+case "$(kv "$guard" reserve)" in
+    present)  echo "应急空间     : 已预留 256 MiB(/data/keel/.reserve,写满时自动交还)" ;;
+    consumed) echo "应急空间     : **已被用掉过**(见 /data/keel/reserve-consumed;空间恢复后会重建)" ;;
+    *)        echo "应急空间     : 无(小分区不建,见 keel-firstboot 第 6 步)" ;;
+esac
 
 # swap:swapon --show 在没有任何 swap 时输出为空且退出 0(不是错误)
 swap_rows="$(swapon --show 2>/dev/null | tail -n +2)" || swap_rows=""
@@ -277,5 +313,30 @@ else
 fi
 swap_cfg="$(keel_conf SWAPFILE_SIZE "" 2>/dev/null)" || swap_cfg=""
 echo "swapfile 配置: ${swap_cfg:-留空 = min(内存, 8G) 且不小于 1G}"
+
+# ---------------------------------------------------------------------------
+# 9) 登录账号(决策 D21:admin 是唯一交互账号,root 锁定)
+#
+# 只读 /etc/shadow 的第二个字段来判断,不去问 PAM —— 系统半坏的时候正是最需要
+# 这一节的时候,而"能不能登录"必须能离线判断。
+# ---------------------------------------------------------------------------
+hr
+admin_sh="$(awk -F: '$1=="admin"{print $2}' /etc/shadow 2>/dev/null)" || admin_sh=""
+sudoers="/etc/sudoers.d/10-keel-admin"
+case "$admin_sh" in
+    '')   admin_pw="未知(读不到 /etc/shadow?)" ;;
+    \$*)  admin_pw="已设置(构建时 -p / mkosi.rootpw 给的初始密码)" ;;
+    *)    admin_pw="**未设置**(shadow 字段 '$admin_sh')⇒ 只能用 SSH 公钥登录" ;;
+esac
+echo "登录账号     : admin(uid $(id -u admin 2>/dev/null || echo '不存在!'))"
+echo "  admin 密码 : $admin_pw"
+echo "  sudo       : $([ -r "$sudoers" ] && echo "已配置($sudoers,需要密码)" || echo "**缺 $sudoers**")"
+echo "  root       : SSH 侧 PermitRootLogin no"
+root_sh="$(awk -F: '$1=="root"{print $2}' /etc/shadow 2>/dev/null)" || root_sh=""
+case "$root_sh" in
+    '!'*|'*'*) echo "               账号已锁定(shadow '$root_sh')⇒ 控制台也登不进去,这是预期" ;;
+    \$*)       echo "               **账号未锁定** —— 不该出现,见决策 D21 / os-rescue --reset-etc" ;;
+    *)         echo "               状态未知(shadow 字段 '$root_sh')" ;;
+esac
 
 exit 0

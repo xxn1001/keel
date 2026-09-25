@@ -1,0 +1,120 @@
+#!/bin/bash
+# /data 空间看门人(决策 D23)
+#
+# 为什么需要它:/data 写满 = **/etc 也写不进去**(overlay 的 upper 在同一个文件
+# 系统上)⇒ machine-id 固化失败 ⇒ DHCP 又坏(坑 #29 复活),SSH 主机密钥、
+# sysusers、tmpfiles 一起失败。坑 #37 已经吃过一次(swapfile 写满 /data)。
+# 与其等它发生,不如有个东西定期看一眼、并且能自己动手回收。
+#
+# 阈值用**绝对字节数**而不是百分比:在 500 GB 的盘上"剩余 2%"是 10 GB,
+# 根本不算紧张;百分比在这里会骗人。
+#
+# 设计约束:
+#   * 永远退出 0 —— 它是个巡检,不该因为"空间紧张"就让服务变红;
+#     紧张程度写进状态文件(/data/keel/data-guard.state),由 os-status 呈现。
+#   * 小文件系统(默认 < 4 GiB,典型是 live 镜像里那个 1 GiB 的 /data)只报告
+#     不动作:那里没有值得回收的东西,而且回收动作会掩盖"镜像本身太小"这件事。
+#   * 只清**可再生**的东西:journal 的旧日志、nix store 的垃圾、下载回来的 OTA 载荷。
+#     绝不碰 /home、/etc overlay 的 upper、/data/keel。
+set -uo pipefail
+
+# shellcheck source=/usr/lib/keel/lib.sh
+# shellcheck disable=SC1091
+. /usr/lib/keel/lib.sh
+
+SMALL_FS=$((4 * 1024 * 1024 * 1024))   # 小于 4 GiB 的 /data = 只看不治
+WARN=$((2 * 1024 * 1024 * 1024))       # < 2 GiB:回收 journal + nix
+CRIT=$((512 * 1024 * 1024))            # < 512 MiB:再交还应急空间
+EMERG=$((128 * 1024 * 1024))           # < 128 MiB:连 OTA 载荷也要清
+
+STATE="$KEEL_STATE_DIR/data-guard.state"
+RESERVE="$KEEL_STATE_DIR/.reserve"
+CONSUMED="$KEEL_STATE_DIR/reserve-consumed"
+
+mb() { echo "$(($1 / 1048576)) MiB"; }
+
+# df -P -B1 的第二行:Filesystem 1B-blocks Used Available Capacity Mounted
+read -r size used avail < <(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $2, $3, $4}')
+case "${size:-}" in
+    ''|*[!0-9]*) keel_log "读不到 /data 的空间信息(df 失败或 /data 没挂),跳过"; exit 0 ;;
+esac
+case "${avail:-}" in
+    ''|*[!0-9]*) keel_log "读不到 /data 的可用空间,跳过"; exit 0 ;;
+esac
+
+# 应急空间还在不在
+if [ -e "$RESERVE" ]; then reserve_state=present; else reserve_state=absent; fi
+[ -e "$CONSUMED" ] && reserve_state=consumed
+
+verdict=ok
+note=""
+
+if [ "$size" -lt "$SMALL_FS" ]; then
+    verdict=small
+    note="/data 只有 $(mb "$size")(小分区/live 环境),只报告不回收"
+elif [ "$avail" -ge "$WARN" ]; then
+    verdict=ok
+elif [ "$avail" -ge "$CRIT" ]; then
+    verdict=warn
+    note="空间偏低:回收 journal 与 nix store"
+    journalctl --vacuum-size=128M >/dev/null 2>&1 || true
+    nix-store --gc --max-freed=1G >/dev/null 2>&1 || true
+elif [ "$avail" -ge "$EMERG" ]; then
+    verdict=critical
+    note="空间严重不足:回收 journal、nix store,并交还应急空间"
+    journalctl --vacuum-size=64M >/dev/null 2>&1 || true
+    nix-store --gc --max-freed=2G >/dev/null 2>&1 || true
+    if [ -e "$RESERVE" ]; then
+        rm -f "$RESERVE" && {
+            date -u +%Y-%m-%dT%H:%M:%SZ >"$CONSUMED" 2>/dev/null || true
+            reserve_state=consumed
+            keel_log "已交还应急空间 $(basename "$RESERVE")(见 docs/architecture.md §4.6)"
+        }
+    fi
+else
+    verdict=emergency
+    note="空间耗尽:连下载回来的 OTA 载荷也要清掉"
+    journalctl --vacuum-size=32M >/dev/null 2>&1 || true
+    nix-store --gc --max-freed=4G >/dev/null 2>&1 || true
+    if [ -e "$RESERVE" ]; then
+        rm -f "$RESERVE"
+        date -u +%Y-%m-%dT%H:%M:%SZ >"$CONSUMED" 2>/dev/null || true
+        reserve_state=consumed
+    fi
+    # OTA 载荷是可再生的:只留最新的一份,其余删掉
+    if [ -d "$KEEL_OTA" ]; then
+        newest=$(ls -1dt "$KEEL_OTA"/*/ 2>/dev/null | head -n1) || newest=""
+        for d in "$KEEL_OTA"/*/; do
+            [ -d "$d" ] || continue
+            [ "$d" = "$newest" ] && continue
+            keel_log "空间耗尽:删除已下载的更新载荷 $d(可重新 fetch)"
+            rm -rf "$d"
+        done
+    fi
+fi
+
+# 回收之后重新量一次,写进状态文件给 os-status 看
+read -r _ _ avail2 < <(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $2, $3, $4}')
+[ -n "${avail2:-}" ] || avail2="$avail"
+# /data/keel 正常一定存在(骨架 + keel-firstboot),但状态报告是"系统半坏时也要能用"的
+# 东西 ⇒ 缺了就自己建,别让一个重定向失败毁掉整份报告(lib.sh 里 keel_state_set 同理)。
+install -d -m 0755 "$KEEL_STATE_DIR" 2>/dev/null || true
+{
+    echo "checked_at=$(date +%s)"
+    echo "verdict=$verdict"
+    echo "size=$size"
+    echo "used=$used"
+    echo "avail=$avail"
+    echo "avail_after=$avail2"
+    echo "reserve=$reserve_state"
+    [ -n "$note" ] && echo "note=$note"
+} >"$STATE" 2>/dev/null || true
+
+case "$verdict" in
+    ok)       keel_log "/data 空间正常:可用 $(mb "$avail2")/$(mb "$size")" ;;
+    small)    keel_log "$note;可用 $(mb "$avail2")/$(mb "$size")" ;;
+    warn)     keel_log "警告:/data 可用空间只剩 $(mb "$avail2")(回收前 $(mb "$avail"))—— $note" ;;
+    critical) keel_log "严重:/data 可用空间只剩 $(mb "$avail2")(回收前 $(mb "$avail"))—— $note" ;;
+    emergency) keel_log "紧急:/data 可用空间只剩 $(mb "$avail2")(回收前 $(mb "$avail"))—— $note;请立刻处理(docs/troubleshooting.md)" ;;
+esac
+exit 0

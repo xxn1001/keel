@@ -651,6 +651,245 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+head1 "7. 账号模型(决策 D21:admin 是唯一交互账号,root 锁定)"
+# ---------------------------------------------------------------------------
+if grep -qE '^[[:space:]]*sudo$' mkosi.conf.d/20-packages.conf; then
+    ok "包清单里有 sudo(admin 唯一的提权途径)"
+else
+    no "包清单里没有 sudo ⇒ 装完机 admin 无法提权(Debian 上 sudo 不是 Essential)"
+fi
+if grep -qE '^[[:space:]]*tzdata$' mkosi.conf.d/20-packages.conf; then
+    ok "包清单里有 tzdata(时区名字靠 /usr/share/zoneinfo 解析)"
+else
+    no "包清单里没有 tzdata ⇒ Timezone=Asia/Shanghai 会静默落回 UTC"
+fi
+
+SYSUSERS=mkosi.extra/usr/lib/sysusers.d/keel.conf
+if [ -f "$SYSUSERS" ] && grep -qE '^u[[:space:]]+admin[[:space:]]+1000' "$SYSUSERS"; then
+    ok "sysusers.d 里建了 admin(uid 1000,家目录 /home/admin)"
+else
+    no "缺少 $SYSUSERS 或里面没有 u admin 1000"
+fi
+if [ -f "$SYSUSERS" ] && grep -qE '^m[[:space:]]+admin[[:space:]]+sudo' "$SYSUSERS"; then
+    ok "admin 被加进 sudo 组(sysusers 会顺带建这个组)"
+else
+    no "sysusers 里没有 m admin sudo"
+fi
+# 用真的 systemd-sysusers 在假根上跑一遍,确认文件语法有效、结果符合预期
+if have systemd-sysusers; then
+    d=$(tmpd); mkdir -p "$d/etc" "$d/usr/lib/sysusers.d"
+    : >"$d/etc/passwd"; : >"$d/etc/group"; : >"$d/etc/shadow"; : >"$d/etc/gshadow"
+    cp "$SYSUSERS" "$d/usr/lib/sysusers.d/" 2>/dev/null || true
+    if systemd-sysusers --root="$d" >/dev/null 2>&1 &&
+       grep -qE '^admin:x:1000:1000:' "$d/etc/passwd" &&
+       grep -qE '^sudo:x:[0-9]+:admin$' "$d/etc/group"; then
+        ok "systemd-sysusers 实跑:admin(1000:1000)+ sudo 组 + 成员关系都对"
+    else
+        no "systemd-sysusers 实跑结果不对(见 $SYSUSERS)"
+        sed 's/^/      /' "$d/etc/passwd" "$d/etc/group" 2>/dev/null | head -6
+    fi
+else
+    skip "没有 systemd-sysusers,跳过实跑(只做了文本断言)"
+fi
+
+SUDOERS=mkosi.extra/etc/sudoers.d/10-keel-admin
+if [ -f "$SUDOERS" ] && grep -qE '^admin[[:space:]]+ALL=' "$SUDOERS"; then
+    if grep -qE '^[^#]*NOPASSWD' "$SUDOERS"; then
+        no "$SUDOERS 里有 NOPASSWD —— 项目所有者拍板的是「sudo 需要密码」"
+    else
+        ok "sudoers.d/10-keel-admin:admin 需要密码(明确不用 NOPASSWD)"
+    fi
+else
+    no "缺少 $SUDOERS 或里面没有 admin 的规则"
+fi
+if grep -q 'chmod 0440 "$R/etc/sudoers.d/10-keel-admin"' mkosi.postinst; then
+    ok "postinst 把 sudoers 文件设成 0440(git 存不了这个权限位)"
+else
+    no "postinst 没有把 sudoers 文件设成 0440(sudo 会因权限报错)"
+fi
+
+SSHD_DROPIN=mkosi.extra/etc/ssh/sshd_config.d/10-keel.conf
+if [ -f "$SSHD_DROPIN" ] && grep -qE '^PermitRootLogin[[:space:]]+no' "$SSHD_DROPIN"; then
+    ok "sshd drop-in:PermitRootLogin no(root 锁定 + SSH 也明确关掉)"
+else
+    no "缺少 $SSHD_DROPIN 或里面没有 PermitRootLogin no"
+fi
+if grep -q 'sshd_config.d/\*\.conf' mkosi.postinst &&
+   grep -q 'Include /etc/ssh/sshd_config.d' mkosi.postinst; then
+    ok "postinst 检查(并在缺失时补到最前面)sshd_config 的 Include 行"
+else
+    no "postinst 没有检查 sshd_config 的 Include 行 ⇒ drop-in 可能整个不生效"
+fi
+
+FIN=mkosi.finalize
+if grep -q 'SKEL/home/admin/.ssh/authorized_keys' "$FIN"; then
+    ok "authorized_keys 放进 /data 骨架的 home/admin/.ssh(不再是 root)"
+else
+    no "finalize 没把 authorized_keys 放到 admin 家目录"
+fi
+if grep -q 'SKEL/home/root/.ssh' "$FIN"; then
+    no "finalize 里还有往 root 家目录放密钥的残留"
+else
+    ok "骨架里不再给 root 放任何登录凭据"
+fi
+if grep -q 'admin" { \$2=h }' "$FIN" && grep -q 'root"  { \$2="!" }' "$FIN"; then
+    ok "finalize 把初始密码从 root 搬给 admin,并把 root 锁成 '!'"
+else
+    no "finalize 里缺少「搬密码 + 锁 root」的 awk 逻辑"
+fi
+if grep -q 'rm -f "$R/usr/lib/credstore/passwd.hashed-password.root"' "$FIN"; then
+    ok "finalize 删掉了 credstore 里的 root 密码 credential(否则 systemd-firstboot 会把 root 又解开)"
+else
+    no "finalize 没有删 credstore 里的 root 密码 credential"
+fi
+if grep -q 'id -u admin' mkosi.extra/usr/bin/os-status && grep -q '登录账号' mkosi.extra/usr/bin/os-status; then
+    ok "os-status 报告登录账号(admin 是否存在 / 有没有密码 / root 是否锁定)"
+else
+    no "os-status 没有登录账号那一节"
+fi
+
+# 假镜像树实跑 finalize:账号搬运 + 系统标识断言必须真的有效(不是只写了代码)
+FIN_R=$(tmpd); FIN_S=$(tmpd)
+mkdir -p "$FIN_R/etc" "$FIN_R/var/log/journal" "$FIN_R/usr/lib/credstore" "$FIN_R/usr/share/zoneinfo/Asia"
+printf 'root:x:0:0:root:/root:/bin/bash\nadmin:x:1000:1000:Keel Admin:/home/admin:/bin/bash\n' >"$FIN_R/etc/passwd"
+printf 'root:x:0:\nadmin:x:1000:\n' >"$FIN_R/etc/group"
+printf 'root:$6$FAKE$HASH:19000:0:99999:7:::\nadmin:!*:20721::::::\n' >"$FIN_R/etc/shadow"
+echo cred >"$FIN_R/usr/lib/credstore/passwd.hashed-password.root"
+echo keel >"$FIN_R/etc/hostname"
+echo "LANG=C.UTF-8" >"$FIN_R/etc/locale.conf"
+echo tzdata >"$FIN_R/usr/share/zoneinfo/Asia/Shanghai"
+ln -s /usr/share/zoneinfo/Asia/Shanghai "$FIN_R/etc/localtime"
+echo "ssh-ed25519 AAAAfake keel@verify" >"$FIN_S/authorized_keys"
+echo 1 >"$FIN_S/schema-version"
+if BUILDROOT="$FIN_R" SRCDIR="$FIN_S" bash "$FIN" >/dev/null 2>&1; then
+    if grep -q '^admin:\$6\$FAKE\$HASH:' "$FIN_R/etc/shadow" &&
+       grep -q '^root:!:' "$FIN_R/etc/shadow" &&
+       [ ! -e "$FIN_R/usr/lib/credstore/passwd.hashed-password.root" ] &&
+       [ -f "$FIN_R/usr/share/keel/data-skeleton/home/admin/.ssh/authorized_keys" ] &&
+       [ "$(readlink "$FIN_R/var")" = /data/var ] &&
+       [ -d "$FIN_R/nix" ] && [ ! -L "$FIN_R/nix" ]; then
+        ok "假镜像树实跑 finalize:密码搬到 admin、root 锁定、credential 删除、骨架就位、/var 是链接而 /nix 是真目录"
+    else
+        no "finalize 实跑后状态不对"
+        grep -E '^(root|admin):' "$FIN_R/etc/shadow" | sed 's/^/      /'
+        ls -l "$FIN_R/usr/share/keel/data-skeleton/home/admin/.ssh/" 2>/dev/null | sed 's/^/      /'
+    fi
+else
+    no "finalize 在假镜像树上直接失败了(账号/标识逻辑有问题)"
+fi
+
+# 反向:标识不对时必须让构建失败,而不是"退出码 0"
+FIN_R2=$(tmpd); FIN_S2=$(tmpd)
+mkdir -p "$FIN_R2/etc" "$FIN_R2/var" "$FIN_R2/usr/share/zoneinfo/Asia"
+printf 'root:x:0:0:root:/root:/bin/bash\nadmin:x:1000:1000::/home/admin:/bin/bash\n' >"$FIN_R2/etc/passwd"
+printf 'root:x:0:\nadmin:x:1000:\n' >"$FIN_R2/etc/group"
+printf 'root:!:1:0:99999:7:::\nadmin:!*:1::::::\n' >"$FIN_R2/etc/shadow"
+echo localhost >"$FIN_R2/etc/hostname"
+if BUILDROOT="$FIN_R2" SRCDIR="$FIN_S2" bash "$FIN" >/dev/null 2>&1; then
+    no "finalize 在 /etc/hostname 是 localhost 时仍然成功了 ⇒ 标识断言没生效"
+else
+    ok "finalize 在系统标识不对时会让构建失败(hostname 断言真的在跑)"
+fi
+
+# ---------------------------------------------------------------------------
+head1 "8. 系统标识与 pcrlock(决策 D22 / D20)"
+# ---------------------------------------------------------------------------
+for kv in "Hostname=keel" "Timezone=Asia/Shanghai" "Locale=C.UTF-8"; do
+    if grep -qE "^[[:space:]]*${kv}$" mkosi.conf.d/30-content.conf; then
+        ok "30-content.conf 里有 $kv"
+    else
+        no "30-content.conf 里缺少 $kv"
+    fi
+done
+if grep -q 'cmp -s "$R/etc/localtime"' "$FIN" && grep -q 'etc/locale.conf' "$FIN"; then
+    ok "finalize 回读断言 /etc/hostname、/etc/localtime、/etc/locale.conf"
+else
+    no "finalize 没有回读系统标识(那三步「退出码 0」什么也证明不了)"
+fi
+
+PRESET=mkosi.extra/usr/lib/systemd/system-preset/00-keel.preset
+pcr_disabled=$(grep -c '^disable systemd-pcrlock' "$PRESET" || true)
+if [ "$pcr_disabled" -eq 8 ]; then
+    ok "preset 里 disable 了 8 个 systemd-pcrlock 单元(7 服务 + socket)"
+else
+    no "preset 里 disable 的 systemd-pcrlock 条目是 $pcr_disabled 个(应为 8)"
+fi
+if grep -q 'ln -sfn /dev/null' mkosi.postinst && grep -q 'systemd-pcrlock@.service' mkosi.postinst; then
+    ok "postinst 把 9 个 systemd-pcrlock 单元 mask 成 /dev/null(双保险)"
+else
+    no "postinst 里缺少 systemd-pcrlock 的 mask"
+fi
+
+# ---------------------------------------------------------------------------
+head1 "9. /data 磁盘预算(决策 D23)"
+# ---------------------------------------------------------------------------
+JD=mkosi.extra/etc/systemd/journald.conf.d/keel.conf
+if [ -f "$JD" ] && grep -q '^SystemMaxUse=' "$JD" && grep -q '^SystemKeepFree=' "$JD"; then
+    ok "journald 有显式的 SystemMaxUse / SystemKeepFree(/data 写满会连带 /etc 写不进去)"
+else
+    no "缺少 $JD(或没写死上限)—— journald 默认按文件系统百分比算"
+fi
+if [ -f mkosi.extra/usr/lib/systemd/system/keel-nix-gc.service ] &&
+   [ -f mkosi.extra/usr/lib/systemd/system/keel-nix-gc.timer ]; then
+    if grep -q 'nix-collect-garbage' mkosi.extra/usr/lib/systemd/system/keel-nix-gc.service &&
+       grep -q 'max-freed' mkosi.extra/usr/lib/systemd/system/keel-nix-gc.service; then
+        ok "keel-nix-gc.service/timer:自带 nix GC(Debian 的 nix-setup-systemd 没有定时器)"
+    else
+        no "keel-nix-gc.service 里没有 nix-collect-garbage / --max-freed"
+    fi
+else
+    no "缺少 keel-nix-gc.service 或 .timer"
+fi
+DG=mkosi.extra/usr/lib/keel/data-guard
+if [ -f "$DG" ]; then
+    if [ ! -x "$DG" ]; then
+        no "$DG 没有可执行权限(systemd 会拒绝启动它)"
+    elif grep -q 'WARN=' "$DG" && grep -q 'RESERVE' "$DG" && grep -q 'keel_log' "$DG"; then
+        ok "keel-data-guard:阈值分级 + 交还应急空间 + 结论写进 /data/keel/data-guard.state"
+    else
+        no "data-guard 缺少阈值/应急空间逻辑"
+    fi
+else
+    no "缺少 $DG"
+fi
+if [ -f mkosi.extra/usr/lib/systemd/system/keel-data-guard.service ] &&
+   [ -f mkosi.extra/usr/lib/systemd/system/keel-data-guard.timer ]; then
+    ok "keel-data-guard.service/timer 存在(启动 3 分钟后 + 每天一次)"
+else
+    no "缺少 keel-data-guard.service 或 .timer"
+fi
+if grep -q 'enable keel-data-guard.timer' "$PRESET" && grep -q 'enable keel-nix-gc.timer' "$PRESET"; then
+    ok "preset 启用了两个新定时器"
+else
+    no "preset 没有启用 keel-data-guard.timer / keel-nix-gc.timer"
+fi
+if grep -q 'RESERVE=' mkosi.extra/usr/lib/keel/firstboot && grep -q 'fallocate -l 256M' mkosi.extra/usr/lib/keel/firstboot; then
+    ok "keel-firstboot 第 6 步预留 256 MiB 应急空间(小文件系统跳过)"
+else
+    no "keel-firstboot 里没有应急空间的创建逻辑"
+fi
+if grep -q 'etc.bak-\*' mkosi.extra/usr/lib/keel/mounts && grep -q 'tail -n +2' mkosi.extra/usr/lib/keel/mounts; then
+    ok "os-rescue --reset-etc 的备份只留最近一份(否则每次重置都堆一份 /etc 副本)"
+else
+    no "mounts 里没有清理旧 etc.bak-* 的逻辑"
+fi
+if grep -q 'free_bytes' mkosi.extra/usr/bin/os-update && grep -q 'os-update gc' mkosi.extra/usr/bin/os-update; then
+    ok "os-update fetch 先查 /data 空间(4 个产物约 13 GiB)"
+else
+    no "os-update fetch 没有检查 /data 可用空间"
+fi
+if grep -q '自动清理旧载荷失败' mkosi.extra/usr/bin/os-update && grep -q 'cmd_gc >/dev/null' mkosi.extra/usr/bin/os-update; then
+    ok "os-update stage 成功后自动清理旧载荷"
+else
+    no "os-update stage 之后没有自动清理旧载荷"
+fi
+if grep -q '空间看门人' mkosi.extra/usr/bin/os-status && grep -q '应急空间' mkosi.extra/usr/bin/os-status; then
+    ok "os-status 报告看门人结论与应急空间状态"
+else
+    no "os-status 没有 /data 看门人那一节"
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n\033[1m结果: %d 通过, %d 失败' "$pass" "$fail"
 [ "$skipped" -gt 0 ] && printf ', %d 跳过' "$skipped"
 printf '\033[0m\n'

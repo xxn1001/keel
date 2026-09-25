@@ -44,6 +44,98 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
+# 登录账号与 SSH(决策 D21)
+#
+# 账号本身由 mkosi.extra/usr/lib/sysusers.d/keel.conf 交给 systemd-sysusers 建
+# (它在本脚本之后、finalize 之前跑),密码与 authorized_keys 由 mkosi.finalize 处理。
+# 这里只做两件"只能在这一步做"的事:
+#   1. sudoers 文件的权限:sudo 要求它不能被组/其他人写,惯例是 0440。
+#      git 只记 100644/100755 两种模式,所以不能在仓库里存成 0440 —— 必须构建时改。
+#   2. sshd_config 的 Include:我们的 drop-in(PermitRootLogin no)只有在主配置
+#      **文件靠前**的位置有一行 `Include /etc/ssh/sshd_config.d/*.conf` 时才生效
+#      (sshd_config 是"第一条匹配生效")。Debian 13 默认配置本来就带,但这是
+#      "发行版默认值",变了不会有任何提示 ⇒ 这里检查,缺了就补到**最前面**。
+# ---------------------------------------------------------------------------
+if [ -f "$R/etc/sudoers.d/10-keel-admin" ]; then
+    chmod 0440 "$R/etc/sudoers.d/10-keel-admin"
+    chown 0:0 "$R/etc/sudoers.d/10-keel-admin" 2>/dev/null || true
+    log "sudoers.d/10-keel-admin 权限已设为 0440(admin 需要密码)"
+else
+    log "致命:mkosi.extra 里的 /etc/sudoers.d/10-keel-admin 不见了 —— admin 将无法 sudo"
+    exit 1
+fi
+
+SSHD="$R/etc/ssh/sshd_config"
+if [ -f "$SSHD" ]; then
+    if ! grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' "$SSHD"; then
+        tmp=$(mktemp)
+        {
+            echo "# keel:由 mkosi.postinst 补上(Debian 默认配置里本来就有这一行)"
+            echo "Include /etc/ssh/sshd_config.d/*.conf"
+            cat "$SSHD"
+        } >"$tmp"
+        cat "$tmp" >"$SSHD"
+        rm -f "$tmp"
+        log "sshd_config 里原本没有 sshd_config.d 的 Include,已补到文件最前面"
+    fi
+    # 回读:那一行真的在,而且我们的 drop-in 也有
+    if ! grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' "$SSHD"; then
+        log "致命:sshd_config 里的 Include 仍然缺失 ⇒ PermitRootLogin no 不会生效"
+        exit 1
+    fi
+    [ -f "$R/etc/ssh/sshd_config.d/10-keel.conf" ] || {
+        log "致命:mkosi.extra 里的 /etc/ssh/sshd_config.d/10-keel.conf 不见了"
+        exit 1
+    }
+    log "sshd:已确认 drop-in 目录被 Include,PermitRootLogin no 会生效"
+else
+    log "警告:镜像里没有 /etc/ssh/sshd_config(openssh-server 没装?)"
+fi
+
+# ---------------------------------------------------------------------------
+# mask 掉 systemd-pcrlock-*(决策 D20:v1 不做 Secure Boot / measured boot)
+#
+# 这些是 systemd 上游单元,由**发行版自己的 preset** 挂进 sysinit.target.wants
+# (构建日志里那 7 条 `Created symlink …/sysinit.target.wants/systemd-pcrlock-*`),
+# 不是我们启用的。它们预测/校验 TPM2 各 PCR 的测量值,给"把密钥封印到启动链"
+# 用 —— v1 既没有 Secure Boot 也没有 TPM 封印的密钥,没有任何东西依赖它们。
+#
+# 为什么实测里 6 个是红的(2026-09):mkosi 起的 QEMU **带 vTPM**
+# (qemu.py:TPM=auto + tools tree 里有 swtpm ⇒ -tpmdev emulator -device tpm-tis),
+# 于是单元上的 `ConditionSecurity=measured-uki` 通过、它们真的执行,
+# 又因为拿不到固件测量的 event log / PCR 值而失败(只有不需要 PCR 值的
+# lock-secureboot-authority 成功)。功能上无害,但它污染"启动后 --failed 应为空"
+# 这条检查项,而且真机上会怎样(可能成功、可能往 TPM NV 里写策略)完全未知。
+#
+# 两道保险:preset 里 disable(不生成 enable 链接)+ 这里 mask(任何激活路径都拒绝)。
+# 将来做 Secure Boot / TPM 封印时,解封是那个工作项的一部分(见 docs/roadmap.md)。
+# ---------------------------------------------------------------------------
+install -d -m 0755 "$R/etc/systemd/system"
+masked_n=0
+for u in systemd-pcrlock-file-system.service \
+         systemd-pcrlock-firmware-code.service \
+         systemd-pcrlock-firmware-config.service \
+         systemd-pcrlock-machine-id.service \
+         systemd-pcrlock-make-policy.service \
+         systemd-pcrlock-secureboot-authority.service \
+         systemd-pcrlock-secureboot-policy.service \
+         systemd-pcrlock.socket \
+         systemd-pcrlock@.service; do
+    ln -sfn /dev/null "$R/etc/systemd/system/$u"
+    # 回读:直接读链接目标,别用 ls|grep 那种会被文件名骗到的写法
+    if [ "$(readlink "$R/etc/systemd/system/$u" 2>/dev/null)" = "/dev/null" ]; then
+        masked_n=$((masked_n + 1))
+    else
+        log "致命:mask $u 失败(链接目标不是 /dev/null)"
+    fi
+done
+if [ "$masked_n" -ne 9 ]; then
+    log "致命:systemd-pcrlock 的 mask 只建成了 $masked_n 个(应为 9 个)"
+    exit 1
+fi
+log "已 mask $masked_n 个 systemd-pcrlock 单元(v1 不做 measured boot,决策 D20)"
+
+# ---------------------------------------------------------------------------
 # 把仓库文档带进镜像:/etc/motd 里指向 /usr/share/doc/keel/,
 # 系统离线时也能查到装机和更新的说明。
 # ---------------------------------------------------------------------------

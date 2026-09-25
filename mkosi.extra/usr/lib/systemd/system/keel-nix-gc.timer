@@ -1,0 +1,14 @@
+[Unit]
+Description=keel: 定期回收 nix store 里的垃圾
+Documentation=file:/usr/share/doc/keel/architecture.md
+
+[Timer]
+# 每周一次,但错开一点,免得所有机器/所有定时器都在同一秒醒来
+OnCalendar=weekly
+RandomizedDelaySec=1h
+# 关机期间错过了就开机后补一次
+Persistent=true
+AccuracySec=10min
+
+[Install]
+WantedBy=timers.target

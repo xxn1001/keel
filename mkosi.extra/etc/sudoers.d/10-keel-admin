@@ -1,0 +1,4 @@
+# keel:admin 是本机唯一的交互账号(决策 D21),sudo 需要密码 —— 刻意**不**用 NOPASSWD。
+# 显式写一条而不是只靠 Debian 默认 /etc/sudoers 里的 `%sudo`:
+# 那条规则是发行版的,哪天它变了我们不会收到任何通知。
+admin ALL=(ALL:ALL) ALL

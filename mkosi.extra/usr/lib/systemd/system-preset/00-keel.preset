@@ -11,6 +11,9 @@ enable keel-mounts.service
 enable keel-firstboot.service
 enable keel-confirm.service
 enable keel-swapfile.service
+# /data 的空间看门人与 nix GC(决策 D23):两个都是定时器,服务本身由定时器拉起
+enable keel-data-guard.timer
+enable keel-nix-gc.timer
 
 # 网络(main 用 systemd 原生栈,决策 D15;Debian 默认不启用这两个)
 enable systemd-networkd.service
@@ -24,3 +27,21 @@ enable ssh.service
 # nix(Debian 的 nix-setup-systemd 提供;哪个存在就启用哪个)
 enable nix-daemon.service
 enable nix-daemon.socket
+
+# ---------------------------------------------------------------------------
+# 明确**不启用**的:systemd-pcrlock-*(决策 D20:v1 不做 Secure Boot / measured boot)
+#
+# 这些单元由发行版自己的 preset 启用,会在 TPM 存在的机器上真的跑起来
+# (2026-09 实测:mkosi 的 QEMU 带 vTPM ⇒ 6 个单元失败、1 个成功;原因见
+#  mkosi.postinst 里那段注释)。这里显式 disable 是为了不留悬空的 enable 链接;
+# mkosi.postinst 还会把它们 mask 成 /dev/null,双保险。
+# 将来做 Secure Boot / TPM 封印时要把这段删掉(见 docs/roadmap.md)。
+# ---------------------------------------------------------------------------
+disable systemd-pcrlock-file-system.service
+disable systemd-pcrlock-firmware-code.service
+disable systemd-pcrlock-firmware-config.service
+disable systemd-pcrlock-machine-id.service
+disable systemd-pcrlock-make-policy.service
+disable systemd-pcrlock-secureboot-authority.service
+disable systemd-pcrlock-secureboot-policy.service
+disable systemd-pcrlock.socket

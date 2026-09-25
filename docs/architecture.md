@@ -169,6 +169,39 @@ workdir  = /data/overlayfs/etc/work
      → systemd-repart 生成最终镜像(此时骨架才被写进 data 分区)
 ```
 
+### 4.5 账号与登录(决策 D21)
+
+| 项 | 值 | 在哪落地 |
+|---|---|---|
+| 唯一交互账号 | `admin`(uid 1000、组 `sudo`、家目录 `/home/admin` = `/data/home/admin`、shell `bash`) | `mkosi.extra/usr/lib/sysusers.d/keel.conf` → 构建时 `systemd-sysusers` |
+| 初始密码 | 构建时的 `-p <密码>` / 仓库根目录 `mkosi.rootpw` | `mkosi.finalize` 把 mkosi 写在 **root** 名下的哈希搬给 admin |
+| SSH 公钥 | 仓库根目录的 `authorized_keys` → `/data` 骨架的 `home/admin/.ssh/` | `mkosi.finalize`(写进骨架,首启 `cp -a -n` 落到 `/data`) |
+| `sudo` | 需要密码,规则在 `/etc/sudoers.d/10-keel-admin`(0440) | `mkosi.extra` + `mkosi.postinst` 设权限 |
+| root | **完全锁定**:`/etc/shadow` 是 `!`、`PermitRootLogin no`、credstore 里的 root 密码 credential 被删 | `mkosi.finalize` / `mkosi.extra/etc/ssh/sshd_config.d/` |
+
+为什么锁掉 root 也不会把自己关在门外:账号与密码哈希都在**镜像的只读 `/etc`**(lower)里,
+`/data` 坏掉时 `/home` 是空的、overlay 也没挂,但控制台依旧能以 admin 登录(只是没有家目录)。
+代价是系统级后路只剩救援 U 盘(§7.1 B)。
+
+### 4.6 `/data` 的磁盘预算与应急空间(决策 D23)
+
+`/data` 写满 = **`/etc` 也写不进去**(overlay 的 upper 在同一个文件系统上)⇒ machine-id 固化失败
+⇒ DHCP/IPv6/DNSSEC 一起坏(`AGENTS.md` 坑 #29 复活)。所以每个消费者都有显式预算:
+
+| 消费者 | 预算 | 谁执行 |
+|---|---|---|
+| journald | `SystemMaxUse=256M`、`SystemKeepFree=2G`、`MaxRetentionSec=1month` | `/etc/systemd/journald.conf.d/keel.conf` |
+| nix store | 每周清 30 天前的 generation + `--max-freed=2G` | `keel-nix-gc.timer`(Debian 的 `nix-setup-systemd` **没有** GC 定时器) |
+| OTA 载荷 | 保留最近 2 个版本 + pending;`fetch` 前先查空间 | `os-update`(`stage` 成功后自动 `gc`) |
+| `/etc` 备份 | `os-rescue --reset-etc` 的 `etc.bak-*` 只留最近一份 | `keel-mounts` |
+| 应急空间 | 宽裕时预留 256 MiB 到 `/data/keel/.reserve`,临界时交还 | `keel-firstboot` 第 6 步创建,`keel-data-guard` 交还 |
+
+看门人 `keel-data-guard.timer`(启动 3 分钟后 + 每天一次)把结论写进
+`/data/keel/data-guard.state`,`os-status` 显示;阈值**按绝对字节数**分三级:
+2 GiB(回收 journal + nix)、512 MiB(交还应急空间)、128 MiB(连 OTA 载荷只留最新一份)。
+小于 4 GiB 的 `/data`(live 镜像)只看不治。它只清**可再生**的数据 ——
+`/home`、`/etc` overlay 的 upper、`/data/keel` 一律不碰。
+
 ---
 
 ## 5. 引导链
@@ -303,7 +336,12 @@ U 盘本身也是一套完整系统,顺便当救援盘。
    `systemd-gpt-auto-generator` 看的 GPT 标志位(我们不走那条路,见 §13.1);
 3. `bootctl install` 建立本机 NVRAM 启动项(已有则跳过);
 4. 首启创建并启用 swapfile(`/data/keel/swapfile`);
-5. 记录 `/data/keel/state` 与 `schema-version`。
+5. 记录 `/data/keel/state` 与 `schema-version`;
+6. 空间宽裕时预留 256 MiB 应急空间(`/data/keel/.reserve`,§4.6);空间紧张时跳过。
+
+主机名 / 时区 / locale(`keel` / `Asia/Shanghai` / `C.UTF-8`)不在这里设 ——
+它们是**构建期**由 mkosi 的 `Hostname=`/`Timezone=`/`Locale=` 经 `systemd-firstboot` 写进
+镜像的 `/etc`(lower),`mkosi.finalize` 会回读断言(决策 D22)。
 
 ### 7.3 装完之后的预期
 
@@ -358,9 +396,14 @@ os-update gc               # 清理旧载荷(保留最近 2 个版本 + 当前)
 | 单元 | 作用 | 关键排序 |
 |---|---|---|
 | `keel-mounts.service` | 挂 `/data` 与 `/boot`(ESP);bind `/home` `/nix`;挂 `/etc` overlay;固化 machine-id;`systemctl daemon-reload` | `DefaultDependencies=no`、`After=systemd-remount-fs.service`、`Before=systemd-random-seed.service sysinit.target systemd-sysusers.service systemd-tmpfiles-setup.service systemd-machine-id-commit.service`(**刻意没有** `RequiresMountsFor=`,见坑 #24) |
-| `keel-firstboot.service` | §7.2 的五件事 | `After=keel-mounts.service`、`Before=multi-user.target` |
+| `keel-firstboot.service` | §7.2 的六件事 | `After=keel-mounts.service`、`Before=multi-user.target` |
 | `keel-swapfile.service` | 创建/启用 swapfile | `After=keel-mounts.service` |
 | `keel-confirm.service` | 启动成功后确认/回滚更新,写 state | `After=boot-complete.target systemd-bless-boot.service`、`WantedBy=boot-complete.target` |
+| `keel-data-guard.service` + `.timer` | §4.6 的看门人:查 `/data` 空间、必要时回收可再生数据 | 定时器 `OnBootSec=3min` + `OnUnitActiveSec=1d`;服务 `ConditionPathIsMountPoint=/data` |
+| `keel-nix-gc.service` + `.timer` | 每周 `nix-collect-garbage` + `nix-store --gc --max-freed=2G` | `OnCalendar=weekly`、`Persistent=true` |
+
+辅助脚本放 `/usr/lib/keel/`,不要散在 `/usr/bin`。被 mask 掉的 `systemd-pcrlock*`
+(决策 D20)不在上表里 —— 它们不是我们的单元,只是被我们关掉。
 
 辅助脚本放 `/usr/lib/keel/`,不要散在 `/usr/bin`。
 
@@ -384,6 +427,8 @@ Packages=
     iproute2 iputils-ping ca-certificates curl
     less nano
     openssh-server
+    sudo                              # admin 唯一的提权途径(决策 D21;Debian 上不是 Essential)
+    tzdata                            # Timezone=Asia/Shanghai 靠它解析(决策 D22;少了会静默回落 UTC)
     nix-bin nix-setup-systemd
     firmware-misc-nonfree             # 有线网卡/存储控制器固件
 RemovePackages=
@@ -405,19 +450,23 @@ RemovePackages=
 ```
 keel/
 ├── AGENTS.md  README.md  .gitignore  schema-version
-├── docs/{architecture,decisions,install,update,troubleshooting}.md
+├── docs/{architecture,decisions,install,update,troubleshooting,roadmap}.md
 ├── mkosi.conf                      mkosi.conf.d/*.conf
 ├── mkosi.initrd.conf               ← 只影响默认 initrd(清空脚本类设置,见坑 #1)
 ├── mkosi.profiles/{install,slot-a,slot-b}.conf   产物形态
-├── mkosi.profiles/test.conf       可叠加:仅虚拟机测试用(root 自动登录)
+├── mkosi.profiles/test.conf       可叠加:仅虚拟机测试用(keel-selftest 把现场打到控制台)
 ├── repart/install/                   ← 安装镜像布局(esp + root-a + root-b + data)
 ├── repart/slot-{a,b}/        ← 载荷布局(esp + 目标槽 root)
 ├── mkosi.extra/                    ← 进镜像的所有文件:
 │   ├── usr/bin/os-{status,update,rescue,install}  用户命令
-│   ├── usr/lib/keel/{lib.sh,mounts,firstboot,confirm,swapfile}
+│   ├── usr/lib/keel/{lib.sh,mounts,firstboot,confirm,swapfile,data-guard}
 │   ├── usr/lib/keel/repart.d/40-data-grow.conf  首启扩容定义
-│   ├── usr/lib/systemd/system/keel-*.service      四个单元
+│   ├── usr/lib/systemd/system/keel-*.{service,timer}  六个单元 + 两个定时器
 │   ├── usr/lib/systemd/system-preset/00-keel.preset
+│   ├── usr/lib/sysusers.d/keel.conf              ← admin 账号(决策 D21)
+│   ├── etc/sudoers.d/10-keel-admin               ← sudo 规则(需要密码)
+│   ├── etc/ssh/sshd_config.d/10-keel.conf        ← PermitRootLogin no
+│   ├── etc/journald.conf.d/keel.conf             ← 日志的磁盘预算(决策 D23)
 │   ├── etc/systemd/network/20-wired.network
 │   └── etc/motd
 ├── mkosi.postinst                  mkosi.finalize
