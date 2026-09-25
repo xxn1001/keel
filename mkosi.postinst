@@ -109,6 +109,12 @@ fi
 #
 # 两道保险:preset 里 disable(不生成 enable 链接)+ 这里 mask(任何激活路径都拒绝)。
 # 将来做 Secure Boot / TPM 封印时,解封是那个工作项的一部分(见 docs/roadmap.md)。
+#
+# ⚠ **不要**把 `systemd-pcrlock@.service`(模板)也 mask:第一次这么做时构建日志里出现
+#   `Failed to preset all unit: Unit /buildroot/etc/systemd/system/systemd-pcrlock@.service is masked`
+#   —— `systemctl preset-all` 对"被 mask 的模板单元"会报一条失败(构建还能继续,但日志很脏)。
+#   模板本身没有 [Install],不会被 preset 启用;真正能拉起它的 `systemd-pcrlock.socket`
+#   已经在 mask 列表里 ⇒ 少 mask 这一个不会漏。
 # ---------------------------------------------------------------------------
 install -d -m 0755 "$R/etc/systemd/system"
 masked_n=0
@@ -119,8 +125,7 @@ for u in systemd-pcrlock-file-system.service \
          systemd-pcrlock-make-policy.service \
          systemd-pcrlock-secureboot-authority.service \
          systemd-pcrlock-secureboot-policy.service \
-         systemd-pcrlock.socket \
-         systemd-pcrlock@.service; do
+         systemd-pcrlock.socket; do
     ln -sfn /dev/null "$R/etc/systemd/system/$u"
     # 回读:直接读链接目标,别用 ls|grep 那种会被文件名骗到的写法
     if [ "$(readlink "$R/etc/systemd/system/$u" 2>/dev/null)" = "/dev/null" ]; then
@@ -129,8 +134,8 @@ for u in systemd-pcrlock-file-system.service \
         log "致命:mask $u 失败(链接目标不是 /dev/null)"
     fi
 done
-if [ "$masked_n" -ne 9 ]; then
-    log "致命:systemd-pcrlock 的 mask 只建成了 $masked_n 个(应为 9 个)"
+if [ "$masked_n" -ne 8 ]; then
+    log "致命:systemd-pcrlock 的 mask 只建成了 $masked_n 个(应为 8 个)"
     exit 1
 fi
 log "已 mask $masked_n 个 systemd-pcrlock 单元(v1 不做 measured boot,决策 D20)"

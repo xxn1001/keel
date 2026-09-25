@@ -814,8 +814,13 @@ if [ "$pcr_disabled" -eq 8 ]; then
 else
     no "preset 里 disable 的 systemd-pcrlock 条目是 $pcr_disabled 个(应为 8)"
 fi
-if grep -q 'ln -sfn /dev/null' mkosi.postinst && grep -q 'systemd-pcrlock@.service' mkosi.postinst; then
-    ok "postinst 把 9 个 systemd-pcrlock 单元 mask 成 /dev/null(双保险)"
+if grep -q 'ln -sfn /dev/null' mkosi.postinst && grep -q 'systemd-pcrlock.socket' mkosi.postinst; then
+    # 只看 mask 循环里的条目行(注释里提到 @.service 不算)
+    if grep -qE '^[[:space:]]+systemd-pcrlock@\.service[[:space:]]*\\?[[:space:]]*$' mkosi.postinst; then
+        no "postinst 把 systemd-pcrlock@.service(模板)也 mask 了 —— preset-all 会为此报一条失败"
+    else
+        ok "postinst 把 8 个 systemd-pcrlock 单元 mask 成 /dev/null(7 服务 + socket;刻意不碰模板)"
+    fi
 else
     no "postinst 里缺少 systemd-pcrlock 的 mask"
 fi

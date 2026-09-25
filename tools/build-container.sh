@@ -25,7 +25,7 @@
 # ── 用法(在仓库根目录)───────────────────────────────────────────
 #   sudo tools/build-container.sh                  # 只构建(verify + build.sh)
 #   sudo tools/build-container.sh vm               # 构建并在容器里起 QEMU(有 /dev/kvm 就自动传进去)
-#   sudo tools/build-container.sh -p <密码> vm     # 同上,并给镜像里的 root 设这个初始密码
+#   sudo tools/build-container.sh -p <密码> vm     # 同上,并给镜像里的 admin 设这个初始密码
 #   sudo tools/build-container.sh shell            # 进容器手敲 mkosi,便于排错
 #   sudo tools/build-container.sh vm -- --console=gui
 #                                                  # -- 之后的参数原样交给 mkosi
@@ -35,7 +35,8 @@
 #                                                  #  mkosi 的 `build` 不接受动词后的参数、会直接报错;
 #                                                  #  要加 QEMU 参数就用 `shell` 模式手敲两条 mkosi 命令
 #
-#   -p / --password <密码>  给 root 设**初始密码**(mkosi 的 `--root-password=`)。
+#   -p / --password <密码>  给 **admin** 设初始密码(mkosi 的 `--root-password=`;
+#     它在 finalize 里被搬给 admin,root 则被锁定 —— 决策 D21)。
 #     不加就是没有密码 —— 正式产物默认就是"root 锁定 + 只认 SSH 公钥"(见 docs/install.md §2.5)。
 #     密码只从命令行来,不落盘、不进 git:这是个公开仓库,写在 profile 里的密码等于公开的。
 #     三种模式都收这个参数:`build` 时经 `KEEL_ROOT_PASSWORD` 转给 tools/build.sh,
@@ -71,7 +72,7 @@ usage() {
   vm               构建并在容器里起 QEMU(有 /dev/kvm 就自动传进去)
   shell            进容器手敲 mkosi,便于排错
 
-  -p, --password <密码>   给镜像里的 root 设初始密码;不加则 root 无密码(锁定的)
+  -p, --password <密码>   给镜像里的 admin 设初始密码;不加则 admin 与 root 都没有密码
 EOF
 }
 
@@ -122,7 +123,7 @@ if [ -n "$PASSWORD" ]; then
     ROOTPW_Q=$(printf '%q' "--root-password=$PASSWORD")
     log "root 初始密码:已设置(只存在于本次构建,不回显、不落盘)"
 else
-    log "root 初始密码:未设置 —— 镜像里 root 是锁的(要登录请加 -p <密码>,或放 authorized_keys 用 SSH 公钥)"
+    log "初始密码:未设置 —— admin 与 root 都没有密码(要登录请加 -p <密码>,或放 authorized_keys 用 SSH 公钥)"
 fi
 
 # EXTRA_MKOSI 是用户从 `--` 之后传给 mkosi 的额外参数,同样逐个转义后再拼进 PAYLOAD

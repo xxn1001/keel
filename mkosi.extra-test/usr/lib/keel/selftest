@@ -57,10 +57,15 @@ echo "  /etc/systemd/system 下的 pcrlock mask 链接数 = $(ls /etc/systemd/sy
 echo "--- /data 预算与看门人(决策 D23)"
 df -h /data 2>&1 | sed 's/^/  /'
 systemctl list-timers 'keel-*' --no-pager 2>/dev/null | sed 's/^/  /'
+# 定时器要 3 分钟后才第一次跑 ⇒ 这里**手动拉一次**,让"看门人真的能跑完并写出结论"有确定证据
+systemctl start keel-data-guard.service 2>&1 | sed 's/^/  /'
+echo "  data-guard.service 结果: $(systemctl show -p Result --value keel-data-guard.service 2>&1)"
 echo "  data-guard.state:"
 cat /data/keel/data-guard.state 2>&1 | sed 's/^/    /'
 ls -l /data/keel/.reserve /data/keel/reserve-consumed 2>&1 | sed 's/^/  /'
 journalctl -b -u keel-data-guard --no-pager 2>/dev/null | tail -n5 | sed 's/^/  /'
+echo "--- nix GC 定时器要用的二进制在不在(不在的话 keel-nix-gc.service 会失败)"
+ls -l /usr/bin/nix-collect-garbage /usr/bin/nix-store 2>&1 | sed 's/^/  /'
 echo "  os-status 里那几行:"
 os-status 2>/dev/null \
     | grep -E "登录账号|admin 密码|sudo|root  |空间看门人|应急空间|布局版本" | head -n10 | sed 's/^/  /'

@@ -1,7 +1,12 @@
 # keel 更新与回滚
 
-> **本文描述的是设计目标行为。** mkosi 配置与 `mkosi.extra/usr/bin/os-*` 尚未实现,实现完成前以
-> [`architecture.md`](architecture.md) 和实际脚本为准。标"待验证"的点见 `architecture.md` §13。
+> **状态(2026-09)**:`os-update` 的 `check` / `fetch` / `stage` / `switch` / `rollback` / `gc`
+> 六个子命令都已实现(见 `mkosi.extra/usr/bin/os-update`),但**完整的 OTA 闭环
+> (fetch → stage → 重启 → 槽确认 → 回滚)还没有在任何环境里跑过一次** —— 这是 v1 之前
+> 必须补的那一课(见 [`roadmap.md`](roadmap.md))。本文其余部分写的是**目标行为**:
+> 实现与它不一致的地方以实际脚本为准,跑通之后会把实测结果回写到本文档与 `architecture.md` §13。
+> 已知未做的两处:v1 **不验签**(`manifest.sig` 与 `/usr/share/keel/update-key.pub` 的接口留着,
+> 见 §6)、**没有自动更新定时器**(§8)。
 
 ## 1. 更新模型(一段话)
 
