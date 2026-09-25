@@ -1,5 +1,5 @@
 #!/bin/bash
-# keel OTA 演练 v1(test profile 专用):自驱动状态机,跨重启
+# keel OTA 演练(test profile 专用):自驱动状态机,跨重启
 #
 # ── 为什么是"自驱动状态机" ──────────────────────────────────────────
 # 验证是在容器里跑 `mkosi vm`,而容器**连不进 guest**(mkosi 的 VSock ssh 在容器里是坏的,
@@ -7,21 +7,18 @@
 # 把每一步的证据喊到控制台 —— 这是唯一能自动化的路径。
 #
 # ── 状态机(状态文件在 /data 上,重启不丢)────────────────────────────
-#   p0  配好更新源 → os-update check/fetch/stage → 重启(进新槽)
+#   p0  好载荷源 → check/fetch/stage → 重启(进新槽)
 #   p1  已在新槽:记录"更新成功"的证据 → os-update rollback → 重启(回旧槽)
-#   p2  已回到旧槽:记录证据 → done
+#   p2  已回旧槽:换成**坏载荷**源 → check/fetch/stage → 重启
+#      (坏载荷的 slot-<目标> 根镜像里 PID1 与 init 兜底都被删掉 ⇒ 内核 panic
+#       ⇒ cmdline 里的 panic=-1 让它立即重启,决策 D24)
+#   p3  应该**自动**回到旧槽:one-shot 已被消费、持久默认是旧槽;记录
+#      last_result=failed 与 keel-<目标>*.failed → poweroff(宿主不用 timeout 杀 VM)
 #
-# 触发条件:更新源可达(宿主在 10.0.2.2:8000 起了 HTTP 服务,见 tools/build-container.sh 的
-# drill 模式)。不可达就**跳过并退出 0** —— 普通 VM 自检跑起来不该多一个红色单元。
-#
-# 期望结果(v1 要验证的完整链路):
-#   * fetch 把 4 个产物下到 /data/ota/<新版本>/ 并逐个校验 sha256;
-#   * stage 把新根写进**另一个槽**、把 UKI 写成 keel-<槽>+3.efi、设 preferred、写 pending;
-#   * 重启后 systemd-boot 按计数启动新槽,systemd-bless-boot 把它改名成正式名字(keel-b.efi),
-#     keel-confirm 在 boot-complete 后记 last_result=success 并清 pending;
-#   * os-update rollback 把 preferred 指回旧槽(并把 last_result 记成 failed —— 那是
-#     "用户主动回滚"的语义:认为当前这版不行);
-#   * 再重启回到旧槽,版本回到引导镜像那个版本。
+# 要验证的完整链路:
+#   fetch 校验 sha256 → stage 写非活动槽 + 计数条目 + 候选 one-shot →
+#   成功:bless 改名成正式条目、keel-confirm 记 success、rollback 能切回去 →
+#   失败:那次启动 panic 之后**自动**回到旧槽、keel-confirm 记 failed、坏 UKI 归入 .failed
 set -uo pipefail
 # shellcheck source=/usr/lib/keel/lib.sh
 # shellcheck disable=SC1091
@@ -29,12 +26,12 @@ set -uo pipefail
 
 STATE=/data/keel/ota-drill.state
 DRILL_LOG=/data/keel/ota-drill.log
-SRC="${KEEL_DRILL_SRC:-http://10.0.2.2:8000/good}"
+SRC_GOOD="${KEEL_DRILL_SRC:-http://10.0.2.2:8000/good}"
+SRC_BAD="${KEEL_DRILL_SRC_BAD:-http://10.0.2.2:8000/bad}"
 
 step="$(cat "$STATE" 2>/dev/null || true)"
 [ -n "$step" ] || step=p0
 
-# 控制台 + journal 双写(unit 里配了 journal+console);再在 /data 上留一份完整记录
 mkdir -p "$(dirname "$DRILL_LOG")" 2>/dev/null || true
 exec > >(tee -a "$DRILL_LOG") 2>&1
 
@@ -53,6 +50,24 @@ set_source() {
     fi
 }
 
+wait_source() {
+    local url=$1 i
+    for _ in $(seq 1 40); do
+        if curl -fsS --max-time 5 -o /dev/null "$url/manifest" 2>/dev/null; then
+            return 0
+        fi
+        sleep 3
+    done
+    return 1
+}
+
+advance() {
+    printf '%s\n' "$1" >"$STATE"
+    sync
+    sleep 3
+    systemctl reboot
+}
+
 snapshot() {
     log "========== 快照:$1 =========="
     log "当前槽=$(keel_current_slot 2>/dev/null) 版本=$(keel_version 2>/dev/null) 内核=$(uname -r)"
@@ -65,30 +80,22 @@ snapshot() {
     bootctl list --no-pager 2>&1 | sed 's/^/  /'
     log "--- /data/keel/state ---"
     cat "$KEEL_STATE" 2>&1 | sed 's/^/  /'
-    log "--- keel-confirm 本次启动的日志(它是"读到 pending 才动"的那个单元)---"
+    log "--- keel-confirm 本次启动的日志(它是读到 pending 才动的那个单元)---"
     journalctl -b -u keel-confirm --no-pager 2>&1 | tail -n10 | sed 's/^/  /'
-    log "--- systemd-bless-boot(计数启动时它才存在)---"
-    systemctl is-enabled systemd-bless-boot.service 2>&1 | sed 's/^/  /'
+    log "--- 上一次启动的内核日志里有没有 panic 的痕迹(panic=-1 立即重启,现场只在这里)---"
+    journalctl -b -1 -k --no-pager 2>&1 |
+        grep -iE "panic|Attempted to kill init|No working init" | tail -n5 | sed 's/^/  /' || true
 }
 
 case "$step" in
 p0)
-    log "阶段 p0:等更新源 → check → fetch → stage → 重启"
-    reachable=0
-    for _ in $(seq 1 40); do
-        if curl -fsS --max-time 5 -o /dev/null "$SRC/manifest" 2>/dev/null; then
-            reachable=1
-            break
-        fi
-        sleep 3
-    done
-    if [ "$reachable" != 1 ]; then
-        log "更新源 $SRC 不可达 ⇒ 跳过本次 OTA 演练(宿主没起 HTTP 服务时这是预期行为)"
+    log "阶段 p0:好载荷 → check → fetch → stage → 重启(进新槽)"
+    if ! wait_source "$SRC_GOOD"; then
+        log "更新源 $SRC_GOOD 不可达 ⇒ 跳过本次 OTA 演练(宿主没起 HTTP 服务时这是预期行为)"
         exit 0
     fi
-    log "更新源可达:$SRC"
-    log "当前版本(引导镜像):$(keel_version)  —— 载荷版本应该比它新"
-    set_source "$SRC"
+    log "更新源可达:$SRC_GOOD;当前版本(引导镜像)=$(keel_version) —— 载荷版本应该比它新"
+    set_source "$SRC_GOOD"
     snapshot "更新前"
     log "========== os-update check =========="
     os-update check 2>&1 | sed 's/^/  /'
@@ -97,14 +104,11 @@ p0)
     log "========== os-update stage =========="
     os-update stage 2>&1 | sed 's/^/  /'
     snapshot "stage 之后(重启前)"
-    printf 'p1\n' >"$STATE"
-    sync
     log "3 秒后重启,进入新槽……"
-    sleep 3
-    systemctl reboot
+    advance p1
     ;;
 p1)
-    log "阶段 p1:应该跑在**新槽**上"
+    log "阶段 p1:应该跑在**新槽**上(更新成功判定)"
     snapshot "更新后第一次启动"
     if [ "$(keel_current_slot 2>/dev/null)" = b ] &&
        [ "$(keel_state_get last_result 2>/dev/null)" = success ]; then
@@ -115,17 +119,46 @@ p1)
     log "========== os-update rollback(手动回滚到旧槽)=========="
     os-update rollback 2>&1 | sed 's/^/  /'
     snapshot "rollback 之后(重启前)"
-    printf 'p2\n' >"$STATE"
-    sync
     log "3 秒后重启,回到旧槽……"
-    sleep 3
-    systemctl reboot
+    advance p2
     ;;
 p2)
-    log "阶段 p2:应该已经**回到旧槽**"
+    log "阶段 p2:应该已经回到旧槽;接着要试**坏载荷**(验证自动回滚)"
     snapshot "回滚之后第一次启动"
-    log "判定:当前槽=$(keel_current_slot 2>/dev/null),版本=$(keel_version 2>/dev/null),last_result=$(keel_state_get last_result 2>/dev/null)"
-    log "版本应回到引导镜像那个版本(比载荷旧)⇒ 说明 A→B→A 的槽切换真的走通了"
+    if [ "$(keel_current_slot 2>/dev/null)" = a ]; then
+        log "判定:回滚生效 —— 当前槽 a、版本 $(keel_version)"
+    else
+        log "判定:**与预期不符**(本该在槽 a)—— 对照快照"
+    fi
+    if ! wait_source "$SRC_BAD"; then
+        log "坏载荷源 $SRC_BAD 不可达 ⇒ 演练到此结束(破坏性部分跳过)"
+        printf 'done\n' >"$STATE"
+        sleep 3
+        systemctl poweroff
+        exit 0
+    fi
+    log "坏载荷源可达:$SRC_BAD"
+    set_source "$SRC_BAD"
+    log "========== 坏载荷:check / fetch / stage =========="
+    os-update check 2>&1 | sed 's/^/  /'
+    os-update fetch 2>&1 | sed 's/^/  /'
+    os-update stage 2>&1 | sed 's/^/  /'
+    snapshot "坏载荷 stage 之后(重启前)"
+    log "3 秒后重启 —— 这次那个槽**起不来**(内核 panic),panic=-1 会立即重启,然后回到本槽"
+    advance p3
+    ;;
+p3)
+    log "阶段 p3:坏载荷启动失败之后,应该**自动**回到旧槽"
+    snapshot "坏载荷失败后自动回来的这一次启动"
+    slot_now="$(keel_current_slot 2>/dev/null)"
+    result="$(keel_state_get last_result 2>/dev/null)"
+    bad_count=$(find "${KEEL_UKI_DIR:-/nonexistent}" -maxdepth 1 -name '*.failed' 2>/dev/null | wc -l)
+    log "判定要素:当前槽=$slot_now(应为 a)、last_result=$result(应为 failed)、ESP 上 .failed 条目数=$bad_count(应 ≥1)"
+    if [ "$slot_now" = a ] && [ "$result" = failed ] && [ "$bad_count" -ge 1 ]; then
+        log "判定:**自动回滚成立** —— 坏槽起不来之后机器自己回到了旧槽,并把坏 UKI 归入 .failed"
+    else
+        log "判定:**与预期不符** —— 对照上面的快照;尤其看 keel-confirm 的日志与 ESP 条目名"
+    fi
     printf 'done\n' >"$STATE"
     log "演练结束 —— 全部证据在上面;完整记录也在 $DRILL_LOG"
     log "3 秒后 poweroff(让宿主的 mkosi vm 自己退出,不用外部 timeout 杀)"

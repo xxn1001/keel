@@ -751,6 +751,20 @@ else
     no "keel-confirm 缺少条目名兜底(坑 #44)"
 fi
 
+# 自动回滚的前提:panic 会自动重启(决策 D24 / 坑 #46)
+if grep -qE '^[[:space:]]*panic=-1$' mkosi.conf.d/30-content.conf; then
+    ok "cmdline 里有 panic=-1(内核 panic ⇒ 立即重启 ⇒ 候选槽那次失败之后能自动回退)"
+else
+    no "cmdline 里没有 panic=-1 ⇒ 新槽 panic 时机器会停在黑屏,自动回滚不会发生(坑 #46)"
+fi
+if grep -q 'debugfs' tools/ota-drill-container.sh &&
+   grep -q 'slot-\$BAD_SLOT.root.raw' tools/ota-drill-container.sh &&
+   grep -q '回读确认真的删掉了' tools/ota-drill-container.sh; then
+    ok "演练会做一个起不来的坏载荷(debugfs 删 PID1 + 回读确认 + 重算 sha256)"
+else
+    no "drill 模式缺少坏载荷的准备(破坏性回滚验不了)"
+fi
+
 head1 "7. 账号模型(决策 D21:admin 是唯一交互账号,root 锁定)"
 # ---------------------------------------------------------------------------
 if grep -qE '^[[:space:]]*sudo$' mkosi.conf.d/20-packages.conf; then

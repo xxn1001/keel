@@ -27,10 +27,10 @@ ROOTPW_ARGS=()
 
 step() { printf '\n== %s ==\n' "$*"; }
 
-step "1/6 静态校验"
+step "1/7 静态校验"
 tools/verify.sh
 
-step "2/6 构建新版本载荷(tools/build.sh)"
+step "2/7 构建新版本载荷(tools/build.sh)"
 # KEEL_EXTRA_PROFILES=test:**新槽里也必须有没有自检/状态机**,否则重启到新槽之后
 # 状态机就断了(第一次演练就栽在这里:新槽是生产载荷,里面没有 keel-ota-drill,
 # 于是 p1/p2 永远不会跑,VM 就停在 login 提示符上)。
@@ -39,15 +39,15 @@ DRILL_PAYLOAD=$(ls -1d dist/keel-* 2>/dev/null | sort -V | tail -n1) || DRILL_PA
 [ -n "$DRILL_PAYLOAD" ] || { echo "错误:dist/ 下没有载荷目录" >&2; exit 1; }
 echo "   载荷目录:$DRILL_PAYLOAD(版本 $(sed -n 's/^version=//p' "$DRILL_PAYLOAD/manifest" | head -n1))"
 
-step "3/6 构建引导镜像(版本 $DRILL_BOOT_VERSION,必须旧于载荷)"
+step "3/7 构建引导镜像(版本 $DRILL_BOOT_VERSION,必须旧于载荷)"
 mkosi --profile install --profile test --image-version="$DRILL_BOOT_VERSION" \
       "${ROOTPW_ARGS[@]+"${ROOTPW_ARGS[@]}"}" --force build
 
-step "4/6 把安装镜像放大到 40G(首启的 repart + resize2fs 会把 data 扩到整盘)"
+step "4/7 把安装镜像放大到 40G(首启的 repart + resize2fs 会把 data 扩到整盘)"
 truncate -s 40G mkosi.output/keel.raw
 ls -l mkosi.output/keel.raw | awk '{ print "   keel.raw = " $5 " 字节" }'
 
-step "5/6 起本地 HTTP 源(guest 会访问 http://10.0.2.2:$DRILL_PORT/good)"
+step "5/7 起本地 HTTP 源(guest 会访问 http://10.0.2.2:$DRILL_PORT/good)"
 rm -rf /tmp/drill-serve
 mkdir -p /tmp/drill-serve
 ln -sfn "/work/$DRILL_PAYLOAD" /tmp/drill-serve/good
@@ -67,7 +67,52 @@ except Exception as e:  # noqa: BLE001
     sys.exit(1)
 PY
 
-step "6/6 起 VM(演练状态机自己跑;p2 结束时会 poweroff,所以这次 VM 会自己退出)"
+step "6/7 准备**坏载荷**(让某个槽真的起不来,验自动回滚)"
+# 思路:坏载荷 = 好载荷的"镜像",只把**目标槽的根镜像**换成一个起不来的文件系统:
+# 删掉 PID1(/usr/lib/systemd/systemd)与内核的 init 兜底(/bin/sh → dash、bash)
+# ⇒ 内核找不到任何 init ⇒ panic ⇒ cmdline 里的 panic=-1 立即重启(决策 D24)
+# ⇒ 下次启动回到持久默认(旧槽),keel-confirm 于是能判定"更新失败已回滚"。
+#
+# 演练里"目标槽"总是**另一个槽**:p2 阶段跑在槽 a 上,所以要用 slot-b 的产物。
+# 大的根镜像用 cp --reflink(不行就普通复制);其余文件用符号链接,省 13 GiB 的拷贝。
+BAD_SLOT=${KEEL_DRILL_BAD_SLOT:-b}
+command -v debugfs >/dev/null 2>&1 || {
+    apt-get update -qq
+    apt-get install -y -qq --no-install-recommends e2fsprogs >/dev/null 2>&1
+}
+rm -rf /tmp/drill-serve/bad
+mkdir -p /tmp/drill-serve/bad
+for f in /work/"$DRILL_PAYLOAD"/*; do
+    b=$(basename "$f")
+    [ "$b" = "manifest" ] && continue
+    [ "$b" = "slot-$BAD_SLOT.root.raw" ] && continue
+    ln -sfn "$f" "/tmp/drill-serve/bad/$b"
+done
+cp --reflink=auto --sparse=always "/work/$DRILL_PAYLOAD/slot-$BAD_SLOT.root.raw" \
+   "/tmp/drill-serve/bad/slot-$BAD_SLOT.root.raw"
+BAD_IMG=/tmp/drill-serve/bad/slot-$BAD_SLOT.root.raw
+for target in /usr/lib/systemd/systemd /usr/bin/dash /usr/bin/bash; do
+    debugfs -w -R "rm $target" "$BAD_IMG" >/dev/null 2>&1 ||
+        debugfs -w -R "unlink $target" "$BAD_IMG" >/dev/null 2>&1 || true
+done
+# 回读确认真的删掉了 —— 只信"退出码 0"的老毛病在坑 #29/#36/#42 里已经吃过三次
+for target in /usr/lib/systemd/systemd /usr/bin/dash /usr/bin/bash; do
+    if debugfs -R "stat $target" "$BAD_IMG" >/dev/null 2>&1; then
+        echo "   错误:坏载荷里 $target 还在 ⇒ 那个槽不会 panic,演练没有意义" >&2
+        exit 1
+    fi
+done
+echo "   已把 slot-$BAD_SLOT.root.raw 做成起不来的(删掉 PID1 与 init 兜底,回读已确认)"
+# manifest:版本比好载荷再高一档(否则 stage 会说"不比当前新"),并把被改过的那个产物的
+# sha256 换成新值 —— 其余行为原样复制(其余产物是符号链接,内容没变)
+GOOD_VER=$(sed -n 's/^version=//p' "/work/$DRILL_PAYLOAD/manifest" | head -n1)
+BAD_SHA=$(sha256sum "$BAD_IMG" | cut -d' ' -f1)
+sed -e "s/^version=.*/version=${GOOD_VER}.bad/" \
+    -e "s|^sha256_slot-$BAD_SLOT.root.raw=.*|sha256_slot-$BAD_SLOT.root.raw=$BAD_SHA|" \
+    "/work/$DRILL_PAYLOAD/manifest" >/tmp/drill-serve/bad/manifest
+echo "   坏载荷版本:${GOOD_VER}.bad(slot-$BAD_SLOT.root.raw 的 sha256 已更新)"
+
+step "7/7 起 VM(演练状态机自己跑;p3 结束时会 poweroff,所以这次 VM 会自己退出)"
 set +e
 timeout "$DRILL_VM_TIMEOUT" mkosi --profile install --profile test \
     "${ROOTPW_ARGS[@]+"${ROOTPW_ARGS[@]}"}" vm
