@@ -145,8 +145,8 @@ for p in $PROFILES; do
     grep -qE 'Kernel Command Line: ro' "$s/s" || no "--profile $p:cmdline 缺少 ro"
     # 反向断言:cmdline 里**不能**再出现 systemd.mount-extra(坑 #24)。
     # 它会在主系统里生成依赖 udev 符号链接的 .mount 单元,而 udev 要等 sysusers、
-    # sysusers 要等可写的 /etc、/etc overlay 又要等 /Volume ⇒ 循环 ⇒ emergency。
-    # /Volume 现在由 keel-mounts.service 自己挂,ESP 交给 gpt-auto。
+    # sysusers 要等可写的 /etc、/etc overlay 又要等 /data ⇒ 循环 ⇒ emergency。
+    # /data 现在由 keel-mounts.service 自己挂,ESP 交给 gpt-auto。
     if grep -qE 'systemd\.mount-extra=' "$s/s"; then
         no "--profile $p:cmdline 里还有 systemd.mount-extra(会引入 udev 依赖环,坑 #24)"
     else
@@ -219,9 +219,9 @@ else
         sed '/^[[:space:]]*CopyFiles=/d' "$f" >"$rt/$(basename "$f")"
     done
     if grep -q 'CopyFiles' "$rt"/*.conf; then
-        no "运行时定义里还留着 CopyFiles= —— repart 会去拷宿主机的 /proc、/Volume"
+        no "运行时定义里还留着 CopyFiles= —— repart 会去拷宿主机的 /proc、/data"
     else
-        ok "运行时 repart 定义没有 CopyFiles=(不会去拷宿主机的 /proc、/Volume)"
+        ok "运行时 repart 定义没有 CopyFiles=(不会去拷宿主机的 /proc、/data)"
     fi
     rtimg="$tree/rt.raw"; rm -f "$rtimg"
     if systemd-repart --offline=yes --empty=create --size=15G --definitions="$rt" \
@@ -303,19 +303,20 @@ else
     no "骨架路径 $skel_repart 只在 repart 定义里出现,finalize 没有生成它"
 fi
 
-# ---- /Volume 与 ESP 的挂载方式(坑 #24 / #25)---------------------------------
-# /Volume 不能再靠 cmdline 的 systemd.mount-extra(依赖 udev 符号链接 ⇒ 与 /etc overlay 成环),
+# ---- /data 与 ESP 的挂载方式(坑 #24 / #25)---------------------------------
+# /data 不能再靠 cmdline 的 systemd.mount-extra(依赖 udev 符号链接 ⇒ 与 /etc overlay 成环),
 # 必须由 keel-mounts.service 自己挂,而且不能通过 .mount 单元引入依赖。
-if grep -qE '^[[:space:]]*RequiresMountsFor=/Volume' mkosi.extra/usr/lib/systemd/system/keel-mounts.service; then
-    no "keel-mounts.service 里有 RequiresMountsFor=/Volume —— 会拉进依赖 udev 的 Volume.mount,重新造出依赖环(坑 #24)"
+if grep -qE '^[[:space:]]*RequiresMountsFor=/data' mkosi.extra/usr/lib/systemd/system/keel-mounts.service; then
+    no "keel-mounts.service 里有 RequiresMountsFor=/data —— 会拉进依赖 udev 的 data.mount,重新造出依赖环(坑 #24)"
 else
-    ok "keel-mounts.service 没有 RequiresMountsFor=/Volume(不会引入 udev 依赖环)"
+    ok "keel-mounts.service 没有 RequiresMountsFor=/data(不会引入 udev 依赖环)"
 fi
 
-if grep -q 'PARTNAME=volume' mkosi.extra/usr/lib/keel/mounts; then
-    ok "/usr/lib/keel/mounts 用 sysfs 的 PARTNAME 找 volume(不依赖 udev)"
+if grep -q 'PARTNAME=\$want' mkosi.extra/usr/lib/keel/lib.sh \
+   && grep -q 'keel_part_dev volume' mkosi.extra/usr/lib/keel/mounts; then
+    ok "lib.sh 用 sysfs 的 PARTNAME 找分区(不依赖 udev),mounts 调它挂 volume"
 else
-    no "/usr/lib/keel/mounts 没有 PARTNAME=volume 的查找逻辑 —— /Volume 就挂不上了"
+    no "找不到「按 PARTNAME 扫 sysfs」的查找逻辑(lib.sh 的 keel_part_dev + mounts 里的调用)—— /data 就挂不上了"
 fi
 
 if grep -q 'Before=systemd-random-seed.service' mkosi.extra/usr/lib/systemd/system/keel-mounts.service; then
@@ -324,18 +325,56 @@ else
     no "keel-mounts 没有排在 systemd-random-seed 之前 —— 它会往悬空的 /var 符号链接写随机种子然后失败(坑 #24)"
 fi
 
-# /Volume 是分区挂载点,镜像树里必须有这个空目录(否则 mount 报 mount point does not exist)
-if grep -qE '^[[:space:]]*install -d .*"\$R/Volume"' mkosi.finalize; then
-    ok "mkosi.finalize 建了 /Volume 挂载点目录"
+# /data 是分区挂载点,镜像树里必须有这个空目录(否则 mount 报 mount point does not exist)
+if grep -qE '^[[:space:]]*install -d .*"\$R/data"' mkosi.finalize; then
+    ok "mkosi.finalize 建了 /data 挂载点目录"
 else
-    no "mkosi.finalize 没有建 /Volume 目录 —— 运行时挂载会失败(坑 #24)"
+    no "mkosi.finalize 没有建 /data 目录 —— 运行时挂载会失败(坑 #24)"
 fi
 
-# ESP 路径不能硬编码:gpt-auto 挂到 /boot 还是 /efi 取决于镜像里哪个目录存在。
-if grep -q 'bootctl --print-esp-path' mkosi.extra/usr/lib/keel/lib.sh; then
-    ok "lib.sh 用 bootctl --print-esp-path 现问 ESP 路径(不硬编码 /efi)"
+# ---------------------------------------------------------------------------
+# ESP(坑 #36):必须由 keel-mounts 自己扫 PARTNAME=esp 挂上,而且 lib.sh 不许再把
+# bootctl 的"猜测路径"当成真挂载点("每个步骤都成功、结果全落空"就是这么来的)。
+# ---------------------------------------------------------------------------
+if grep -q 'keel_esp_mount' mkosi.extra/usr/lib/keel/mounts \
+   && grep -q 'mount -t vfat' mkosi.extra/usr/lib/keel/lib.sh \
+   && grep -q 'PARTNAME=\$want' mkosi.extra/usr/lib/keel/lib.sh; then
+    ok "keel-mounts 自己挂 ESP(lib.sh 的 keel_esp_mount:按 PARTNAME=esp 扫 sysfs + mount vfat)"
 else
-    no "lib.sh 没有用 bootctl --print-esp-path 探测 ESP —— gpt-auto 挂到 /boot 时所有 ESP 操作都会失败(坑 #25)"
+    no "keel-mounts 没有自己挂 ESP,或者 lib.sh 里没有 keel_esp_mount(坑 #36)"
+fi
+
+if grep -q 'KEEL_ESP_MOUNTED' mkosi.extra/usr/lib/keel/lib.sh \
+   && grep -q 'KEEL_ESP_MOUNTED' mkosi.extra/usr/bin/os-status \
+   && grep -q 'KEEL_ESP_MOUNTED' mkosi.extra/usr/bin/os-update \
+   && grep -q 'KEEL_ESP_MOUNTED' mkosi.extra/usr/lib/keel/confirm; then
+    ok "ESP 没挂上时 os-status / os-update / keel-confirm 都会明确报出来(不再静默)"
+else
+    no "拿 KEEL_ESP_MOUNTED 报错的三处没接好:os-status / os-update / keel-confirm(坑 #36)"
+fi
+
+# 顺序:os-update 必须**先**确认 ESP 可用,再 dd 根分区 —— 反过来会留下"新根 + 旧内核"
+# 的槽,违反不变量 3,而且失败点离原因很远。
+esp_line=$(grep -n 'keel_esp_mount' mkosi.extra/usr/bin/os-update | head -n1 | cut -d: -f1)
+dd_line=$(grep -n 'dd if="\$payload" of="\$dev"' mkosi.extra/usr/bin/os-update | head -n1 | cut -d: -f1)
+if [ -n "$esp_line" ] && [ -n "$dd_line" ] && [ "$esp_line" -lt "$dd_line" ]; then
+    ok "os-update 先确认 ESP(第 $esp_line 行)再写根分区(第 $dd_line 行)"
+else
+    no "os-update 里 ESP 检查和写根分区的顺序不对(必须先检查 ESP)"
+fi
+
+# gpt-auto 必须退场:它对 ESP 的自动挂载静默且不可靠,而我们自己挂了
+if grep -q '^[[:space:]]*systemd\.gpt_auto=no' mkosi.conf.d/30-content.conf; then
+    ok "cmdline 里有 systemd.gpt_auto=no(gpt-auto 不再插手 ESP,坑 #36)"
+else
+    no "cmdline 里没有 systemd.gpt_auto=no —— gpt-auto 可能又悄悄挂/不挂 ESP(坑 #36)"
+fi
+
+# ESP 挂在哪由我们自己定(/boot),不再依赖 gpt-auto 的选择
+if grep -q 'bootctl --print-esp-path' mkosi.extra/usr/lib/keel/lib.sh; then
+    ok "lib.sh 里 bootctl --print-esp-path 只作兜底(且必须真的是挂载点)"
+else
+    no "lib.sh 里连 bootctl 兜底都没了 —— 手工挂到非 /boot 路径的系统会找不到 ESP"
 fi
 
 if grep -rn '/efi/EFI' mkosi.extra/usr/bin mkosi.extra/usr/lib/keel 2>/dev/null | grep -v 'lib.sh' | grep -q .; then
@@ -516,8 +555,8 @@ else
     ok "mkosi.finalize 没有把 /nix 做成符号链接(坑 #34)"
 fi
 if grep -qF 'install -d -m 0755 "$R/home" "$R/nix"' mkosi.finalize \
-   && grep -q -- 'mount --bind /Volume/nix /nix' mkosi.extra/usr/lib/keel/mounts \
-   && grep -q -- 'mount --bind /Volume/home /home' mkosi.extra/usr/lib/keel/mounts; then
+   && grep -q -- 'mount --bind /data/nix /nix' mkosi.extra/usr/lib/keel/mounts \
+   && grep -q -- 'mount --bind /data/home /home' mkosi.extra/usr/lib/keel/mounts; then
     ok "finalize 建 /home /nix 空目录 + keel-mounts 各 bind 一次(两个都是真挂载点)"
 else
     no "缺 /home 或 /nix 的「真实目录 + bind mount」:finalize 建目录、mounts 里 mount --bind(坑 #34)"
@@ -599,16 +638,16 @@ for u in keel-mounts keel-firstboot keel-confirm keel-swapfile; do
 done
 ok "preset 覆盖了四个 keel 单元"
 
-# swapfile:必须按 /Volume 的可用空间给自己设上限,而且不能留下半截文件。
+# swapfile:必须按 /data 的可用空间给自己设上限,而且不能留下半截文件。
 # 教训(2026-09,VM 实测):live 镜像的 volume 只有 1 GiB,而默认大小按内存算(1.9G)
-# ⇒ dd 写到 ENOSPC,半个 swapfile 把 /Volume 填满 ⇒ /etc overlay 的 upper 再也写不进去。
-if grep -q 'df -P -B1 /Volume' mkosi.extra/usr/lib/keel/swapfile \
+# ⇒ dd 写到 ENOSPC,半个 swapfile 把 /data 填满 ⇒ /etc overlay 的 upper 再也写不进去。
+if grep -q 'df -P -B1 /data' mkosi.extra/usr/lib/keel/swapfile \
    && grep -q 'SWAP_NEW' mkosi.extra/usr/lib/keel/swapfile \
    && grep -q 'rm -f "$SWAP_NEW"' mkosi.extra/usr/lib/keel/swapfile \
    && grep -q 'MIN_SWAP' mkosi.extra/usr/lib/keel/swapfile; then
     ok "swapfile 按可用空间设上限(一半),中途失败会清掉半截文件、空间不足时不报错"
 else
-    no "swapfile 脚本缺少「按可用空间设上限 / 失败清理半截文件」的逻辑(live 镜像会把 /Volume 写满)"
+    no "swapfile 脚本缺少「按可用空间设上限 / 失败清理半截文件」的逻辑(live 镜像会把 /data 写满)"
 fi
 
 # ---------------------------------------------------------------------------

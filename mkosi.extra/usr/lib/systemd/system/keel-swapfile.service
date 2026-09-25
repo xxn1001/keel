@@ -1,9 +1,9 @@
 [Unit]
-Description=keel: create and enable the /Volume swapfile
+Description=keel: create and enable the /data swapfile
 Documentation=file:/usr/share/doc/keel/architecture.md
 After=keel-mounts.service
 Requires=keel-mounts.service
-ConditionPathIsMountPoint=/Volume
+ConditionPathIsMountPoint=/data
 
 [Service]
 Type=oneshot

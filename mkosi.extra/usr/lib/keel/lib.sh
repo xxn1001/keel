@@ -9,36 +9,106 @@
 #
 # shellcheck shell=bash
 
-KEEL_STATE_DIR=/Volume/keel
+KEEL_STATE_DIR=/data/keel
 KEEL_CONFIG="$KEEL_STATE_DIR/config"
 KEEL_STATE="$KEEL_STATE_DIR/state"
 KEEL_SCHEMA_FILE="$KEEL_STATE_DIR/schema-version"
-KEEL_OTA=/Volume/ota
-
-# ESP 挂载点:**不硬编码 /efi**。
-# ESP 由 systemd-gpt-auto-generator 自动挂载,挂到 /boot 还是 /efi 取决于镜像里
-# 哪个目录存在(DPS 规则:/boot 存在就挂 /boot)—— 实测我们镜像里两个空目录都有,
-# 它选了 /boot。所以现问 bootctl(它自己也按同样的规则找),失败再探测常见路径。
-# 见 AGENTS.md 坑 #25。
-keel_esp() {
-    local p=
-    if command -v bootctl >/dev/null 2>&1; then
-        p=$(bootctl --print-esp-path 2>/dev/null) || p=
-    fi
-    if [ -z "$p" ] || [ ! -d "$p" ]; then
-        for p in /boot /efi /boot/efi; do
-            if [ -d "$p/EFI" ] || mountpoint -q "$p" 2>/dev/null; then break; fi
-            p=
-        done
-    fi
-    printf '%s' "${p:-/boot}"
-}
-
-KEEL_ESP=$(keel_esp)
-KEEL_UKI_DIR="$KEEL_ESP/EFI/Linux"
+KEEL_OTA=/data/ota
 
 keel_log() { printf 'keel: %s\n' "$*" >&2; }
 keel_die() { printf 'keel: 错误:%s\n' "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# 按 GPT 分区名找分区设备 —— **不依赖 udev**
+#
+# 内核在 /sys/class/block/*/uevent 里直接给出 GPT 分区名(PARTNAME=),这是分区名的
+# 权威来源;`lsblk` 的 PARTLABEL 列来自 udev 的数据库,刚写完分区表时可能还是空的
+# (AGENTS.md 坑 #33)。blkid 只作为兜底:它直接读文件系统超级块,同样不需要 udev。
+#
+# 为什么放在 lib.sh:keel-mounts(挂 /data 与 ESP)和 os-install / os-rescue 都要用
+# 同一套查找逻辑 —— 一份实现,一个坑只踩一次。
+# ---------------------------------------------------------------------------
+keel_part_dev() {
+    local want=$1 p dev
+    [ -n "$want" ] || return 1
+    for p in /sys/class/block/*; do
+        [ -r "$p/uevent" ] || continue
+        if grep -qx "PARTNAME=$want" "$p/uevent" 2>/dev/null; then
+            printf '/dev/%s' "${p##*/}"
+            return 0
+        fi
+    done
+    if command -v blkid >/dev/null 2>&1; then
+        dev=$(blkid -o device -t "LABEL=$want" 2>/dev/null | head -n1) || dev=
+        if [ -n "$dev" ]; then printf '%s' "$dev"; return 0; fi
+    fi
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# ESP(EFI 系统分区)
+#
+# ⚠ 这里曾经是坑 #36 的源头:以前直接拿 `bootctl --print-esp-path` 的输出当路径用,
+# 而 bootctl **只是在按 gpt-auto 的规则猜**(镜像里 /boot 目录存在就报 /boot),
+# 它**不检查那个路径是不是真的挂载点**。装机后的系统上 ESP 压根没挂上,于是所有
+# `$KEEL_UKI_DIR` 操作都落在一个空目录里,而且每一步都"成功"
+# ⇒ os-update 写不进 UKI、bootctl set-preferred 切不了槽、keel-confirm 确认不了槽。
+#
+# 现在只有两个可信来源:
+#   ① 挂载表里有我们的 ESP(源设备就是 PARTNAME=esp 的那个分区)—— keel-mounts 挂的;
+#   ② bootctl 报的路径**确实是挂载点**。
+# 都不成立时 keel_esp() 输出空 —— 调用方必须自己决定"报错还是自救",不许静默继续。
+# ---------------------------------------------------------------------------
+KEEL_ESP_MOUNT=/boot          # 我们自己挂 ESP 的位置(见 keel_esp_mount)
+
+# 已经在哪挂着?按"源设备 == PARTNAME=esp 的分区"匹配,不看路径。
+keel_esp_mountpoint() {
+    local want real t s
+    want=$(keel_part_dev esp 2>/dev/null) || return 1
+    real=$(readlink -f "$want" 2>/dev/null) || return 1
+    [ -n "$real" ] || return 1
+    while read -r t s; do
+        [ -n "$t" ] || continue
+        case "$s" in /dev/*) ;; *) continue ;; esac
+        if [ "$(readlink -f "$s" 2>/dev/null)" = "$real" ]; then
+            printf '%s' "$t"
+            return 0
+        fi
+    done < <(findmnt -rn -t vfat -o TARGET,SOURCE 2>/dev/null)
+    return 1
+}
+
+# 确保 ESP 挂上了,输出它的挂载点。已经挂着就原样返回(绝不重复挂:同一块 vfat
+# 挂两次没有好处,只有风险)。挂不上返回 1。
+keel_esp_mount() {
+    local dir=$KEEL_ESP_MOUNT dev
+    if keel_esp_mountpoint; then return 0; fi
+    dev=$(keel_part_dev esp 2>/dev/null) || return 1
+    install -d -m 0755 "$dir" 2>/dev/null || return 1
+    # 必须 rw:boot counting / `bootctl set-preferred` / os-update 写新 UKI 都要写它。
+    # 选项对齐 systemd 给 ESP 用的默认值(fmask=0133,dmask=0022)。
+    mount -t vfat -o rw,fmask=0133,dmask=0022 "$dev" "$dir" 2>/dev/null || return 1
+    printf '%s' "$dir"
+}
+
+keel_esp() {
+    local p=
+    p=$(keel_esp_mountpoint 2>/dev/null) || p=
+    if [ -z "$p" ] && command -v bootctl >/dev/null 2>&1; then
+        # bootctl 只是参考:它给的路径必须真的是个挂载点才算数(坑 #36)
+        local q; q=$(bootctl --print-esp-path 2>/dev/null) || q=
+        if [ -n "$q" ] && mountpoint -q "$q" 2>/dev/null; then p=$q; fi
+    fi
+    printf '%s' "$p"
+}
+
+KEEL_ESP=$(keel_esp)
+# ESP 没挂上时 KEEL_ESP 是空的 —— 单独给一个变量,好让"只想报告状态"的地方
+# (os-status)和"必须写 ESP"的地方(os-update)用不同的话术。
+KEEL_ESP_MOUNTED=no
+[ -n "$KEEL_ESP" ] && KEEL_ESP_MOUNTED=yes
+# 没挂上时 KEEL_UKI_DIR 指向"本该挂的那里"(仅用于打印/报错,绝不拿它去读写)。
+KEEL_UKI_DIR="${KEEL_ESP:-$KEEL_ESP_MOUNT}/EFI/Linux"
 
 # 当前槽:只认 kernel cmdline 里的 root=PARTLABEL=root-<a|b> 这一个 token。
 # 槽身份完全靠 PARTLABEL(AGENTS.md 已知的坑 #5),解析不出来就输出空。
@@ -56,7 +126,7 @@ keel_other_slot() {
     esac
 }
 
-# 读 /Volume/keel/config 的键;为空则输出默认值。
+# 读 /data/keel/config 的键;为空则输出默认值。
 keel_conf() {
     local key=$1 def=${2:-} v=
     if [ -r "$KEEL_CONFIG" ]; then

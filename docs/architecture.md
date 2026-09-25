@@ -9,7 +9,7 @@
 ## 1. 一句话
 
 用 Debian stable 组成一个最小只读系统,以 **A/B 双槽 + 每槽一个完整 UKI** 做原子更新与回滚;
-**所有可写状态集中在单个 `/Volume` 分区**;用户软件由 **nix** 提供(`/nix` 也在 `/Volume` 上)。
+**所有可写状态集中在单个 `/data` 分区**;用户软件由 **nix** 提供(`/nix` 也在 `/data` 上)。
 
 ---
 
@@ -21,8 +21,8 @@
 |---|---|
 | 只读根 + A/B 双槽 | 卡槽身份靠 PARTLABEL,切换靠 UKI |
 | 原子更新 + 自动回滚 | boot counting + `systemd-bless-boot` + `LoaderEntryPreferred` |
-| `/etc` 可写 | overlayfs(lower = 镜像,upper = `/Volume`) |
-| `/Volume` 状态分区 | `/var`、`/home`、`/root`、`/nix` 全部落在这里;含 swapfile |
+| `/etc` 可写 | overlayfs(lower = 镜像,upper = `/data`) |
+| `/data` 状态分区 | `/var`、`/home`、`/root`、`/nix` 全部落在这里;含 swapfile |
 | nix 可用 | Debian 包 `nix-bin` + `nix-setup-systemd`;flakes 打开 |
 | 远程可用 | sshd + 有线网络(systemd-networkd)+ systemd-resolved |
 | 装机 / 自救命令 | `os-install`、`os-rescue`、`os-status`、`os-update` |
@@ -36,7 +36,7 @@
 - BIOS/GRUB 引导(只支持 UEFI,因为 boot counting 与槽切换依赖 EFI 变量)
 - 休眠(只做 swapfile)
 - 图形化安装器
-- `/Volume` 快照/备份
+- `/data` 快照/备份
 
 ---
 
@@ -49,7 +49,7 @@
 | 1 | `esp` | `esp` | vfat | 1 GiB | `/efi`(ro) | systemd-boot + `EFI/Linux/keel-a.efi` |
 | 2 | `root-a` | `root-x86-64` | ext4 | **6 GiB** | `/`(ro) | 系统树 + 符号链接 |
 | 3 | `root-b` | `linux-generic` | ext4 | **6 GiB** | — | 空槽,首次更新写入 |
-| 4 | `volume` | `linux-generic` | ext4 | 剩余全部 | `/Volume`(rw) | 全部可写状态 |
+| 4 | `volume` | `linux-generic` | ext4 | 剩余全部 | `/data`(rw) | 全部可写状态 |
 
 镜像总大小 ≈ 14 GiB + volume 最小尺寸;`mkosi burn` / `os-install` 会按目标盘容量修正 GPT 并把
 `volume` 扩到整盘。
@@ -81,12 +81,18 @@
 ### 4.1 符号链接与挂载点
 
 ```
-/var   -> /Volume/var           (符号链接)
-/root  -> /Volume/home/root     (符号链接)
-/home  =  真实空目录,启动早期 bind mount 到 /Volume/home
-/nix   =  真实空目录,启动早期 bind mount 到 /Volume/nix
-/etc   =  overlayfs 挂载点(lower = 镜像 /etc,upper/work = /Volume/overlayfs/etc)
+/data  =  volume 分区的挂载点(启动早期由 keel-mounts 挂,ext4,rw)
+/var   -> /data/var           (符号链接)
+/root  -> /data/home/root     (符号链接)
+/home  =  真实空目录,启动早期 bind mount 到 /data/home
+/nix   =  真实空目录,启动早期 bind mount 到 /data/nix
+/etc   =  overlayfs 挂载点(lower = 镜像 /etc,upper/work = /data/overlayfs/etc)
+/boot  =  ESP(启动早期由 keel-mounts 挂,vfat,rw)
 ```
+
+> 挂载点 2026-09 从 `/Volume` 改名成 `/data`(决策 D17)。**GPT 分区标签仍然是 `volume`**:
+> 它写在做好的分区表里,改了老机器(以及另一个槽)就找不到分区了 —— 挂载点名字是镜像的事,
+> 分区标签是磁盘的事,两者不再同名是**刻意**的。
 
 `/home` 与 `/nix` 必须是**真挂载点**而不是符号链接:`/home` 关乎 `ProtectHome=` 的沙箱语义,
 `/nix` 则是 nix 自己硬性拒绝符号链接的 store 路径(决策 D3、`AGENTS.md` 坑 #34)。
@@ -95,14 +101,14 @@
 `systemd-sysusers`、`systemd-tmpfiles` 会顺着链接写到镜像树外面去(`AGENTS.md` 已知的坑 #2);
 `/home` 与 `/nix` 的空目录也在同一步建出来。
 
-### 4.2 `/Volume` 骨架
+### 4.2 `/data` 骨架
 
 骨架在构建期由 `mkosi.finalize` 从镜像的 `/var` 快照生成(剔除包管理器状态目录),
 再由 repart 的 `CopyFiles=/usr/share/keel/volume-skeleton:/` 写进 volume 分区;
 同一份骨架留在镜像里供 `os-rescue --init-volume` 做自愈。
 
 ```
-/Volume/
+/data/
 ├── var/
 │   ├── log/journal/                  ← 预建,保证第一次启动的日志就持久
 │   ├── lib/dbus/machine-id -> /etc/machine-id   ← 必须显式重建(见坑 #3)
@@ -114,7 +120,7 @@
 ├── modules/                          ← 预留:将来"第三方内核模块外置"用,main 留空
 ├── ota/                              ← 下载的更新载荷(按版本分目录)
 └── keel/
-    ├── schema-version                ← /Volume 布局版本,迁移用
+    ├── schema-version                ← /data 布局版本,迁移用
     ├── state                    ← 当前槽、pending 更新、上次结果
     ├── config                        ← 更新源 URL、swapfile 大小等
     └── swapfile                      ← 首启创建
@@ -124,12 +130,12 @@
 
 ```
 lowerdir = /etc                    (只读镜像)
-upperdir = /Volume/overlayfs/etc/upper
-workdir  = /Volume/overlayfs/etc/work
+upperdir = /data/overlayfs/etc/upper
+workdir  = /data/overlayfs/etc/work
 ```
 
 由 `keel-mounts.service` 挂载,排序要求见 §10。**`/etc` 是唯一的"配置层"**:
-所有需要持久化的系统配置都写在这里(经 overlay 落到 `/Volume`),包括将来 `/etc/ld.so.conf.d/nvidia.conf`
+所有需要持久化的系统配置都写在这里(经 overlay 落到 `/data`),包括将来 `/etc/ld.so.conf.d/nvidia.conf`
 这类为"外置驱动"准备的钩子。
 
 **挂完 overlay 之后立刻补 `/etc/machine-id`,这是同一件挂载工作的一部分**(2026-09,坑 #29):
@@ -141,7 +147,7 @@ workdir  = /Volume/overlayfs/etc/work
 报错文字却是误导性的 `Package not installed`)、IPv6 稳定隐私地址、resolved 的 DNSSEC 密钥全废。
 `systemd-machine-id-commit.service` 也救不了 —— 它的条件是 `/etc/machine-id` 是挂载点。
 所以 `keel-mounts` 挂完 overlay 就**自己把 ID 固化下来**:把 PID1 本次启动已经在用的
-`/run/machine-id` 原样写进 `/etc/machine-id`(此时是 overlay ⇒ 落进 upper ⇒ 存在 `/Volume` 上,
+`/run/machine-id` 原样写进 `/etc/machine-id`(此时是 overlay ⇒ 落进 upper ⇒ 存在 `/data` 上,
 换槽/更新都不丢、每台机器唯一);`/run/machine-id` 不可用时才清空文件、让
 `systemd-machine-id-setup` 生成一个。
 
@@ -173,14 +179,20 @@ workdir  = /Volume/overlayfs/etc/work
 ro
 root=PARTLABEL=root-a
 amd_iommu=on intel_iommu=on iommu=pt
+systemd.gpt_auto=no
 ```
 
 - `ro`:根只读。
+- `systemd.gpt_auto=no`:**让 `systemd-gpt-auto-generator` 完全退场**(2026-09,坑 #36)。
+  它对本系统唯一的贡献是"自动挂 ESP",而这件事它做得静默且不可靠 —— 装机后的系统上实测
+  ESP 压根没挂上,导致 `os-status` 看不到 UKI、`os-update` 写不进新 UKI、`bootctl set-preferred`
+  切不了槽,而且每一步都"成功"。现在 ESP 和 `/data` 一样由 `keel-mounts` 扫 `PARTNAME=` 自己挂;
+  gpt-auto 别的功能(根分区 rw 重挂/扩容、单独的 `/usr` `/home` `/srv` `/var` 分区)我们都不需要。
 - **刻意没有 `systemd.mount-extra=`**(2026-09 真机实测后删掉的,`AGENTS.md` 坑 #24):
   那种写法会在主系统生成依赖 udev 符号链接的 `.mount` 单元,而主系统 udev 要等 `systemd-sysusers`,
-  sysusers 要可写的 `/etc`,可写的 `/etc`(overlay)又在 `/Volume` 上 ⇒ 环形依赖 ⇒
+  sysusers 要可写的 `/etc`,可写的 `/etc`(overlay)又在 `/data` 上 ⇒ 环形依赖 ⇒
   systemd 丢掉 `local-fs-pre.target`、udev 被推到 emergency 之后、挂载全部 90s 超时 ⇒ emergency mode。
-  ⇒ `/Volume` 由 `keel-mounts.service` 自己挂(扫 `/sys` 的 `PARTNAME=volume`,不依赖 udev);
+  ⇒ `/data` 由 `keel-mounts.service` 自己挂(扫 `/sys` 的 `PARTNAME=volume`,不依赖 udev);
   ESP 交给 `systemd-gpt-auto-generator`(挂到 `/boot`;代码里用 `$KEEL_ESP` / `$KEEL_UKI_DIR`)。
   实测:`root=PARTLABEL=root-a` 在 initrd 里**有效** ✓;`systemd.mount-extra=` 在 initrd 里**不生效** ✗。
 - `amd_iommu=on` / `intel_iommu=on` / `iommu=pt`:对没有对应硬件的机器**无害**,
@@ -199,11 +211,11 @@ amd_iommu=on intel_iommu=on iommu=pt
 ```
 os-update stage
  ① 读 /proc/cmdline 判断当前槽 → 目标槽 = 另一个
- ② 迁移 /Volume(声明式,由**旧系统**执行,只增不破,成功后 bump schema-version)
+ ② 迁移 /data(声明式,由**旧系统**执行,只增不破,成功后 bump schema-version)
  ③ 把 slot-<目标>.root.raw 写进 /dev/disk/by-partlabel/root-<目标>;sync + blockdev --flushbufs
  ④ mount -o remount,rw /efi;把 slot-<目标>.uki.efi 写成 /efi/EFI/Linux/keel-<目标>+3.efi
  ⑤ bootctl set-preferred keel-<目标>+3.efi          (只写 EFI 变量,不动 loader.conf)
- ⑥ 写 /Volume/keel/state 的 pending 块
+ ⑥ 写 /data/keel/state 的 pending 块
  ⑦ 提示重启(os-update stage --reboot 直接重启)
 
 重启
@@ -220,8 +232,8 @@ os-update stage
     清空 preferred、把坏 UKI 挪成 keel-<目标>.efi.failed、state 记 failed 并 journal 告警
 ```
 
-**为什么迁移要由旧系统执行**(不变量 6):如果让新系统在首启时迁移 `/Volume`,而它随后启动失败,
-回滚后的旧系统面对的是一份"被新系统改过"的 `/Volume`。反过来,旧系统自己做的迁移按定义就是
+**为什么迁移要由旧系统执行**(不变量 6):如果让新系统在首启时迁移 `/data`,而它随后启动失败,
+回滚后的旧系统面对的是一份"被新系统改过"的 `/data`。反过来,旧系统自己做的迁移按定义就是
 它自己能读懂的。迁移只允许"加目录/加文件/设权限",由 `os-update` 按 manifest 里的声明执行,
 **不执行下载来的任意脚本**。
 
@@ -284,14 +296,14 @@ U 盘本身也是一套完整系统,顺便当救援盘。
 
 ### 7.2 首次启动自动完成(`keel-firstboot.service`,幂等)
 
-1. 校验/修复 `/Volume` 骨架(缺失就按镜像里的骨架重建 —— 这是"手贱清空 volume"的自愈入口);
+1. 校验/修复 `/data` 骨架(缺失就按镜像里的骨架重建 —— 这是"手贱清空 volume"的自愈入口);
 2. **两步**扩 `volume`:先用 `systemd-repart --dry-run=no` 扩**分区**(定义在
-   `/usr/lib/keel/repart.d/`),再用 `systemd-growfs /Volume` 扩**文件系统** ——
+   `/usr/lib/keel/repart.d/`),再用 `systemd-growfs /data` 扩**文件系统** ——
    repart 从不改动已存在分区的文件系统,`GrowFileSystem=` 只是给
    `systemd-gpt-auto-generator` 看的 GPT 标志位(我们不走那条路,见 §13.1);
 3. `bootctl install` 建立本机 NVRAM 启动项(已有则跳过);
-4. 首启创建并启用 swapfile(`/Volume/keel/swapfile`);
-5. 记录 `/Volume/keel/state` 与 `schema-version`。
+4. 首启创建并启用 swapfile(`/data/keel/swapfile`);
+5. 记录 `/data/keel/state` 与 `schema-version`。
 
 ### 7.3 装完之后的预期
 
@@ -303,16 +315,16 @@ UEFI 机器靠内核的 `simpledrm`/`efifb` 就能显示文本,不需要显卡�
 ## 8. 更新流程
 
 ```bash
-os-status                  # 先看:当前槽、版本、/Volume 用量、schema、pending、上次结果
+os-status                  # 先看:当前槽、版本、/data 用量、schema、pending、上次结果
 os-update check            # 查询更新源有没有新版本
-os-update fetch            # 下载到 /Volume/ota/<ver>/,校验 sha256 + 签名 + schema 兼容性
+os-update fetch            # 下载到 /data/ota/<ver>/,校验 sha256 + 签名 + schema 兼容性
 os-update stage            # 写入非活动槽(§5.3 的 ①–⑦)
 os-update stage --reboot   # 同上并立即重启
 os-update rollback         # 手动把 preferred 指回上一个已知良好的槽
 os-update gc               # 清理旧载荷(保留最近 2 个版本 + 当前)
 ```
 
-更新源由 `/Volume/keel/config` 里的 URL 决定,支持 `https://`、`file://` 和挂载的 U 盘目录。
+更新源由 `/data/keel/config` 里的 URL 决定,支持 `https://`、`file://` 和挂载的 U 盘目录。
 **v1 不做自动更新定时器**(手动触发,便于在笔记本上观察)。
 
 ---
@@ -321,13 +333,13 @@ os-update gc               # 清理旧载荷(保留最近 2 个版本 + 当前)
 
 | 命令 | 子命令 | 作用 |
 |---|---|---|
-| `os-status` | — | 当前槽/版本/内核、`/Volume` 用量、schema 版本、pending 状态、上次更新结果、槽位占用 |
+| `os-status` | — | 当前槽/版本/内核、`/data` 用量、schema 版本、pending 状态、上次更新结果、槽位占用 |
 | `os-update` | `check` / `fetch` / `stage [--reboot] [--force]` | `check` 比对版本,`fetch` 下载并校验 sha256(+ 可选验签),`stage` 写入非活动槽并安排下次启动 |
 | | `switch a\|b` | 手动把"首选条目"指向指定槽(切回上一个版本用) |
 | | `rollback` | 等价于 `switch <另一个槽>`,并清掉 pending、把上次结果记成 failed |
-| | `gc` | 清理 `/Volume/ota/` 里过期的载荷(保留 pending 版本 + 最近 2 个) |
+| | `gc` | 清理 `/data/ota/` 里过期的载荷(保留 pending 版本 + 最近 2 个) |
 | `os-install` | `<device> [--yes]` | 从 live 环境装到目标盘(§7.1 B)。**未在真机验证过** |
-| `os-rescue` | `--init-volume` | 把骨架里缺失的目录/链接补回 `/Volume`(幂等,不删已有内容) |
+| `os-rescue` | `--init-volume` | 把骨架里缺失的目录/链接补回 `/data`(幂等,不删已有内容) |
 | | `--reset-etc` | 请求恢复出厂 `/etc`:下次启动时清空 overlay upper(旧内容先整体备份成 `etc.bak-<时间戳>`) |
 | | `--mark-bad` | 把当前槽标记为 bad(`systemd-bless-boot bad`) |
 | | `--grow-volume` | 手动把 `volume` 扩到整盘 |
@@ -345,7 +357,7 @@ os-update gc               # 清理旧载荷(保留最近 2 个版本 + 当前)
 
 | 单元 | 作用 | 关键排序 |
 |---|---|---|
-| `keel-mounts.service` | bind `/home`;挂 `/etc` overlay;`systemctl daemon-reload` | `DefaultDependencies=no`、`After=systemd-remount-fs.service Volume.mount`、`Before=sysinit.target systemd-sysusers.service systemd-tmpfiles-setup.service systemd-machine-id-commit.service` |
+| `keel-mounts.service` | 挂 `/data` 与 `/boot`(ESP);bind `/home` `/nix`;挂 `/etc` overlay;固化 machine-id;`systemctl daemon-reload` | `DefaultDependencies=no`、`After=systemd-remount-fs.service`、`Before=systemd-random-seed.service sysinit.target systemd-sysusers.service systemd-tmpfiles-setup.service systemd-machine-id-commit.service`(**刻意没有** `RequiresMountsFor=`,见坑 #24) |
 | `keel-firstboot.service` | §7.2 的五件事 | `After=keel-mounts.service`、`Before=multi-user.target` |
 | `keel-swapfile.service` | 创建/启用 swapfile | `After=keel-mounts.service` |
 | `keel-confirm.service` | 启动成功后确认/回滚更新,写 state | `After=boot-complete.target systemd-bless-boot.service`、`WantedBy=boot-complete.target` |
@@ -448,10 +460,10 @@ keel/
   在 `mkosi.finalize` 里断言"恰好一个 root="。
 - ⚠️ **`GrowFileSystem=yes` 不会扩文件系统**(核对 systemd 源码与手册后确认):
   repart 只扩分区,`context_mkfs()` 对已存在的分区直接跳过;那个设置只打一个 GPT 标志位,
-  而标志只被 `systemd-gpt-auto-generator` 消费 —— 我们的 `/Volume` 是 cmdline 显式挂载的,
+  而标志只被 `systemd-gpt-auto-generator` 消费 —— 我们的 `/data` 是 cmdline 显式挂载的,
   不过 gpt-auto-generator。⇒ 首启与 `os-rescue --grow-volume` 里都补了
-  `systemd-growfs /Volume`,并把 `e2fsprogs`(resize2fs)显式加进包清单。
-  **真机首启后请用 `df -h /Volume` 复核。**
+  `systemd-growfs /data`,并把 `e2fsprogs`(resize2fs)显式加进包清单。
+  **真机首启后请用 `df -h /data` 复核。**
 - ⚠️ 发现并已修掉:`Profiles=` 默认值会让两个产物 profile 同时被解析(见上一节)。
 - ⚠️ 发现并已修掉:`mkosi.initrd.conf` 里清空脚本设置必须写在 `[Content]` 段
   (写成 `[Config]` 会被拒绝且**静默不生效**)。
@@ -471,7 +483,7 @@ keel/
 
 | # | 风险 | 缓解 |
 |---|---|---|
-| R1 | **`/Volume` schema 迁移与回滚不兼容** —— 共享可写分区做 A/B 的最大隐患 | 只增不破的硬约定 + 声明式迁移 + 由旧系统执行 + 迁移后回滚演练 |
+| R1 | **`/data` schema 迁移与回滚不兼容** —— 共享可写分区做 A/B 的最大隐患 | 只增不破的硬约定 + 声明式迁移 + 由旧系统执行 + 迁移后回滚演练 |
 | R2 | `/etc` upper 里留下新版本才认识的配置,回滚后旧版本行为异常 | `os-rescue --reset-etc` 兜底;文档写清 |
 | R3 | **nix store 的 DB schema 单向升级** —— 基底升级 nix 后回滚,旧 nix 可能读不了新 DB | 基底里的 nix 版本保守升级;发版说明标注;必要时回滚前 `nix-store --repair` |
 | R4 | 部分主板固件会清 EFI 变量(NVRAM)⇒ `LoaderEntryPreferred` 丢失 | fallback 路径 `EFI/BOOT/BOOTX64.EFI` 保证能起;`loader.conf` 的 `default` 兜底;文档给手动切槽步骤 |

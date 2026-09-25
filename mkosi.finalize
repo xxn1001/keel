@@ -1,5 +1,5 @@
 #!/bin/bash
-# keel 构建的最后一步:生成 /Volume 骨架,把 /var /root 换成符号链接,/home 与 /nix 留成真实目录
+# keel 构建的最后一步:生成 /data 骨架,把 /var /root 换成符号链接,/home 与 /nix 留成真实目录
 #
 # 时机至关重要(AGENTS.md 已知的坑 #2):必须在所有会写 /var、/etc 的构建步骤
 # (装包、postinst、systemd-sysusers、systemd-tmpfiles、preset-all、depmod、
@@ -40,12 +40,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 1) 生成 /Volume 骨架
+# 1) 生成 /data 骨架
 #
 # 骨架 = 镜像 /var 的快照(剔除包管理器状态目录)+ 我们额外需要的目录和链接。
-# 为什么需要它:运行时 /var 是指向 /Volume/var 的符号链接,
+# 为什么需要它:运行时 /var 是指向 /data/var 的符号链接,
 # 镜像里 /var 的内容在运行时**根本看不见**(AGENTS.md 坑 #3),
-# 所以 /Volume 必须被预先填好,否则首启时 journald / dbus / nix 全会出问题。
+# 所以 /data 必须被预先填好,否则首启时 journald / dbus / nix 全会出问题。
 # ---------------------------------------------------------------------------
 install -d -m 0755 "$SKEL" "$SKEL/var"
 if [ -d "$R/var" ]; then
@@ -60,14 +60,14 @@ install -d -m 0755 "$SKEL/var/log/journal"
 install -d -m 0755 "$SKEL/home"
 install -d -m 0700 "$SKEL/home/root"
 
-# 首启的 SSH 公钥:如果仓库根目录有 authorized_keys,就把它放进 /Volume 骨架的 root 家目录。
-# 为什么必须放在骨架里:镜像里的 /root 是指向 /Volume/home/root 的符号链接,
+# 首启的 SSH 公钥:如果仓库根目录有 authorized_keys,就把它放进 /data 骨架的 root 家目录。
+# 为什么必须放在骨架里:镜像里的 /root 是指向 /data/home/root 的符号链接,
 # 构建期往镜像的 /root 放东西会在 finalize 换符号链接时被丢掉(AGENTS.md 坑 #2/#3)。
 # 没有这一步,新装好的系统是**进不去**的 —— root 密码是锁的、没有普通用户、也没有你的公钥。
 if [ -n "${SRCDIR:-}" ] && [ -f "$SRCDIR/authorized_keys" ]; then
     install -d -m 0700 "$SKEL/home/root/.ssh"
     install -m 0600 "$SRCDIR/authorized_keys" "$SKEL/home/root/.ssh/authorized_keys"
-    log "已把 authorized_keys 放进 /Volume 骨架(首启即可用该密钥以 root 身份 SSH 登录)"
+    log "已把 authorized_keys 放进 /data 骨架(首启即可用该密钥以 root 身份 SSH 登录)"
 fi
 install -d -m 0755 "$SKEL/nix"
 for d in store var var/nix var/nix/db var/nix/gcroots var/nix/profiles \
@@ -84,7 +84,7 @@ install -d -m 0755 "$SKEL/ota" "$SKEL/keel"
 install -d -m 0755 "$SKEL/var/lib/dbus"
 ln -sfn /etc/machine-id "$SKEL/var/lib/dbus/machine-id"
 
-# /Volume 布局版本(迁移用,见 docs/update.md)。
+# /data 布局版本(迁移用,见 docs/update.md)。
 # 单一事实来源是仓库根目录的 schema-version 文件,这里只负责搬进骨架。
 if [ -n "${SRCDIR:-}" ] && [ -r "$SRCDIR/schema-version" ]; then
     install -m 0644 "$SRCDIR/schema-version" "$SKEL/keel/schema-version"
@@ -110,8 +110,8 @@ fi
 # ---------------------------------------------------------------------------
 # 2) 把 /var /root 换成符号链接;/home 与 /nix 保持**真实目录**(不变量 1)
 #
-# 有两个"不能是符号链接"的例外,都由 keel-mounts 在启动早期 bind 到 /Volume 下:
-#   * /home —— 符号链接会破坏 ProtectHome= 之类的沙箱语义(服务仍能经 /Volume/home
+# 有两个"不能是符号链接"的例外,都由 keel-mounts 在启动早期 bind 到 /data 下:
+#   * /home —— 符号链接会破坏 ProtectHome= 之类的沙箱语义(服务仍能经 /data/home
 #     摸到用户数据);
 #   * /nix  —— nix **硬性拒绝**符号链接的 store 路径(2026-09 装机后实测,坑 #34):
 #       error: the path '/nix' is a symlink; this is not allowed for the Nix store
@@ -121,15 +121,15 @@ fi
 # 其余目录能符号链接就符号链接 —— 少一层挂载、少一处启动期依赖。
 # ---------------------------------------------------------------------------
 rm -rf "${R:?}/var" "${R:?}/root"
-ln -s /Volume/var        "$R/var"
-ln -s /Volume/home/root  "$R/root"
+ln -s /data/var        "$R/var"
+ln -s /data/home/root  "$R/root"
 install -d -m 0755 "$R/home" "$R/nix"
-# /Volume 本身必须有这个空目录当**挂载点**:它是分区,不是镜像内容。
-# 少了它,`mount … /Volume` 会报 "mount point does not exist",而 /var /root /nix
+# /data 本身必须有这个空目录当**挂载点**:它是分区,不是镜像内容。
+# 少了它,`mount … /data` 会报 "mount point does not exist",而 /var /root /nix
 # 三个符号链接会指向不存在的路径(实测第一版真机启动就踩了:diag 里
-# `ls -ld /Volume` → No such file or directory)。keel-mounts 里有 install -d 兜底,
+# `ls -ld /data` → No such file or directory)。keel-mounts 里有 install -d 兜底,
 # 但镜像里本来就该有。
-install -d -m 0755 "$R/Volume"
+install -d -m 0755 "$R/data"
 
 # ---------------------------------------------------------------------------
 # 3) 运行时**彻底**没有包管理器(决策 D10)
@@ -151,4 +151,4 @@ fi
 log "已清掉 dpkg 工具链(镜像里没有 apt/dpkg,决策 D10)"
 
 
-log "完成:/Volume 骨架已生成;/var /root 是符号链接;/home 与 /nix 是真实目录(由 keel-mounts bind)"
+log "完成:/data 骨架已生成;/var /root 是符号链接;/home 与 /nix 是真实目录(由 keel-mounts bind)"

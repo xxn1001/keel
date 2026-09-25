@@ -6,12 +6,12 @@
 
 - **基础系统只读**。A/B 两个槽,每个槽带一个完整的 UKI(内核 + initrd + `root=` 配对),
   更新写入非活动槽 → 重启切换 → 启动失败自动回滚(引导器级别的 boot counting)。
-- **可写状态全部集中在 `/Volume` 一个分区上**:
-  `/var`、`/root` 是指向 `/Volume` 的符号链接,`/home` 与 `/nix` 是 bind mount
+- **可写状态全部集中在 `/data` 一个分区上**:
+  `/var`、`/root` 是指向 `/data` 的符号链接,`/home` 与 `/nix` 是 bind mount
   (这两个不能是符号链接:nix 拒绝符号链接的 store 路径,`ProtectHome=` 要求 `/home` 是真挂载点)。
-- **`/etc` 可写**。只读镜像的 `/etc` 作为 lower,`/Volume/overlayfs/etc` 作为 upper 挂 overlayfs:
+- **`/etc` 可写**。只读镜像的 `/etc` 作为 lower,`/data/overlayfs/etc` 作为 upper 挂 overlayfs:
   配置改动会持久化,同时新版本镜像里的默认值依然生效(不会被旧副本永久遮蔽)。
-- **用户软件走 nix**,`/nix` 落在 `/Volume` 上 —— 于是"基础系统原子更新"和"随便装软件"彻底解耦。
+- **用户软件走 nix**,`/nix` 落在 `/data` 上 —— 于是"基础系统原子更新"和"随便装软件"彻底解耦。
   基础镜像里不放应用,也不留可用的发行版包管理器。
 
 最终目标是把它装到一台**不可变基座 + 虚拟化宿主**上(GPU 直通给 VM,宿主不需要显卡驱动);

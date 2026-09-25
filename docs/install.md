@@ -146,11 +146,11 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 
 | 方式 | 做法 | 效果 |
 |---|---|---|
-| **首启 SSH 公钥(推荐)** | 把你的公钥放到仓库根目录的 `authorized_keys`(该文件已被 `.gitignore` 排除)。`mkosi.finalize` 会把它放进 `/Volume` 骨架的 `root/.ssh/authorized_keys` | 装完开机就能 `ssh root@<ip>`(sshd 默认已启用、`PermitRootLogin prohibit-password` 允许密钥登录) |
+| **首启 SSH 公钥(推荐)** | 把你的公钥放到仓库根目录的 `authorized_keys`(该文件已被 `.gitignore` 排除)。`mkosi.finalize` 会把它放进 `/data` 骨架的 `root/.ssh/authorized_keys` | 装完开机就能 `ssh root@<ip>`(sshd 默认已启用、`PermitRootLogin prohibit-password` 允许密钥登录) |
 | root 控制台密码 | 在仓库根目录建 `mkosi.rootpw`,内容写密码(mkosi 原生支持,同样已被 gitignore 排除) | 可以在文本控制台以 root 登录 |
 | 仅本地测试 | `sudo tools/build-container.sh -p <临时密码> build`(把密码烤进产物) | 只适合虚拟机/临时排查;**真机别这么干** —— 密码会进 shell 历史,而且产物一旦泄露就是明文口令 |
 
-> 公钥文件放在仓库根目录而不是 `mkosi.extra/` 里:因为镜像里的 `/root` 是指向 `/Volume` 的符号链接,
+> 公钥文件放在仓库根目录而不是 `mkosi.extra/` 里:因为镜像里的 `/root` 是指向 `/data` 的符号链接,
 > 往 `mkosi.extra/root/...` 放的东西会在 finalize 换符号链接时丢掉(见 `AGENTS.md` 坑 #2/#3)。
 
 ## 3. 装之前必须确认
@@ -169,17 +169,21 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 
 | # | 动作 | 说明 |
 |---|---|---|
-| 1 | 校验/修复 `/Volume` 骨架 | 缺失就按镜像里的骨架重建 —— "手贱清空 volume"的自愈入口 |
-| 2 | **两步**扩容:`systemd-repart --dry-run=no` 扩 `volume` **分区**,再 `systemd-growfs /Volume` 扩**文件系统** | repart 只扩分区、从不碰已存在分区的文件系统(`GrowFileSystem=` 只是个 GPT 标志位,只被 gpt-auto-generator 消费,而我们不走那条路)。**首启后请用 `df -h /Volume` 复核** |
+| 1 | 校验/修复 `/data` 骨架 | 缺失就按镜像里的骨架重建 —— "手贱清空 volume"的自愈入口 |
+| 2 | **两步**扩容:`systemd-repart --dry-run=no` 扩 `volume` **分区**,再 `systemd-growfs /data` 扩**文件系统** | repart 只扩分区、从不碰已存在分区的文件系统(`GrowFileSystem=` 只是个 GPT 标志位,只被 gpt-auto-generator 消费,而我们不走那条路)。**首启后请用 `df -h /data` 复核** |
 | 3 | `bootctl install` 建立本机 NVRAM 启动项 | 装机镜像里不可能带;已有则跳过 |
-| 4 | 创建并启用 swapfile(`/Volume/keel/swapfile`) | 不做休眠(决策 D9) |
-| 5 | 记录 `/Volume/keel/state` 与 `schema-version` | 之后 `os-status` 从这里读 |
+| 4 | 创建并启用 swapfile(`/data/keel/swapfile`) | 不做休眠(决策 D9) |
+| 5 | 记录 `/data/keel/state` 与 `schema-version` | 之后 `os-status` 从这里读 |
 
+> 同一次 `keel-mounts` 还会把 **ESP(`PARTNAME=esp`)以可写方式挂到 `/boot`** —— `os-status` 的
+> 「ESP 挂载」与 UKI 列表都靠它;没挂上的话 `os-update` 会在写分区之前直接拒绝、槽确认也会失效
+> (`AGENTS.md` 坑 #36、决策 D18;修法见 `docs/troubleshooting.md` §2.3)。
+>
 > 另外,比 firstboot 更早的 `keel-mounts.service` 会把 `/etc/machine-id` 从镜像里的占位符
 > `uninitialized` 换成真正的 ID(幂等;首启复用 PID1 已经用的那个)。这不是可选项:
 > machine-id 为空时 networkd 的 DHCPv4、IPv6 稳定隐私地址、resolved 的 DNSSEC 全部失效
 > (`AGENTS.md` 坑 #29、`architecture.md` §4.3)。ID 落在 `/etc` overlay 的 upper 上 ⇒
-> 在 `/Volume` 里、每台机器唯一、换槽与更新都不会丢。
+> 在 `/data` 里、每台机器唯一、换槽与更新都不会丢。
 
 ### 预期看到什么
 
@@ -196,24 +200,24 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 ## 5. 装完之后的第一步
 
 ```bash
-os-status     # 当前槽/版本/内核、/Volume 用量、schema 版本、pending、上次结果、槽位占用
+os-status     # 当前槽/版本/内核、/data 用量、schema 版本、pending、上次结果、槽位占用
 ip a          # 确认网络,再看 sshd 能不能连
 ```
 
-1. **看状态**:`os-status` 应显示当前槽 `a`、`/Volume` 已扩到整盘、`schema-version` 已写入。
+1. **看状态**:`os-status` 应显示当前槽 `a`、`/data` 已扩到整盘、`schema-version` 已写入。
 2. **创建普通用户**:用系统工具 `useradd -m -s /bin/bash <name>` + `passwd <name>`。
-   `/etc` 是可写 overlay(§4.3),账号、ssh 主机密钥这类东西会持久化在 `/Volume` 上。
+   `/etc` 是可写 overlay(§4.3),账号、ssh 主机密钥这类东西会持久化在 `/data` 上。
    待验证:§11 的包清单没显式列出 `passwd` 包,若缺 `useradd` 就用 nix 临时提供,并把结论回写到 §11。
 3. **测试槽切换**(现在不测,等真更新时才第一次用这套机制就太晚了)。
    备用槽是空的,所以第一次切换必须走一次真实的更新流程 —— 用本地目录当更新源即可:
 
 ```bash
 # 在目标机器上:把发布目录里除了 keel.raw/install.md/update.md 之外的文件
-# 放进一个本地目录(例如从 U 盘拷进 /Volume/ota/import),然后:
-sudo mkdir -p /Volume/ota/import
+# 放进一个本地目录(例如从 U 盘拷进 /data/ota/import),然后:
+sudo mkdir -p /data/ota/import
 sudo cp /path/to/release/manifest /path/to/release/slot-*.root.raw /path/to/release/slot-*.uki.efi \
-     /Volume/ota/import/
-sudo sed -i 's#^UPDATE_SOURCE=.*#UPDATE_SOURCE=file:///Volume/ota/import#' /Volume/keel/config
+     /data/ota/import/
+sudo sed -i 's#^UPDATE_SOURCE=.*#UPDATE_SOURCE=file:///data/ota/import#' /data/keel/config
 
 sudo os-update check          # 应认出这个版本
 sudo os-update fetch          # 校验 sha256(没有 manifest.sig 会有醒目告警,v1 允许)
@@ -238,4 +242,4 @@ os-status                     # 起来后:当前槽变成 b,last_result=success
 | 在 U 盘 live 里认错设备名 | `os-install` 写错盘 = 擦掉别人的数据;先 `lsblk -f` 看分区标签再动手 |
 | 首启就没网 | 有线网卡/存储固件在 `firmware-misc-nonfree`;无线网络 main 不做,留给 `desktop` profile |
 | 指望图形界面 | main 没有图形栈,这是范围决定,不是 bug(§2) |
-| `/Volume` 没挂上 | `/var`、`/root` 是悬空符号链接,`/home`、`/nix` 是空目录,系统看起来"到处都是空目录" —— 见 `troubleshooting.md` |
+| `/data` 没挂上 | `/var`、`/root` 是悬空符号链接,`/home`、`/nix` 是空目录,系统看起来"到处都是空目录" —— 见 `troubleshooting.md` |

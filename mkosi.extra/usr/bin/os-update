@@ -4,11 +4,11 @@
 # 见 docs/architecture.md §5.3(槽切换与回滚的完整时序)、§8(更新流程)、§9(命令集);
 # 用户文档见 docs/update.md。四个子命令对应四件事:
 #   check    只读:问更新源有没有新版本(不下载)
-#   fetch    下载 + sha256/签名/schema 校验到 /Volume/ota/<version>/(不写任何槽)
+#   fetch    下载 + sha256/签名/schema 校验到 /data/ota/<version>/(不写任何槽)
 #   stage    把载荷写进**非活动槽** + 把 preferred 指向它(§5.3 ①–⑦)
 #   switch   手动把 preferred 指向某个槽的正式条目(切回上一个版本用)
 #   rollback switch 到另一个槽 + 清 pending + 记 failed
-#   gc       清理 /Volume/ota 下过期的载荷
+#   gc       清理 /data/ota 下过期的载荷
 #
 # 破坏性操作(写分区、改 ESP)都在 stage 里,执行前会打印明确警告。
 set -euo pipefail
@@ -32,7 +32,7 @@ die_usage() {
 }
 
 need_root() {
-    # 写分区、改 ESP、写 /Volume 状态都需要 root;提前失败比写到一半失败干净得多
+    # 写分区、改 ESP、写 /data 状态都需要 root;提前失败比写到一半失败干净得多
     if [ "$(id -u)" != 0 ]; then
         keel_die "需要 root 权限,请用 sudo 重新执行"
     fi
@@ -93,10 +93,10 @@ uki_payload_path() {
     printf '%s\n' "$KEEL_OTA/$OTA_PAYLOAD_VERSION/slot-$1.uki.efi"
 }
 
-# /Volume 布局版本;文件缺失当作 0(比任何 manifest 的 schema 都旧 ⇒ 会拒绝)
+# /data 布局版本;文件缺失当作 0(比任何 manifest 的 schema 都旧 ⇒ 会拒绝)
 volume_schema() {
     local v
-    v="$(cat /Volume/keel/schema-version 2>/dev/null)" || v=""
+    v="$(cat /data/keel/schema-version 2>/dev/null)" || v=""
     v="${v//[[:space:]]/}"
     if [ -z "$v" ]; then
         printf '0\n'
@@ -125,7 +125,7 @@ cmd_check() {
         https://*|http://*) ;;
         *) [ -e "$LOCAL_SRC/$MANIFEST" ] || keel_die "更新源里找不到 $MANIFEST:${LOCAL_SRC}" ;;
     esac
-    # https 源先下到临时文件,免得为了看一眼版本就去写 /Volume/ota
+    # https 源先下到临时文件,免得为了看一眼版本就去写 /data/ota
     if [ "$REMOTE" -eq 1 ]; then
         tmp="$(mktemp -t keel-manifest.XXXXXX)"
         if ! curl -fL --retry 2 --connect-timeout 15 -o "$tmp" "$SRC/$MANIFEST"; then
@@ -230,7 +230,7 @@ cmd_fetch() {
             ;;
         *)
             if [ "$rs" -gt "$schema" ]; then
-                keel_die "这个更新需要更新的 /Volume 布局(manifest schema=${rs},本机=${schema})。当前系统不认识这个布局,拒绝安装;请先升级到中间版本,或重装。"
+                keel_die "这个更新需要更新的 /data 布局(manifest schema=${rs},本机=${schema})。当前系统不认识这个布局,拒绝安装;请先升级到中间版本,或重装。"
             fi
             ;;
     esac
@@ -264,7 +264,7 @@ cmd_stage() {
     [ -n "$CURRENT_SLOT" ] || keel_die "解析不出当前槽(/proc/cmdline 里没有 root=PARTLABEL=root-<a|b>);拒绝在不确定当前槽的情况下写分区"
     target="$(keel_other_slot "$CURRENT_SLOT")"
 
-    # 用哪个版本的载荷:/Volume/ota 下版本号最大的那个目录(和 gc 的保留策略一致)
+    # 用哪个版本的载荷:/data/ota 下版本号最大的那个目录(和 gc 的保留策略一致)
     if [ -z "$OTA_PAYLOAD_VERSION" ]; then
         keel_die "找不到已下载的载荷。先跑:sudo os-update fetch"
     fi
@@ -279,6 +279,25 @@ cmd_stage() {
         echo "已经安排过:槽 ${target}(版本 ${PENDING_VERSION:-未知})正在等待下次启动确认。" >&2
         echo "如果确实要重写,用:sudo os-update stage --force" >&2
         exit 1
+    fi
+
+    # -----------------------------------------------------------------------
+    # ESP 必须**在写根分区之前**确认可用(坑 #36)
+    #
+    # 顺序很要命:原来的顺序是先 dd 根分区、再 remount ESP 写 UKI。ESP 没挂上时
+    # dd 已经成功 ⇒ 目标槽的根换成了新版本,而 UKI 还是**旧的**
+    # ⇒ 一旦切过去就是"新内核配旧根"的反面(旧内核配新根),直接违反不变量 3,
+    # 而且失败点离原因很远。所以先挂/先检查,再动分区。
+    # -----------------------------------------------------------------------
+    if [ "$KEEL_ESP_MOUNTED" != yes ]; then
+        if mnt=$(keel_esp_mount); then
+            keel_log "ESP 原来没挂上,已自动挂到 $mnt"
+            KEEL_ESP=$mnt
+            KEEL_UKI_DIR="$mnt/EFI/Linux"
+            KEEL_ESP_MOUNTED=yes
+        else
+            keel_die "ESP(PARTNAME=esp)没挂上,也挂不起来 —— 拒绝写分区:没有可写的 ESP 就写不进新 UKI,而只换根分区会让槽里的内核与根不配对(不变量 3)。先检查 lsblk -o NAME,SIZE,PARTLABEL 有没有 esp 分区,再跑 os-rescue --repair-boot"
+        fi
     fi
 
     dev="$(keel_slot_device "$target")"
@@ -303,8 +322,9 @@ cmd_stage() {
     sync
     keel_log "根分区写入完成"
 
-    # ESP 的 cmdline 是 ro 挂载的,写 UKI 前必须 remount rw(不变量:ESP 由 initrd 挂上)
-    if ! mount -o remount,rw "$KEEL_ESP"; then
+    # ESP 由 keel-mounts 以 rw 挂上(不变量 2、坑 #36);这里再 remount 一次是兜底
+    # (比如被谁手工挂成了 ro),失败就说明它根本不是个真挂载点。
+    if ! mount -o remount,rw "$KEEL_ESP" 2>/dev/null; then
         keel_die "挂载点 ${KEEL_ESP} 无法重新挂载为可写:检查它是否真的挂载了(findmnt ${KEEL_ESP});先执行 sudo os-rescue --repair-boot 或手动 mount ${KEEL_ESP}"
     fi
     ukisrc="$KEEL_UKI_DIR/keel-${target}+${TRIES}.efi"
@@ -400,7 +420,7 @@ cmd_rollback() {
     echo "回滚:把下次启动指向槽 ${other}(当前槽 ${cur},${CURRENT_VERSION})"
     cmd_switch "$other"
     keel_log "已清空 pending,并把上次结果记为 failed(${CURRENT_VERSION})"
-    echo "注意:回滚改的是下次启动用哪个槽,/Volume 上的数据(含 /etc 的改动)不会被回退。"
+    echo "注意:回滚改的是下次启动用哪个槽,/data 上的数据(含 /etc 的改动)不会被回退。"
 }
 
 # ---------------------------------------------------------------------------
@@ -471,17 +491,17 @@ if [ -n "$UPDATE_SOURCE" ]; then
     case "$SRC" in https://*|http://*) REMOTE=1 ;; *) REMOTE=0 ;; esac
 fi
 
-# stage 用哪个版本的载荷:config 里没有记录"刚 fetch 了哪个版本",所以取 /Volume/ota
+# stage 用哪个版本的载荷:config 里没有记录"刚 fetch 了哪个版本",所以取 /data/ota
 # 下版本号最大的目录(与 gc 的保留策略一致)。空 = 还没有下载过任何载荷。
 OTA_PAYLOAD_VERSION="$(find "$KEEL_OTA" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | grep -v '^\.' | LANG=C sort -Vr | head -n1)" || OTA_PAYLOAD_VERSION=""
 
 case "$CMD" in
     check)
-        [ -n "$SRC" ] || keel_die "没有配置更新源:请编辑 /Volume/keel/config,把 UPDATE_SOURCE= 设成 https:// 地址、file:// 路径或挂载好的 U 盘目录,然后重试"
+        [ -n "$SRC" ] || keel_die "没有配置更新源:请编辑 /data/keel/config,把 UPDATE_SOURCE= 设成 https:// 地址、file:// 路径或挂载好的 U 盘目录,然后重试"
         cmd_check
         ;;
     fetch)
-        [ -n "$SRC" ] || keel_die "没有配置更新源:请编辑 /Volume/keel/config,把 UPDATE_SOURCE= 设成 https:// 地址、file:// 路径或挂载好的 U 盘目录,然后重试"
+        [ -n "$SRC" ] || keel_die "没有配置更新源:请编辑 /data/keel/config,把 UPDATE_SOURCE= 设成 https:// 地址、file:// 路径或挂载好的 U 盘目录,然后重试"
         cmd_fetch
         ;;
     stage) cmd_stage "$@" ;;
@@ -493,14 +513,14 @@ case "$CMD" in
 用法:os-update <子命令> [选项]
 
   check                 查询更新源有没有新版本(只读,不下载)
-  fetch                 下载并校验载荷到 /Volume/ota/<版本>/
+  fetch                 下载并校验载荷到 /data/ota/<版本>/
   stage [--reboot] [--force]
                         把载荷写进非活动槽,并把下次启动指向它
   switch <a|b>          把下次启动指向指定槽的正式条目(keel-<槽>.efi)
   rollback              切回另一个槽,清空 pending,并记一次 failed
-  gc                    清理 /Volume/ota 下的过期版本(保留 pending + 最新 2 个)
+  gc                    清理 /data/ota 下的过期版本(保留 pending + 最新 2 个)
 
-更新源在 /Volume/keel/config 的 UPDATE_SOURCE=。详见 docs/update.md。
+更新源在 /data/keel/config 的 UPDATE_SOURCE=。详见 docs/update.md。
 EOF
         ;;
     *) die_usage "os-update <check|fetch|stage|switch|rollback|gc> [选项]" ;;

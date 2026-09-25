@@ -6,7 +6,7 @@
 #
 # 这里**不**自己做回滚判断 —— 回滚是引导器 + boot counting 完成的;
 # 我们只负责:① 让 LoaderEntryPreferred 指向当前槽的正式名字;
-#             ② 把启动结果写进 /Volume/keel/state 供 os-status 报告。
+#             ② 把启动结果写进 /data/keel/state 供 os-status 报告。
 set -euo pipefail
 . /usr/lib/keel/lib.sh
 
@@ -18,6 +18,13 @@ fi
 
 pending=$(keel_state_get pending_slot)
 pending_ver=$(keel_state_get pending_version)
+
+# ESP 没挂上时**不要静默跳过**:set-preferred 与"把失败条目挪成 .failed"都要靠它,
+# 而"上次启动结果: 无记录"这类怪现象就是这么来的(坑 #36)
+if [ "$KEEL_ESP_MOUNTED" != yes ]; then
+    keel_log "警告:ESP 没挂上 —— 本次不做 bootctl set-preferred / 条目清理(靠固件的 fallback 路径仍能启动);"
+    keel_log "      看 os-status 的 ESP 一节,修复用 os-rescue --repair-boot(坑 #36)"
+fi
 
 # --- ① 把"首选条目"指向当前槽的正式名字 ---
 # boot counting 生效时,systemd-bless-boot.service 已经在本单元之前把

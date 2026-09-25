@@ -2,7 +2,7 @@
 
 **这个目录默认是空的,这是有意的。**
 
-按照 `AGENTS.md` 的约定:**构建期差异进仓库,运行期状态进 `/Volume`**。
+按照 `AGENTS.md` 的约定:**构建期差异进仓库,运行期状态进 `/data`**。
 而"按机器分支"在这个项目里几乎不是一个真实的维度:
 
 | 常见误解 | 实际情况 |
@@ -26,7 +26,7 @@
 ## 千万不要放在这里
 
 - 主机名、Wi-Fi 密码、静态 IP、vfio 绑定哪块显卡、VM 定义 —— 这些是**运行期状态**,
-  属于 `/Volume`,不属于 git。
+  属于 `/data`,不属于 git。
 - 任何密钥、口令(仓库的 `.gitignore` 已经排除常见密钥文件名)。
 
 ## 备份单机状态的建议做法
@@ -36,7 +36,7 @@
 
 ```bash
 # 在目标机器上
-{ echo "# 导出自 $(hostname),$(date -u +%F)"; cat /Volume/keel/config; } \
+{ echo "# 导出自 $(hostname),$(date -u +%F)"; cat /data/keel/config; } \
     > machines/host-$(hostname).conf
 ```
 

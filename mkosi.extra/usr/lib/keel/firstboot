@@ -7,14 +7,14 @@ set -euo pipefail
 . /usr/lib/keel/lib.sh
 
 # ---------------------------------------------------------------------------
-# 1) /Volume 骨架自愈
+# 1) /data 骨架自愈
 #
 # cp -a -n(no-clobber):只补缺失的,绝不覆盖已有内容。
 # 这同时是"手贱清空了 volume"和"忘了重建 dbus machine-id 链接"的修复入口
 # (AGENTS.md 已知的坑 #3)。
 # ---------------------------------------------------------------------------
 if [ -d /usr/share/keel/volume-skeleton ]; then
-    cp -a -n /usr/share/keel/volume-skeleton/. /Volume/ || true
+    cp -a -n /usr/share/keel/volume-skeleton/. /data/ || true
 fi
 [ -e "$KEEL_SCHEMA_FILE" ] || echo 1 >"$KEEL_SCHEMA_FILE"
 
@@ -37,9 +37,15 @@ fi
 # 或者固件后来清空了 NVRAM,机器仍然能启动(systemd-boot 会自己去 /EFI/Linux 找 UKI)。
 # 只做一次是为了避免每次启动都往 NVRAM 写东西。
 # ---------------------------------------------------------------------------
-if [ ! -e /Volume/keel/.boot-entry-created ]; then
+if [ ! -e /data/keel/.boot-entry-created ]; then
+    # ESP 通常已由 keel-mounts 挂好;这里再试一次是首启自愈的入口(坑 #36)
+    esp_mnt=$(keel_esp_mount 2>/dev/null) || esp_mnt=""
+    if [ -z "$esp_mnt" ]; then
+        keel_log "警告:ESP 没挂上,bootctl install 会失败 —— 不影响本次启动(镜像 ESP 里有 fallback 路径),"
+        keel_log "      但 NVRAM 里不会有 keel 的启动项;修好 ESP 后跑 os-rescue --repair-boot"
+    fi
     if bootctl install >/dev/null 2>&1; then
-        : >/Volume/keel/.boot-entry-created
+        : >/data/keel/.boot-entry-created
         keel_log "已在 ESP 上安装引导器并登记 NVRAM 启动项"
     else
         keel_log "bootctl install 失败(稍后可以手动跑 os-rescue --repair-boot)"
@@ -59,9 +65,9 @@ fi
 # 为什么要两步:systemd-repart 只扩**分区**,它从不改动已存在分区的文件系统
 # (源码里 context_mkfs() 对已存在的分区直接 continue)。repart 定义里的
 # GrowFileSystem= 只是打一个 GPT 标志位,而那个标志只被 systemd-gpt-auto-generator
-# 消费 —— 我们的 /Volume 是 cmdline 里 systemd.mount-extra= 显式挂载的,
+# 消费 —— 我们的 /data 是 cmdline 里 systemd.mount-extra= 显式挂载的,
 # 根本不过 gpt-auto-generator。所以文件系统必须自己调 systemd-growfs 扩。
-# (AGENTS.md 已知的坑 #14;真机首启后请用 df -h /Volume 复核。)
+# (AGENTS.md 已知的坑 #14;真机首启后请用 df -h /data 复核。)
 #
 # 两步都幂等:分区表符合定义时 repart 什么都不做;文件系统到顶时 systemd-growfs
 # 也不做任何事。所以每次启动跑一遍是安全的,这也是"把镜像 dd 到更大的盘之后"的自愈入口。
@@ -75,7 +81,7 @@ if [ -n "$vol" ] && [ -b "$vol" ]; then
         fi
     fi
     # 分区弄好之后再把文件系统顶满(需要 e2fsprogs 的 resize2fs)
-    if ! systemd-growfs /Volume >/dev/null 2>&1; then
-        keel_log "volume 文件系统扩容失败(resize2fs 在吗?df -h /Volume 看看;也可手动跑 systemd-growfs /Volume)"
+    if ! systemd-growfs /data >/dev/null 2>&1; then
+        keel_log "volume 文件系统扩容失败(resize2fs 在吗?df -h /data 看看;也可手动跑 systemd-growfs /data)"
     fi
 fi

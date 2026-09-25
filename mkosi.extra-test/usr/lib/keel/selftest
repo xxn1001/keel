@@ -39,7 +39,7 @@ for (( i = 1; i <= rounds; i++ )); do
     echo "--- machine-id 现场(PID1 的 /run 那份 + overlay upper 到底有没有落盘)"
     ls -l /etc/machine-id /run/machine-id 2>&1 | sed 's/^/  /'
     echo "  /run/machine-id = $(cat /run/machine-id 2>/dev/null)"
-    ls -l /Volume/overlayfs/etc/upper/ 2>&1 | head -n5 | sed 's/^/  /'
+    ls -l /data/overlayfs/etc/upper/ 2>&1 | head -n5 | sed 's/^/  /'
     echo "--- /etc 可写性探针(overlay 真的可写吗)"
     if (echo probe >/etc/keel-write-probe) 2>/dev/null; then
         echo "  WRITE_OK"; rm -f /etc/keel-write-probe
@@ -48,6 +48,12 @@ for (( i = 1; i <= rounds; i++ )); do
     fi
     echo "--- keel-mounts 的日志(machine-id 那行在这里)"
     journalctl -b -u keel-mounts --no-pager 2>/dev/null | tail -n6 | sed 's/^/  /'
+    echo "--- ESP 挂载与 UKI(坑 #36 的验证点:必须真的挂上,不能是空目录)"
+    findmnt /boot 2>&1 | sed 's/^/  /'
+    echo "  bootctl --print-esp-path = $(bootctl --print-esp-path 2>&1)"
+    ls -l /boot/EFI/Linux/ 2>&1 | head -n6 | sed 's/^/  /'
+    echo "  os-status 里那几行:"
+    os-status 2>/dev/null | grep -E "ESP 挂载|keel-[ab]" | head -n6 | sed 's/^/  /'
     echo "--- IPv4 地址"
     ip -4 -o addr show 2>/dev/null | awk '{ printf "  %-10s %s\n", $2, $4 }'
     echo "--- networkctl list(IDX LINK TYPE OPERATIONAL SETUP)"

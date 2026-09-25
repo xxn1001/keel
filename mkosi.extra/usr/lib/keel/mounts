@@ -1,5 +1,5 @@
 #!/bin/bash
-# keel 启动早期挂载:挂 /Volume、在 /etc 上挂 overlayfs、把 /home 与 /nix 绑到 /Volume 下
+# keel 启动早期挂载:挂 /data、在 /etc 上挂 overlayfs、把 /home 与 /nix 绑到 /data 下
 #
 # 由 keel-mounts.service 调用,必须极早运行(见 AGENTS.md 不变量 1/2/5、
 # 已知的坑 #8/#24,docs/architecture.md §4.1 §4.3)。
@@ -7,40 +7,54 @@ set -euo pipefail
 . /usr/lib/keel/lib.sh
 
 # ---------------------------------------------------------------------------
-# /Volume:必须在这里挂 —— **不能**交给 kernel cmdline 的 systemd.mount-extra
+# /data:必须在这里挂 —— **不能**交给 kernel cmdline 的 systemd.mount-extra
 #
-# 曾经的写法是 cmdline 里 systemd.mount-extra=PARTLABEL=volume:/Volume:ext4:rw,noatime,
+# 曾经的写法是 cmdline 里 systemd.mount-extra=PARTLABEL=volume:/data:ext4:rw,noatime,
 # 真机(VM)实测会死锁,详见 AGENTS.md 坑 #24:
-#   * 该 cmdline 在主系统里生成 Volume.mount 单元,它 Requires/After
+#   * 该 cmdline 在主系统里生成 data.mount 单元,它 Requires/After
 #     dev-disk-by-partlabel-volume.device —— 要等 udev 建出 by-partlabel 符号链接;
 #   * 主系统 udev 要等 systemd-sysusers,而 sysusers 需要**可写的 /etc**;
-#   * 可写的 /etc 是本脚本挂的 overlay(upper/work 在 /Volume 上)⇒ 回到第一点。
+#   * 可写的 /etc 是本脚本挂的 overlay(upper/work 在 /data 上)⇒ 回到第一点。
 #   * 表现:systemd 破环时丢掉 local-fs-pre.target,udev 被推到 emergency 之后,
 #     所有 by-partlabel 挂载 90s 超时 ⇒ local-fs.target 失败 ⇒ emergency mode。
 # 所以改成自己挂,而且**不依赖 udev**:内核在 /sys 的 uevent 里直接给出 GPT 分区名
 # (PARTNAME=)。blkid 只是兜底(它直接读文件系统超级块,同样不需要 udev)。
+# 查找逻辑在 lib.sh 的 keel_part_dev()(os-install / os-rescue 也用同一份)。
 # ---------------------------------------------------------------------------
-keel_find_volume() {
-    local p dev
-    for p in /sys/class/block/*; do
-        [ -r "$p/uevent" ] || continue
-        if grep -qx 'PARTNAME=volume' "$p/uevent" 2>/dev/null; then
-            printf '/dev/%s' "${p##*/}"
-            return 0
-        fi
-    done
-    if command -v blkid >/dev/null 2>&1; then
-        dev=$(blkid -o device -t LABEL=volume 2>/dev/null | head -n1) || dev=
-        if [ -n "$dev" ]; then printf '%s' "$dev"; return 0; fi
-    fi
-    return 1
-}
+if ! mountpoint -q /data; then
+    dev=$(keel_part_dev volume) || keel_die "找不到 PARTNAME=volume / LABEL=volume 的分区,无法挂载 /data。系统状态不可信,请用救援盘(os-rescue)检查分区表"
+    install -d -m 0755 /data
+    mount -t ext4 -o rw,noatime "$dev" /data
+    keel_log "已把 $dev 挂到 /data"
+fi
 
-if ! mountpoint -q /Volume; then
-    dev=$(keel_find_volume) || keel_die "找不到 PARTNAME=volume / LABEL=volume 的分区,无法挂载 /Volume。系统状态不可信,请用救援盘(os-rescue)检查分区表"
-    install -d -m 0755 /Volume
-    mount -t ext4 -o rw,noatime "$dev" /Volume
-    keel_log "已把 $dev 挂到 /Volume"
+# ---------------------------------------------------------------------------
+# ESP:由**我们自己**挂,不再交给 systemd-gpt-auto-generator(坑 #36)
+#
+# 装机后的系统上实测:ESP 压根没挂上,而 os-status 只看得到 lower 里那个空 /boot,
+# 于是"看不到任何 UKI"、`上次启动结果: 无记录`;更糟的是 os-update 写新 UKI、
+# `bootctl set-preferred` 切槽、boot counting 改名全都在一个空目录上"成功"
+# ⇒ A/B 更新与槽确认这条链整条是断的。
+# gpt-auto 挂 ESP 的条件有好几条,而且**任何一条不满足都只是静默跳过**
+# (fstab 里有 /boot 条目、/boot 不空、读不到 EFI 变量 LoaderDevicePartUUID …),
+# 排查成本极高;我们要的东西很明确(一个可写的 vfat 挂在 /boot),那就自己挂。
+#
+# 幂等 + 绝不重复挂:先看挂载表里有没有"源设备 = PARTNAME=esp"的 vfat(可能是
+# gpt-auto 之前挂的,比如挂在 /efi),有就用现成的 —— 同一块 vfat 挂两次没有好处。
+# 挂载逻辑在 lib.sh 的 keel_esp_mount()(os-rescue --repair-boot 也调它)。
+# ---------------------------------------------------------------------------
+if esp_mnt=$(keel_esp_mount); then
+    if [ "$esp_mnt" = "$KEEL_ESP_MOUNT" ]; then
+        keel_log "已把 ESP(PARTNAME=esp)挂到 $esp_mnt(可写)"
+    else
+        keel_log "ESP 已经在 $esp_mnt(别人挂的,不重复挂)"
+    fi
+else
+    # 不 die:没有 ESP 也能进系统(引导器是固件那侧的事)。但没有它,更新/切槽/确认
+    # 全都做不了,所以必须**大声**说清楚,而不是让上层在空目录上继续"成功"。
+    keel_log "警告:没找到/挂不上 PARTNAME=esp 的分区(或者 EFI 变量那侧不对)"
+    keel_log "      ⇒ 这次启动里 os-update / bootctl set-preferred / keel-confirm 都不会生效;"
+    keel_log "      用 os-status 看 ESP 一节,或在救援盘上跑 os-rescue --repair-boot"
 fi
 
 # ---------------------------------------------------------------------------
@@ -49,26 +63,26 @@ fi
 # 必须在挂 overlay 之前做。旧的可写层整体改名保留成备份而不是删除 ——
 # 那里面装着账号、SSH 主机密钥、machine-id、Wi-Fi 密码,直接删掉不可逆。
 # ---------------------------------------------------------------------------
-if [ -e /Volume/overlayfs/.reset-etc-requested ]; then
+if [ -e /data/overlayfs/.reset-etc-requested ]; then
     ts=$(date +%Y%m%d-%H%M%S)
-    bak="/Volume/overlayfs/etc.bak-$ts"
+    bak="/data/overlayfs/etc.bak-$ts"
     keel_log "收到恢复出厂 /etc 的请求:旧的可写层备份到 $bak(不会删除)"
-    mv /Volume/overlayfs/etc/upper "$bak"
+    mv /data/overlayfs/etc/upper "$bak"
     # workdir 里可能残留指向旧 upper 的条目,一并重建,否则 overlayfs 会拒绝挂载
-    rm -rf /Volume/overlayfs/etc/work
-    install -d -m 0755 /Volume/overlayfs/etc/upper /Volume/overlayfs/etc/work
-    rm -f /Volume/overlayfs/.reset-etc-requested
+    rm -rf /data/overlayfs/etc/work
+    install -d -m 0755 /data/overlayfs/etc/upper /data/overlayfs/etc/work
+    rm -f /data/overlayfs/.reset-etc-requested
 fi
 
 # ---------------------------------------------------------------------------
 # /home:必须是**真实挂载点**
 #
-# 符号链接会让 ProtectHome= 之类的沙箱设置失效(服务仍能通过 /Volume/home
+# 符号链接会让 ProtectHome= 之类的沙箱设置失效(服务仍能通过 /data/home
 # 摸到用户数据),所以用 bind mount。
 # ---------------------------------------------------------------------------
 if ! mountpoint -q /home; then
-    mount --bind /Volume/home /home
-    keel_log "已把 /Volume/home 绑定到 /home"
+    mount --bind /data/home /home
+    keel_log "已把 /data/home 绑定到 /home"
 fi
 
 # ---------------------------------------------------------------------------
@@ -77,18 +91,18 @@ fi
 # 装机后实测(2026-09,坑 #34):
 #   error: the path '/nix' is a symlink; this is not allowed for the Nix store
 #          and its parent directories
-# 也不能改成"把 store 放到 /Volume/nix":store 里的二进制与脚本把 /nix/store/…
+# 也不能改成"把 store 放到 /data/nix":store 里的二进制与脚本把 /nix/store/…
 # 写死在 ELF interpreter 与 RPATH 里,位置搬不动。所以 /nix 是镜像里的真实空目录,
-# 启动早期 bind 到 /Volume/nix(骨架里本来就有 store/ 与 var/nix/…)。
+# 启动早期 bind 到 /data/nix(骨架里本来就有 store/ 与 var/nix/…)。
 # 本单元排在 sysinit 之前,任何 nix 相关单元都在它后面,顺序上够用。
 # ---------------------------------------------------------------------------
 if ! mountpoint -q /nix; then
     if [ -d /nix ]; then
-        install -d -m 0755 /Volume/nix
-        mount --bind /Volume/nix /nix
-        keel_log "已把 /Volume/nix 绑定到 /nix"
+        install -d -m 0755 /data/nix
+        mount --bind /data/nix /nix
+        keel_log "已把 /data/nix 绑定到 /nix"
     else
-        # 旧镜像里 /nix 是指向 /Volume/nix 的符号链接(根是只读的,这里改不了它),
+        # 旧镜像里 /nix 是指向 /data/nix 的符号链接(根是只读的,这里改不了它),
         # nix 会拒绝这种 store 路径 —— 说清楚,别让人对着报错猜(坑 #34)
         keel_log "警告:/nix 不是目录(而是符号链接?)—— nix 会拒绝符号链接的 store 路径,"
         keel_log "      换到新槽或重装后会修复;临时办法见 docs/troubleshooting.md §4"
@@ -96,18 +110,18 @@ if ! mountpoint -q /nix; then
 fi
 
 # ---------------------------------------------------------------------------
-# /etc:overlayfs(lower = 只读镜像,upper/work = /Volume)
+# /etc:overlayfs(lower = 只读镜像,upper/work = /data)
 #
-# 为什么不是"把 /Volume/etc 直接 bind 过来":那是一次性快照,
+# 为什么不是"把 /data/etc 直接 bind 过来":那是一次性快照,
 # 新版本镜像里 /etc 的任何改进都会被旧副本永久遮蔽(AGENTS.md 不变量 5)。
 # ---------------------------------------------------------------------------
 if [ "$(findmnt -no FSTYPE /etc 2>/dev/null || true)" != overlay ]; then
     mount -t overlay overlay \
-        -o "lowerdir=/etc,upperdir=/Volume/overlayfs/etc/upper,workdir=/Volume/overlayfs/etc/work" \
+        -o "lowerdir=/etc,upperdir=/data/overlayfs/etc/upper,workdir=/data/overlayfs/etc/work" \
         /etc
     keel_log "已在 /etc 上挂载 overlayfs"
     # PID1 在启动时只读到过 lower 里的 unit 文件。不 reload 的话,
-    # 只存在于 upper(/Volume)里的 unit 永远不会被加载(坑 #8)。
+    # 只存在于 upper(/data)里的 unit 永远不会被加载(坑 #8)。
     systemctl daemon-reload || keel_log "daemon-reload 失败(已忽略)"
 fi
 
@@ -148,7 +162,7 @@ fi
 #   ② 退路:/run/machine-id 不可用时,先把文件清空再交给 systemd-machine-id-setup ——
 #      空文件不是 ENOPKG,它会走正常的 machine_id_setup() 生成一个随机 ID 写进去。
 #
-# 写的时候 /etc 已经是 overlay ⇒ 内容落在 upper ⇒ 持久化在 /Volume 上,换槽/更新都不丢。
+# 写的时候 /etc 已经是 overlay ⇒ 内容落在 upper ⇒ 持久化在 /data 上,换槽/更新都不丢。
 # 每一步都回读校验,失败就大声报(这个文件无效会让 DHCP/IPv6/DNSSEC 一起静默失效)。
 #
 # 已知的残留不一致(不影响功能,记在这里免得以后有人当成 bug):

@@ -21,7 +21,7 @@ set -euo pipefail
 
 readonly SKELETON="/usr/share/keel/volume-skeleton"
 readonly REPART_DEFS="/usr/lib/keel/repart-install.d"
-readonly LIVE_CONFIG="/Volume/keel/config"
+readonly LIVE_CONFIG="/data/keel/config"
 readonly VOLUME_LABEL="volume"
 
 usage() {
@@ -34,7 +34,7 @@ usage() {
 做的事(architecture.md §7.1 B):
   1. systemd-repart 在目标盘建表(esp / root-a / root-b / volume)
   2. 当前运行的根文件系统 dd 到目标 root-a
-  3. mkfs.ext4 目标 volume,铺上镜像里的 /Volume 骨架 + 当前 config
+  3. mkfs.ext4 目标 volume,铺上镜像里的 /data 骨架 + 当前 config
   4. 当前 live ESP 的内容整体复制到目标 ESP(引导器 + loader.conf + UKI)
   5. 打印后续步骤(插到目标机 → UEFI 启动 → 首启自动补骨架/扩 volume/建 NVRAM 项)
 EOF
@@ -239,7 +239,7 @@ keel_log "目标分区:root-a=${part_root_a} volume=${part_volume} esp=${part_es
 #
 # TODO(待验证):根文件系统的实际占用大于目标分区时会截断。装机镜像里 root-a 是
 #   6 GiB 常量,但 live 环境长期使用后 /etc 的 overlay upper 会变大 —— 而 upper 在
-#   /Volume 上,不在根分区里,所以正常情况下根分区不会增长。真机上仍应确认
+#   /data 上,不在根分区里,所以正常情况下根分区不会增长。真机上仍应确认
 #   `blockdev --getsize64` 两边接近且 df 用量远小于目标分区。
 # ---------------------------------------------------------------------------
 if [ -z "$CUR_ROOT_SRC" ]; then
@@ -275,7 +275,7 @@ trap "umount -R '$VOL_MNT' 2>/dev/null || true; umount -R '$ESP_MNT' 2>/dev/null
 
 mount -t ext4 "$part_volume" "$VOL_MNT" || keel_die "挂载 ${part_volume} 失败"
 if [ -d "$SKELETON" ]; then
-    cp -a "$SKELETON/." "$VOL_MNT/" || keel_die "铺 /Volume 骨架失败"
+    cp -a "$SKELETON/." "$VOL_MNT/" || keel_die "铺 /data 骨架失败"
     keel_log "骨架已铺入目标 volume(${SKELETON})"
 else
     keel_log "警告:镜像里没有 ${SKELETON},目标 volume 只有空目录;首启会尝试自愈(os-rescue --init-volume)"
@@ -283,7 +283,7 @@ fi
 if [ -f "$LIVE_CONFIG" ]; then
     install -d -m 0755 "$VOL_MNT/keel"
     cp -a "$LIVE_CONFIG" "$VOL_MNT/keel/config" || keel_die "复制 ${LIVE_CONFIG} 失败"
-    keel_log "已把当前 /Volume/keel/config 带到目标(首启就有可用的更新源)"
+    keel_log "已把当前 /data/keel/config 带到目标(首启就有可用的更新源)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -302,7 +302,7 @@ if [ -d "$VOL_MNT/keel" ]; then
         echo "last_result_version="
         echo "last_result_time="
     } >"$VOL_MNT/keel/state"; then
-        keel_log "警告:写目标 /Volume/keel/state 失败(首启的成功判定会退化为'无 pending')"
+        keel_log "警告:写目标 /data/keel/state 失败(首启的成功判定会退化为'无 pending')"
     fi
 fi
 sync
@@ -318,6 +318,16 @@ trap - EXIT
 # 一起过去。**不需要**改 UKI 里的 cmdline:它写的是 root=PARTLABEL=root-a,而目标
 # 盘的 A 槽标签同名(§3.3 / AGENTS.md 坑 #5)。
 # ---------------------------------------------------------------------------
+# live 环境里的 ESP 必须真的挂上(坑 #36):没挂就先挂 —— 失败在"复制不到 UKI"上,
+# 总好过装出一块"看着装好了、其实起不来"的盘
+if [ "$KEEL_ESP_MOUNTED" != yes ]; then
+    if esp_mnt=$(keel_esp_mount); then
+        keel_log "live ESP 原来没挂上,已挂到 $esp_mnt"
+        KEEL_ESP=$esp_mnt
+        KEEL_UKI_DIR="$esp_mnt/EFI/Linux"
+        KEEL_ESP_MOUNTED=yes
+    fi
+fi
 ESP_MNT="$(mktemp -d /tmp/keel-install.XXXXXX)"
 mount -t vfat -o umask=0077 "$part_esp" "$ESP_MNT" || keel_die "挂载 ${part_esp} 失败"
 if [ -d "$KEEL_ESP" ]; then
@@ -370,13 +380,13 @@ cat <<EOF
 接下来:
   1. 把目标盘装进目标机,固件里确认是 **UEFI 模式**(关掉 CSM/Legacy);
   2. 首次启动会自动完成(keel-firstboot.service,幂等):
-     - 修补 /Volume 骨架(顺带重建 dbus 的 machine-id 链接)
+     - 修补 /data 骨架(顺带重建 dbus 的 machine-id 链接)
      - 把 volume 扩到整盘剩余空间
      - 跑 bootctl install 建立本机 NVRAM 启动项(装机镜像里不可能带)
-     - 按 /Volume/keel/config 的 SWAPFILE_SIZE 创建并启用 swapfile
-  3. 起来后 os-status 确认:当前槽、/Volume 容量、schema-version 都正常;
+     - 按 /data/keel/config 的 SWAPFILE_SIZE 创建并启用 swapfile
+  3. 起来后 os-status 确认:当前槽、/data 容量、schema-version 都正常;
   4. 建普通用户:useradd -m -s /bin/bash <name> + passwd <name>
-     (账号写在 /etc 的 overlay 里,持久化在 /Volume 上)
+     (账号写在 /etc 的 overlay 里,持久化在 /data 上)
   5. 想测槽切换:B 槽是空的,先用 sudo os-update stage --force 填一个真正的
      root-b 载荷(os-update fetch 下来的载荷里才有 cmdline 正确的 UKI)。
 

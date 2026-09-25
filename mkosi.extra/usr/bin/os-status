@@ -1,6 +1,6 @@
 #!/bin/bash
 # os-status —— 只读的系统状态报告:当前槽/版本/内核、pending 更新、上次更新结果、
-#              /Volume 用量与布局版本、槽位分区、ESP 上的 UKI、/etc overlay 状态。
+#              /data 用量与布局版本、槽位分区、ESP 上的 UKI、/etc overlay 状态。
 #
 # 见 docs/architecture.md §9(命令集)与 §8(更新流程);更新时序见 §5.3。
 # 出问题时先看这份报告,对应的排查入口见 docs/troubleshooting.md §3/§5。
@@ -107,19 +107,19 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3) /Volume:挂没挂、用量、布局版本、swap
+# 3) /data:挂没挂、用量、布局版本、swap
 # ---------------------------------------------------------------------------
 hr
-if [ -d /Volume ]; then
-    echo "/Volume 挂载  : $(out_or "未知(未挂载?)" findmnt -no SOURCE,FSTYPE /Volume)"
-    echo "/Volume 用量  :"
-    df -h /Volume 2>/dev/null | tail -n +2 | sed 's/^/  /' || echo "  未知(读不到 /Volume)"
+if [ -d /data ]; then
+    echo "/data 挂载  : $(out_or "未知(未挂载?)" findmnt -no SOURCE,FSTYPE /data)"
+    echo "/data 用量  :"
+    df -h /data 2>/dev/null | tail -n +2 | sed 's/^/  /' || echo "  未知(读不到 /data)"
 else
-    echo "/Volume      : 不存在(/Volume 没挂上,见 troubleshooting.md §3)"
+    echo "/data      : 不存在(/data 没挂上,见 troubleshooting.md §3)"
 fi
 
-schema="$(read_file /Volume/keel/schema-version)"
-echo "布局版本     : ${schema:-未知}(/Volume/keel/schema-version;当前镜像骨架是 1)"
+schema="$(read_file /data/keel/schema-version)"
+echo "布局版本     : ${schema:-未知}(/data/keel/schema-version;当前镜像骨架是 1)"
 
 # swap:swapon --show 在没有任何 swap 时输出为空且退出 0(不是错误)
 swap_rows="$(swapon --show 2>/dev/null | tail -n +2)" || swap_rows=""
@@ -166,6 +166,15 @@ done
 # 计数归零后引导器会跳过它。这里标出当前槽那几条,一眼就能看出是不是在重试。
 # ---------------------------------------------------------------------------
 hr
+if [ "$KEEL_ESP_MOUNTED" = yes ]; then
+    echo "ESP 挂载     : $KEEL_ESP($(out_or "?" findmnt -no SOURCE,FSTYPE "$KEEL_ESP"))"
+else
+    echo "ESP 挂载     : 没有挂上(期望 $KEEL_ESP_MOUNT)"
+    echo "               警告:下面这一节看到的是只读镜像里的空目录,不是 ESP 的内容!"
+    echo "               后果:os-update 写不进新 UKI、bootctl set-preferred 切不了槽、"
+    echo "               keel-confirm 确认不了槽(AGENTS.md 坑 #36)。"
+    echo "               自救:sudo os-rescue --repair-boot,或 systemctl restart keel-mounts"
+fi
 echo "ESP 上的 UKI(目录 $KEEL_UKI_DIR)"
 found_uki=0
 if [ -d "$KEEL_UKI_DIR" ]; then
@@ -184,10 +193,12 @@ if [ -d "$KEEL_UKI_DIR" ]; then
         esac
         echo "  $base${note}"
     done
+elif [ "$KEEL_ESP_MOUNTED" != yes ]; then
+    echo "  跳过:ESP 没挂上(见上面那行警告)"
 else
     echo "  目录不存在:$KEEL_UKI_DIR"
 fi
-if [ "$found_uki" -eq 0 ]; then
+if [ "$found_uki" -eq 0 ] && [ "$KEEL_ESP_MOUNTED" = yes ]; then
     echo "  没有任何 UKI 条目 —— 引导器不会列出 keel 的启动项"
 fi
 
@@ -262,7 +273,7 @@ src="$(keel_conf UPDATE_SOURCE "" 2>/dev/null)" || src=""
 if [ -n "$src" ]; then
     echo "更新源       : ${src}"
 else
-    echo "更新源       : 未配置(改 /Volume/keel/config 的 UPDATE_SOURCE=)"
+    echo "更新源       : 未配置(改 /data/keel/config 的 UPDATE_SOURCE=)"
 fi
 swap_cfg="$(keel_conf SWAPFILE_SIZE "" 2>/dev/null)" || swap_cfg=""
 echo "swapfile 配置: ${swap_cfg:-留空 = min(内存, 8G) 且不小于 1G}"

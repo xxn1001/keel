@@ -10,7 +10,7 @@
 
 **keel** —— 一个 **不可变基座 + A/B 双槽 + nix 用户态** 的操作系统镜像项目,用
 [mkosi](https://github.com/systemd/mkosi) 构建,基底是 **Debian stable (trixie)**。
-它**不是** NixOS:基础系统由 Debian 包组成、只读、原子更新;nix 只负责用户态软件(装在 `$VOLUME/nix`)。
+它**不是** NixOS:基础系统由 Debian 包组成、只读、原子更新;nix 只负责用户态软件(装在 `/data/nix`)。
 
 演进路径:
 
@@ -25,7 +25,7 @@
 | 项目 / 镜像标识 | `keel`(`ImageId=`) |
 | 面向用户的命令 | `os-status`、`os-update`、`os-install`、`os-rescue` |
 | 项目内部单元 | `keel-*.service` / `/usr/lib/keel/` |
-| 持久状态目录 | `/Volume/keel/` |
+| 持久状态目录 | `/data/keel/` |
 | 分区标签 | `esp`、`root-a`、`root-b`、`volume` |
 | ESP 上的 UKI | `/efi/EFI/Linux/keel-a.efi`、`keel-b.efi`(带计数时 `keel-a+3.efi`) |
 
@@ -35,32 +35,32 @@
 
 改动代码前先确认没有违反下面任何一条。每一条都是有意为之,违反后会在某个不显眼的时刻炸掉。
 
-1. **基础系统只读,状态全在 `/Volume`。**
-   根分区以 `ro` 挂载;`/var`、`/root` 是指向 `/Volume` 的符号链接;
+1. **基础系统只读,状态全在 `/data`。**
+   根分区以 `ro` 挂载;`/var`、`/root` 是指向 `/data` 的符号链接;
    **`/home` 与 `/nix` 是真目录 + bind mount**(由 `keel-mounts` 在启动早期挂上)。
    这两个为什么不能是符号链接:
-   - `/home`:符号链接会破坏 `ProtectHome=` 之类的沙箱语义(服务仍能经 `/Volume/home` 摸到用户数据);
+   - `/home`:符号链接会破坏 `ProtectHome=` 之类的沙箱语义(服务仍能经 `/data/home` 摸到用户数据);
    - `/nix`:`nix` **硬性拒绝**符号链接的 store 路径(坑 #34),而 store 的位置又搬不动 ——
      二进制与脚本把 `/nix/store/…` 写死在 ELF interpreter 与 RPATH 里。
    其余目录能符号链接就符号链接 —— 少一层挂载、少一处启动期依赖。
 
-2. **`/Volume` 必须在用户空间刚起来时就已挂好,且挂载过程不能依赖 udev。**
+2. **`/data` 必须在用户空间刚起来时就已挂好,且挂载过程不能依赖 udev。**
    符号链接与 bind mount 都无法参与挂载顺序约束,不能靠"启动后再挂" —— `/var` `/root` 是指向
-   `/Volume` 的符号链接,`/home` `/nix` 要 bind 上去;挂晚了早期服务(random-seed、journald、tmpfiles)
+   `/data` 的符号链接,`/home` `/nix` 要 bind 上去;挂晚了早期服务(random-seed、journald、tmpfiles)
    就会往悬空链接/空目录上写。
    **实现方式(踩过坑 #24,2026-09 真机实测后改的)**:由 `keel-mounts.service`(在 `sysinit` 之前)
    自己扫 `/sys/class/block/*/uevent` 里的 `PARTNAME=volume` 找到分区并 `mount`。
-   **不要**改回 kernel cmdline 的 `systemd.mount-extra=PARTLABEL=volume:/Volume:...`:
-   那会在主系统里生成 `Volume.mount`,它要等 udev 建出 `/dev/disk/by-partlabel/*`;
-   而 udev 要等 `systemd-sysusers`,sysusers 要可写的 `/etc`,可写的 `/etc` 又是挂在 `/Volume`
+   **不要**改回 kernel cmdline 的 `systemd.mount-extra=PARTLABEL=volume:/data:...`:
+   那会在主系统里生成 `data.mount`,它要等 udev 建出 `/dev/disk/by-partlabel/*`;
+   而 udev 要等 `systemd-sysusers`,sysusers 要可写的 `/etc`,可写的 `/etc` 又是挂在 `/data`
    上的 overlay ⇒ 环形依赖 ⇒ systemd 丢掉 `local-fs-pre.target`、udev 被推到 emergency 之后、
    所有 by-partlabel 挂载 90 秒超时 ⇒ emergency mode。
-   (当时的假设是"initrd 会帮忙挂" —— 实测**不会**:initrd 里根本没有我们的文件,也没挂 `/Volume`。)
-   ESP 同理:交给 `systemd-gpt-auto-generator` 自动挂(`/boot` 或 `/efi`,取决于镜像里哪个目录存在),
-   代码里一律用 `$KEEL_ESP` / `$KEEL_UKI_DIR`(`lib.sh` 里用 `bootctl --print-esp-path` 现问,坑 #25)。
-   **⚠ 这条在"装机后的系统"里实测是坏的**(ESP 压根没挂上,而 `keel_esp()` 只是"猜"路径、
-   不验证挂载点)⇒ 见坑 #36:诊断命令、gpt-auto 的静默跳过条件、候选修法都在那里,
-   在修好之前**不要**假设 `$KEEL_ESP` 下面的东西是真的。
+   (当时的假设是"initrd 会帮忙挂" —— 实测**不会**:initrd 里根本没有我们的文件,也没挂 `/data`。)
+   ESP 同理:**也是 `keel-mounts` 自己挂**(扫 `PARTNAME=esp`,以 rw 挂到 `/boot`;决策 D18),
+   cmdline 里用 `systemd.gpt_auto=no` 让 `systemd-gpt-auto-generator` 完全退场 ——
+   它挂 ESP 做得静默且不可靠(装机后的系统上实测压根没挂上,见坑 #36)。
+   代码里一律用 `$KEEL_ESP` / `$KEEL_UKI_DIR`,并且**先看 `$KEEL_ESP_MOUNTED`**:
+   没挂上时 `KEEL_ESP` 是空的,谁都不许把它当成真路径去读写(坑 #36 的教训就是"每步都成功")。
 
 3. **每个槽一个完整 UKI,内核与根文件系统永远配对。**
    切换槽 = 换整个 UKI(内核 + initrd + `root=` + 微码都在里面)。绝不允许"新内核 + 旧根"的组合 ——
@@ -78,13 +78,13 @@
    验证通过后再换底层,门面不动。
 
 5. **`/etc` 必须可写,用 overlayfs,不用 bind mount。**
-   lower = 只读镜像的 `/etc`,upper/work = `/Volume/overlayfs/etc/{upper,work}`。
-   整体 bind 一个 `/Volume/etc` 会让新版本镜像的默认配置被旧副本永久遮蔽,这是 A/B 系统的经典坑。
+   lower = 只读镜像的 `/etc`,upper/work = `/data/overlayfs/etc/{upper,work}`。
+   整体 bind 一个 `/data/etc` 会让新版本镜像的默认配置被旧副本永久遮蔽,这是 A/B 系统的经典坑。
 
-6. **`/Volume` 的 schema 变更只能"只增不破",而且由旧系统在 stage 阶段执行。**
-   新版本可以加目录/加文件,不能让旧版本读不懂 —— 回滚时旧系统会挂在同一个 `/Volume` 上。
+6. **`/data` 的 schema 变更只能"只增不破",而且由旧系统在 stage 阶段执行。**
+   新版本可以加目录/加文件,不能让旧版本读不懂 —— 回滚时旧系统会挂在同一个 `/data` 上。
    迁移必须**声明式**(manifest 里列出"建哪些目录/文件"),**不要执行下载来的脚本**。
-   改动必须 bump `/Volume/keel/schema-version` 并在 `docs/update.md` 记录。
+   改动必须 bump `/data/keel/schema-version` 并在 `docs/update.md` 记录。
 
 7. **基底里不放用户软件。**
    应用、开发工具、桌面环境、CUDA 一律走 nix。判据:
@@ -121,9 +121,9 @@
 | **产物形态** | 安装镜像、A 槽载荷、B 槽载荷 | `mkosi.profiles/{install,slot-a,slot-b}.conf` |
 | **用途变体** | `desktop`、`server` | `mkosi.profiles/{desktop,server}.conf` |
 | **硬件家族** | 按机型挑固件包、电源管理 | `machines/*.conf` |
-| **单机运行期状态** | hostname、Wi-Fi 密码、vfio 绑哪块卡、VM 定义 | **`/Volume`(不进 git)** |
+| **单机运行期状态** | hostname、Wi-Fi 密码、vfio 绑哪块卡、VM 定义 | **`/data`(不进 git)** |
 
-判定准则:**构建期差异进仓库,运行期状态进 `/Volume`。**
+判定准则:**构建期差异进仓库,运行期状态进 `/data`。**
 
 ### `machines/` 目录
 
@@ -150,8 +150,8 @@
    → 最后才换链接。
 
 3. **镜像里 `/var` 的内容在运行时看不见。**
-   因为 `/var` 是符号链接,运行时看到的是 `/Volume/var`。所以:
-   - `/Volume` 骨架必须**显式**提供,不能指望镜像里的 `/var`(构建时从镜像的 `/var` 快照生成,
+   因为 `/var` 是符号链接,运行时看到的是 `/data/var`。所以:
+   - `/data` 骨架必须**显式**提供,不能指望镜像里的 `/var`(构建时从镜像的 `/var` 快照生成,
      但剔除包管理器状态目录);
    - 尤其别忘 `/var/lib/dbus/machine-id -> /etc/machine-id`(Debian 是 dbus 包 postinst 建的,
      而 `/var` 是新的 ⇒ 这个链接会消失);
@@ -214,11 +214,11 @@
 14. **`GrowFileSystem=yes` 只扩分区,不扩文件系统。**
     systemd-repart 从不改动**已存在**分区的文件系统(源码 `context_mkfs()` 对已存在分区直接 continue);
     `GrowFileSystem=` 只是打一个 GPT 标志位,而那个标志只被 `systemd-gpt-auto-generator` 消费 ——
-    我们的 `/Volume` 是自己用 `mount` 挂的(不变量 2),**根本不过 gpt-auto-generator**。
-    ⇒ 扩容必须两步:`systemd-repart` 扩分区 + `systemd-growfs /Volume` 扩文件系统
+    我们的 `/data` 是自己用 `mount` 挂的(不变量 2),**根本不过 gpt-auto-generator**。
+    ⇒ 扩容必须两步:`systemd-repart` 扩分区 + `systemd-growfs /data` 扩文件系统
     (两处都已实现:首启的 `keel-firstboot` 与 `os-rescue --grow-volume`)。
     另外 `systemd-growfs` 对 ext4 会调 `resize2fs`,所以 `e2fsprogs` **必须**在包清单里。
-    首次真机启动后请用 `df -h /Volume` 复核这一点。
+    首次真机启动后请用 `df -h /data` 复核这一点。
 
 15. **宿主必须是一个 mkosi 支持的发行版,否则连 tools tree 都建不出来。**
     mkosi 要先**用宿主的包管理器**建一棵 tools tree(`apt`/`ukify`/`repart`/`qemu` 都在那里面),
@@ -348,11 +348,11 @@
     保留增量缓存(`mkosi.cache/`);要连缓存一起删才是 `-ff`。
     (与坑 #19 的关系:那条说的是"跑 `vm` 前要先 `build`",这条说的是"`build` 得真的建东西"。)
 
-24. **`systemd.mount-extra=PARTLABEL=…` 会让早期启动死锁:它依赖 udev,而 udev 依赖可写的 `/etc`,可写的 `/etc` 又依赖 `/Volume`。**
+24. **`systemd.mount-extra=PARTLABEL=…` 会让早期启动死锁:它依赖 udev,而 udev 依赖可写的 `/etc`,可写的 `/etc` 又依赖 `/data`。**
     这是**第一次真机(VM)启动**抓到的,整条链是:
     ```
-    keel-mounts(Before=sysusers,需要可写的 /etc,而 /etc overlay 的 upper 在 /Volume)
-        → RequiresMountsFor=/Volume → Volume.mount
+    keel-mounts(Before=sysusers,需要可写的 /etc,而 /etc overlay 的 upper 在 /data)
+        → RequiresMountsFor=/data → data.mount
         → Requires/After dev-disk-by-partlabel-volume.device(要 udev 建符号链接)
         → systemd-udevd(After=systemd-sysusers)
         → systemd-sysusers(要写 /etc)
@@ -363,32 +363,36 @@
     **emergency 之后**才启动,所有 `by-partlabel` 挂载等满 90 秒超时:
     ```
     [ TIME ] Timed out waiting for device dev-disk-by-partlabel-volume.device - /dev/disk/by-partlabel/volume.
-    [DEPEND] Dependency failed for Volume.mount - /Volume.
+    [DEPEND] Dependency failed for data.mount - /data.
     [DEPEND] Dependency failed for local-fs.target - Local File Systems.
     [DEPEND] Dependency failed for keel-mounts.service …
     ```
     ⇒ local-fs 失败 ⇒ **emergency mode**;连带 `systemd-random-seed`(往悬空的 `/var` 符号链接写)、
     `systemd-timesyncd` 一起失败。
     顺带证伪了两个曾经的假设:
-    - **initrd 并不会帮我们挂 `/Volume`**:cmdline 里的 `systemd.mount-extra` 在 initrd 阶段没有生成
-      `/sysroot/Volume`(把 initrd 从 UKI 里抽出来看,里面根本没有我们的文件,也没有任何 `/Volume` 挂载动作);
+    - **initrd 并不会帮我们挂 `/data`**:cmdline 里的 `systemd.mount-extra` 在 initrd 阶段没有生成
+      `/sysroot/data`(把 initrd 从 UKI 里抽出来看,里面根本没有我们的文件,也没有任何 `/data` 挂载动作);
     - 而 `root=PARTLABEL=root-a` 在 initrd 里**是**有效的(`Found device …root-a.device` ✓)。
-    ⇒ 现在的做法见不变量 2:keel-mounts 自己扫 `/sys` 的 `PARTNAME=` 挂 `/Volume`(不经过 udev、
+    ⇒ 现在的做法见不变量 2:keel-mounts 自己扫 `/sys` 的 `PARTNAME=` 挂 `/data`(不经过 udev、
     不生成 `.mount` 单元),`keel-mounts.service` 里加 `Before=systemd-random-seed.service`,
     cmdline 里**不再有** `systemd.mount-extra`。`tools/verify.sh` 有正反两条断言守着。
     **教训**:早期启动里任何"要等 udev"的东西,都要先问一句"udev 自己能不能起来"。
 
-25. **ESP 挂在哪由 gpt-auto 决定,不要硬编码 `/efi`。**
-    ESP 是 Discoverable Partitions 类型,`systemd-gpt-auto-generator` 会自动挂载它 ——
-    挂到 `/boot` 还是 `/efi` 取决于镜像里哪个目录存在(规则是 `/boot` 优先)。
-    我们的镜像里两个空目录都有(构建期 mkosi 用 `/efi`,finalize 又建了 `/boot`),
-    实测 gpt-auto 选了 **`/boot`**(而且它建的是 `boot.automount`,按需挂载、不会拖垮 local-fs ✓)。
-    于是原来 cmdline 里那条 `systemd.mount-extra=PARTLABEL=esp:/efi:vfat:ro` 不但多余,
-    还因为依赖 udev 符号链接而失败(坑 #24 的受害者之一),并且它是 `ro` 的 ——
-    而 boot counting / `bootctl set-preferred` / `os-update` 都需要**可写**的 ESP。
-    ⇒ 现在:cmdline 不挂 ESP;`lib.sh` 用 `bootctl --print-esp-path` 现问路径并导出
-    `KEEL_ESP` / `KEEL_UKI_DIR`,所有脚本只用这两个变量(`tools/verify.sh` 会检查没有脚本
-    硬编码 `/efi/EFI`)。
+25. **ESP 是我们自己挂的(`/boot`);`systemd-gpt-auto-generator` 已被关掉。**
+    曾经的做法是"让 gpt-auto 自动挂 ESP,`bootctl --print-esp-path` 现问路径"(那是坑 #25 的原文)。
+    2026-09 装机后的系统上实测:**ESP 压根没挂上**,而 bootctl 只是在按 gpt-auto 的规则**猜**
+    (`/boot` 目录存在就报 `/boot`),于是所有 UKI 操作都落在一个空目录上,而且**每一步都"成功"**
+    —— 详见坑 #36。现在:
+    * `keel-mounts` 扫 `/sys/class/block/*/uevent` 的 `PARTNAME=esp`,以 **rw** 挂到 `/boot`
+      (`fmask=0133,dmask=0022`,对齐 systemd 给 ESP 的默认值);已经是挂载点就绝不重复挂
+      (先按"源设备 == PARTNAME=esp"在挂载表里找,gpt-auto 以前可能把它挂在 `/efi`);
+    * `lib.sh` 的 `keel_esp()` 只承认两种来源:① 挂载表里的 ESP;② `bootctl --print-esp-path`
+      给的路径**确实是挂载点**。都不成立就输出空,并把 `KEEL_ESP_MOUNTED` 置成 `no`;
+    * `KEEL_ESP_MOUNTED=no` 时:**`os-update` 在写根分区之前就拒绝**(只换根不换内核 = 违反不变量 3)、
+      `os-status` 明说"看到的是空目录"、`keel-confirm` 记一条"没做 set-preferred"、
+      `keel-firstboot` / `os-rescue --repair-boot` / `os-install` 会**自己先试着挂一次**;
+    * 仍然**不要**硬编码 `/efi` 或 `/boot/EFI`:一律走 `$KEEL_ESP` / `$KEEL_UKI_DIR`
+      (`tools/verify.sh` 有断言)。
 
 26. **mkosi 的 `Autologin=yes` 在本镜像里会变成"登录成功但 shell 秒退"的死循环。**
     现象(VM 控制台):`Debian GNU/Linux 13 localhost hvc0` + `localhost login: root (automatic login)`
@@ -453,7 +457,7 @@
     * 影响面不止 DHCP:IPv6 稳定隐私地址、resolved 的 DNSSEC 密钥、任何 `%m` 展开一起废。
     ⇒ **修法**:`/usr/lib/keel/mounts` 在挂完 `/etc` overlay 之后**立刻**把 PID1 本次启动
       **已经在用**的那个 ID(`/run/machine-id`)原样写进 `/etc/machine-id` —— 此时 `/etc` 已经是
-      overlay,内容落进 upper ⇒ 在 `/Volume` 上、每台机器唯一、换槽与更新都不丢
+      overlay,内容落进 upper ⇒ 在 `/data` 上、每台机器唯一、换槽与更新都不丢
       (`docs/architecture.md` §4.3);`/run/machine-id` 不可用时才清空文件、让
       `systemd-machine-id-setup` 生成一个。写完回读校验,不对就大声报。
       `DHCP=yes` 交回 networkd,`dhcpcd-base` / `keel-dhcpcd.service` / dhcpcd hook /
@@ -523,7 +527,7 @@
     `$R/usr/lib/keel/repart-install.d/`,并**删掉所有 `CopyFiles=` 行**。原因:
     repart 的 `CopyFiles=` 源在既没有 `--root=` 也没有 `--copy-source=` 时解析到
     **宿主机的真实 /** —— mkosi 构建时传了 `--root=<镜像树>`,所以构建时 `CopyFiles=/`
-    指的是"镜像里的 /";运行时(没有 `--root=`)它会把 `/proc` `/sys` `/run` `/Volume`
+    指的是"镜像里的 /";运行时(没有 `--root=`)它会把 `/proc` `/sys` `/run` `/data`
     一起卷进来,而 `os-install` 本来就会自己 dd 根分区、mkfs volume、复制 ESP,
     根本不需要 repart 代劳。
     分区名/类型/尺寸仍是**同一份来源**(只删 CopyFiles),所以两张表必然一致:
@@ -565,7 +569,7 @@
     当时的实现只查 `lsblk -no PARTLABEL,PATH,PKNAME <目标盘>`。
     ⇒ 现在的 `find_part` 两道保险:
     1. **先扫 sysfs**:`/sys/class/block/*/uevent` 里的 `PARTNAME=` 是内核直接给的,不经过 udev
-       (同一个思路见不变量 2 里 `/Volume` 的挂载);父设备用
+       (同一个思路见不变量 2 里 `/data` 的挂载);父设备用
        `basename "$(dirname "$(readlink -f /sys/class/block/vda1)")"` 判断,不靠 `lsblk` 的 PKNAME;
     2. 查不到就 `blockdev --rereadpt` + `udevadm settle` 后**重试约 10 秒**,
        仍然没有就把现场(`lsblk -o NAME,SIZE,TYPE,PARTLABEL,PKNAME` + `/proc/partitions`)打到 stderr ——
@@ -575,7 +579,7 @@
     **教训**:`lsblk` 的 PARTLABEL/PARTTYPE 这些列是 udev 的产物,不是内核的;
     对"刚刚才发生"的设备变化要用 sysfs(`/sys/class/block/*/uevent`)或 `/proc/partitions`。
     (根因未最终确认:也可能是内核当时拒绝了 `BLKRRPART`(比如 repart 的 loop 设备还没放手),
-    所以现在额外显式做一次 `blockdev --rereadpt`;真机现场见 `docs/troubleshooting.md` §2.3。)
+    所以现在额外显式做一次 `blockdev --rereadpt`;真机现场见 `docs/troubleshooting.md` §2.4。)
 
 34. **`/nix` 不能是符号链接 —— nix 硬性拒绝,装好的系统上所有 nix 命令立刻失败。**
     现象(装机后第一次用 nix):
@@ -584,11 +588,11 @@
     error: the path '/nix' is a symlink; this is not allowed for the Nix store and its parent directories
     ```
     这是 nix 的硬性检查(store 及其父目录都不能是符号链接),不是配置能绕过去的;
-    **也不能**改成"把 store 放到 `/Volume/nix`" —— store 里的二进制与脚本把 `/nix/store/…`
+    **也不能**改成"把 store 放到 `/data/nix`" —— store 里的二进制与脚本把 `/nix/store/…`
     写死在 ELF interpreter 与 RPATH 里,位置搬不动。
     ⇒ `/nix` 和 `/home` 一样改成**真实目录 + bind mount**(不变量 1):
-    `mkosi.finalize` 建空目录、`/usr/lib/keel/mounts` 里 `mount --bind /Volume/nix /nix`。
-    `/Volume/nix`(含 `store/` 与 `var/nix/…`)本来就在骨架里,所以 `/Volume` 的 schema 不用动;
+    `mkosi.finalize` 建空目录、`/usr/lib/keel/mounts` 里 `mount --bind /data/nix /nix`。
+    `/data/nix`(含 `store/` 与 `var/nix/…`)本来就在骨架里,所以 `/data` 的 schema 不用动;
     但**已经装好的旧系统**要等新槽生效(`os-update` 会换掉整个根文件系统)才会拿到真实目录,
     在那之前可以热修(见 `docs/troubleshooting.md` §4)。
     `tools/verify.sh` 有断言:finalize 不许 `ln -s …/nix`,且 mounts 里必须有 `/home` 与 `/nix`
@@ -610,69 +614,76 @@
     **基底**,不是我们的产品 —— 凡是"我们自己的版本/标识"都要用 mkosi 注入的 `IMAGE_ID`/`IMAGE_VERSION`,
     或者干脆自己写一份文件。
 
-36. **装机后的系统里 ESP 没挂上:`os-status` 看不到 UKI,`keel-confirm` 也确认不了槽(2026-09 发现,先挂账,未解决)。**
+36. **装机后的系统里 ESP 没挂上 ⇒ `os-status` 看不到 UKI、`keel-confirm` 确认不了槽(2026-09 发现并修好)。**
     现象(VM 里 `os-install /dev/vda` 装出来的系统,`os-status` 输出):
     ```
     ESP 上的 UKI(目录 /boot/EFI/Linux)
       目录不存在:/boot/EFI/Linux            ← 一个 UKI 条目都没有
     上次启动结果: 无记录
     ```
-    但**这台机器确实是从那块盘启动起来的**(当前槽 a,pending 也是装机时写的)⇒ ESP 上的
-    loader 与 UKI 一定都在。所以"看不见"不是 ESP 空了,而是**它根本没挂到 `/boot`**:
-    `lib.sh` 的 `keel_esp()` 先问 `bootctl --print-esp-path`,而 bootctl 只按 gpt-auto 的规则
-    **猜**一个路径(镜像里 `/boot` 目录存在就报 `/boot`),**从不检查它是不是真的挂载点**
-    ⇒ 之后所有 `$KEEL_UKI_DIR` / bootctl 操作都落在一个空目录上。
-    后果都是静默的:`os-update` 写不进新 UKI、`bootctl set-preferred` 切不了槽、
-    boot counting 的 blessed 改名做不了 ⇒ **A/B 更新与"槽启动成功确认"这条链现在是断的**。
-    `systemd-gpt-auto-generator` 决定挂不挂 ESP 的条件(源码 `process_loader_partitions()` /
-    `add_partition_esp()`;注意与"ESP 里有没有文件"无关,而且**全都会静默跳过**):
+    但**这台机器确实是从那块盘启动起来的**(当前槽 a、pending 也是装机时写的)⇒ ESP 上的
+    loader 与 UKI 一定都在。所以"看不见"不是 ESP 空了,而是**它根本没挂到 `/boot`**。
+    更坑的是**没有一处报错**:`keel_esp()` 把 `bootctl --print-esp-path` 的输出当路径用,
+    而 bootctl 只是按 gpt-auto 的规则猜(`/boot` 目录存在就报 `/boot`),**从不验证它是不是挂载点**
+    ⇒ 之后所有 `$KEEL_UKI_DIR` / bootctl 操作都在空目录上"成功":
+    `os-update` 写不进新 UKI、`bootctl set-preferred` 切不了槽、boot counting 改名做不了
+    ⇒ **A/B 更新与槽确认这条链整条是断的**。
+    为什么不再用 gpt-auto(源码 `process_loader_partitions()` / `add_partition_esp()`,
+    这些条件**任何一条不满足都只是静默跳过**):
     1. `/etc/fstab` 里但凡有 `/boot` 或 `/efi` 下的条目 ⇒ 整个 ESP/XBOOTLDR 逻辑不生成;
     2. `/boot` 必须是"没被占用"的目录(`path_is_busy()`:是挂载点、或**目录里有文件**都算占用)
        —— 否则退到 `/efi`;`/efi` 也被占用就什么都不挂;
     3. 固件这次启动的**必须就是这块 ESP**:它读 EFI 变量 `LoaderDevicePartUUID`
-       (`efi_loader_get_device_part_uuid()`,要求 efivarfs 已挂载)。变量读不到时打印
-       `EFI loader partition unknown, skipping ESP and XBOOTLDR mounts.` 就放弃;
+       (`efi_loader_get_device_partuuid()`,要求 efivarfs 已挂载);变量读不到时打印
+       `EFI loader partition unknown, skipping ESP and XBOOTLDR mounts.` 就放弃,
        变量指向的分区 UUID 与磁盘上的 ESP 不一致时同样放弃。
-    ⇒ 下次进那个系统先跑这几条(结论回填本节 + `docs/troubleshooting.md`):
-    ```bash
-    findmnt /boot /efi; ls -la /boot /efi
-    systemctl status boot.automount boot.mount efi.automount efi.mount --no-pager
-    ls /sys/firmware/efi/efivars | grep -i loader        # LoaderDevicePartUUID-… 在不在
-    lsblk -o NAME,SIZE,PARTLABEL,PARTUUID /dev/vda
-    cat /etc/fstab
-    journalctl -b | grep -iE 'gpt-auto|LoaderDevicePartUUID|ESP' | tail -20
-    ```
-    倾向的修法(等诊断出来再定,别急着改):**不要把 ESP 交给 gpt-auto** —— `keel-mounts` 里像挂
-    `/Volume` 那样扫 `/sys/class/block/*/uevent` 的 `PARTNAME=esp` 自己挂到 `/boot`
-    (必须 **rw**:boot counting / `bootctl set-preferred` / 写新 UKI 都要写),并且 `keel_esp()`
-    要验证"这个路径真的是挂载点",不成立就明确报错或自救(`os-rescue --repair-boot`),
-    **不要在空目录上静默继续** —— 那是这次最坑的地方:每一步都"成功",结果全落空。
+    ⇒ **修法(2026-09,决策 D18)**:把这件"必须 100% 可用"的事收回来自己做 ——
+      `keel-mounts` 扫 `PARTNAME=esp` 以 rw 挂到 `/boot`;cmdline 加 `systemd.gpt_auto=no`
+      让它彻底退场;`lib.sh` 只承认"挂载表里的 ESP"或"确实是挂载点的路径",
+      没挂上就 `KEEL_ESP_MOUNTED=no`,由调用方**明确报错或自救**(见坑 #25);
+      `os-update` 还多一道保险:先确认 ESP 可用,再 dd 根分区(顺序反了会留下"新根 + 旧内核"的槽)。
+      `tools/verify.sh` 有 5 条断言守着(自己挂 ESP、状态变量三处接线、os-update 的顺序、
+      cmdline 里的 `systemd.gpt_auto=no`、bootctl 只作兜底)。
+    **教训**:① **"命令返回 0 / 目录存在 / 函数返回了路径"都不等于"事情成了"** ——
+      一个需要 100% 可用的依赖,不要建立在"一堆静默跳过条件"之上(坑 #29 的 machine-id 是同一个形状);
+      ② 排查这类问题要**先看挂载表**(`findmnt /boot`)再看目录内容 —— 空目录和"没挂上"看起来一模一样。
 
-37. **live 镜像的 `/Volume` 只有 1 GiB,而 swapfile 的大小是按内存算的 ⇒ 半个 swapfile 把 `/Volume` 填满,`/etc` overlay 跟着写不进去。**
+37. **live 镜像的 `/data` 只有 1 GiB,而 swapfile 的大小是按内存算的 ⇒ 半个 swapfile 把 `/data` 填满,`/etc` overlay 跟着写不进去。**
     现象(2026-09,VM 自检里看到的):
     ```
-    swapfile[664]: keel: 创建 /Volume/keel/swapfile(1999101952 字节),这一步可能要几十秒
-    swapfile[696]: dd: error writing '/Volume/keel/swapfile': No space left on device
+    swapfile[664]: keel: 创建 /data/keel/swapfile(1999101952 字节),这一步可能要几十秒
+    swapfile[696]: dd: error writing '/data/keel/swapfile': No space left on device
     systemd[1]: Failed to start keel-swapfile.service …
     # 紧接着自检的 /etc 可写性探针也失败:
     selftest: WRITE_FAIL(/etc 写不进去,keel-mounts 挂的 overlay 有问题)
     ```
     原因:14 GiB 的安装镜像里 `esp 1G + root-a 6G + root-b 6G`,留给 `volume` 的只剩 1 GiB,
-    而 `keel-firstboot` 的扩容在 live 环境里没得扩(镜像自己没剩余空间)⇒ `/Volume` 一直 1 GiB。
+    而 `keel-firstboot` 的扩容在 live 环境里没得扩(镜像自己没剩余空间)⇒ `/data` 一直 1 GiB。
     swapfile 默认 `min(内存, 8G)`(VM 里 1.9G)直接写下去,dd 写到一半 ENOSPC,`set -e` 让单元失败,
-    **半截文件留在盘上把 /Volume 占满** —— 而 `/etc` overlay 的 upper 就在同一个文件系统上
+    **半截文件留在盘上把 /data 占满** —— 而 `/etc` overlay 的 upper 就在同一个文件系统上
     ⇒ 之后往 `/etc` 写任何东西都 ENOSPC(机器专属配置、SSH 主机密钥全会静默失败)。
     更糟的是下一轮启动还在这坑里打转:文件已存在 ⇒ 跳过创建 ⇒ 直接 `swapon` 一个没有签名的
     半截文件 ⇒ 又失败,而且不清理。
     ⇒ 现在的 `/usr/lib/keel/swapfile`:
-    1. 创建前用 `df -P -B1 /Volume` 取可用空间,**最多用一半**;请求值超过上限就压到上限并记日志;
+    1. 创建前用 `df -P -B1 /data` 取可用空间,**最多用一半**;请求值超过上限就压到上限并记日志;
     2. 可用空间连 256 MiB 都不到就**正常退出**(只记一笔),不让单元变红 ——
        1 GiB 的 live volume 本来就不该有 swap,装到真机、volume 扩到整盘后会自动建;
     3. 先写 `$SWAP.new`、`mkswap` 成功后才 `mv` 成正式文件;任何一步失败都 `rm -f` 半截文件;
        已存在的文件若没有 swap 签名(上次失败的遗留)先删掉重建。
-    `tools/verify.sh` 有断言。**教训**:① 只读根 + overlay 的系统里 **`/Volume` 写满 = `/etc` 也写不进去**,
+    `tools/verify.sh` 有断言。**教训**:① 只读根 + overlay 的系统里 **`/data` 写满 = `/etc` 也写不进去**,
     任何"一次性写一大块"的脚本(swapfile、下载、日志)都必须先问可用空间;
     ② "创建大文件"要"先写临时文件、成功再改名",否则失败会留下垃圾并且**每次启动都继续坏下去**。
+
+38. **持久分区的挂载点从 `/Volume` 改名成 `/data`(2026-09);GPT 标签**故意**仍然是 `volume`。**
+    改名本身是机械的(镜像里的挂载点、符号链接目标、`/data/keel/state`、单元里的
+    `ConditionPathIsMountPoint=`、文档与断言一起改),但**分区标签不能跟着改**:
+    标签写在已经做好的分区表里,装机后不会再改 —— 改成 `data` 之后
+    (a) 老机器上根本找不到这个分区,(b) **另一个槽里的旧镜像也找不到它**
+    (旧镜像扫的是 `PARTNAME=volume`)⇒ 回滚时直接起不来(违反不变量 6 的"只增不破")。
+    所以现在:挂载点叫 `/data`、`lsblk` 里 PARTLABEL 还是 `volume`,而 `keel_part_dev volume`
+    这个查找键也就跟着叫 volume —— **别再"顺手把标签也改了"**。
+    分区内的目录结构(`keel/ var/ overlayfs/ home/ nix/`)一个都没动,所以换槽/改名不丢状态;
+    早期文档与旧日志里的 `/Volume` 指的都是 `/data`(决策 D17)。
 
 ---
 
@@ -723,7 +734,7 @@ sudo tools/burn.sh /dev/nvme0n1
 
 1. ~~`root=PARTLABEL=` 与 `systemd.mount-extra=PARTLABEL=...` 在 initrd 里的解析~~
    **已实测(2026-09,VM)**:`root=PARTLABEL=` 在 initrd 里有效 ✓;
-   `systemd.mount-extra=PARTLABEL=volume:/Volume:…` 在 initrd 里**不会被挂载** ✗,
+   `systemd.mount-extra=PARTLABEL=volume:/data:…` 在 initrd 里**不会被挂载** ✗,
    在主系统里会挂但依赖 udev ⇒ 造成启动死锁。结论已回写到不变量 2 与坑 #24。
 2. `systemd-sysupdate` 的 `Type=partition` transfer 对双槽布局的匹配语义(验证通过后换掉 v1 的直接写盘)。
 3. `/usr/lib/modules/<kver>` 挂 overlay 后 `depmod` + 模块加载的实际行为(为"第三方内核模块外置"做准备)。
@@ -734,10 +745,12 @@ sudo tools/burn.sh /dev/nvme0n1
    PARTLABEL 扑空,已改成先扫 sysfs + 重试)。
 5. **装机后 nix 真的能用**(`nix-shell -p vim` 等)—— 第一次跑就撞上坑 #34(`/nix` 是符号链接),
    已改成「真实目录 + bind mount」。**待复验**:新镜像里 `/nix` 是真目录、bind 生效、
-   `nix-shell -p …` 能装能跑;以及 `df -h /Volume` 确认首启把 volume 扩到了整盘(不变量 14)。
-6. **ESP 在装机后的系统里没挂上**(`os-status` 报 `/boot/EFI/Linux` 不存在、`上次启动结果: 无记录`,
-   而系统确实是从那块盘启动的)。已挂账到坑 #36 —— 后果是"写新 UKI / 切槽 / 启动成功确认"
-   这条 A/B 更新的链目前是**断的**。诊断命令与候选修法都写在坑 #36 里,排在 DHCP 之后解决。
+   `nix-shell -p …` 能装能跑;以及 `df -h /data` 确认首启把 volume 扩到了整盘(不变量 14)。
+6. ~~**ESP 在装机后的系统里没挂上**~~ **已修(2026-09,坑 #36 / 决策 D18)**:
+   `keel-mounts` 自己扫 `PARTNAME=esp` 以 rw 挂到 `/boot`,cmdline 加 `systemd.gpt_auto=no`,
+   `lib.sh` 只认真实挂载点(`KEEL_ESP_MOUNTED`),没挂上时 os-status / os-update / keel-confirm
+   分别明确报错或自救。**待复验**(下一轮 VM):`findmnt /boot` 是 vfat、`/boot/EFI/Linux/` 里
+   能看到 `keel-a.efi`、`os-status` 打出「ESP 挂载: …vfat」,并且真的能 `os-update` 写进一个新 UKI。
 7. ~~**networkd 原生 DHCP 真能拿到租约**~~ **已实测通过(2026-09,VM,坑 #29 修好后)**:
    `keel-mounts` 日志 `已固化 machine-id(取自 PID1 本次启动使用的 ID)` + `machine-id = f9324ac0…`;
    `networkctl list` → `enp0s1 ether routable configured`,`networkctl status` →
@@ -748,6 +761,6 @@ sudo tools/burn.sh /dev/nvme0n1
    **全程没有 ENOPKG**,连跑 10 轮(200 秒)状态稳定。复验入口就是 test profile 里的
    `mkosi.extra-test/`(`keel-selftest.service` 把现场打到控制台)。
    同轮 VM 顺手抓到坑 #37(live 镜像 volume 只有 1 GiB + swapfile 写满 ⇒ `/etc` 也写不进去),已修;
-   **第三轮 VM 复验**:`请求的 swap 是 1906 MiB,但 /Volume 只有 943 MiB 可用 ⇒ 按 471 MiB 创建`
+   **第三轮 VM 复验**:`请求的 swap 是 1906 MiB,但 /data 只有 943 MiB 可用 ⇒ 按 471 MiB 创建`
    → `已启用 swap` → `Finished keel-swapfile.service`,`/etc` 写探针 `WRITE_OK`,
    失败单元只剩 6 个 `systemd-pcrlock-*`(VM 没 TPM,预期)。

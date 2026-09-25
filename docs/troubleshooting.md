@@ -10,7 +10,7 @@
 | **构建就失败了 / 开虚拟机起不来** | **§0** |
 | 完全进不了系统(看不到引导、控制台没反应) | §1 |
 | 起来了,但某些功能不对 | §2 |
-| `/Volume` / 持久状态有问题 | §3 |
+| `/data` / 持久状态有问题 | §3 |
 | nix 用不了 | §4 |
 | 更新之后不对 | §5 |
 | 要找人求助 | §6 |
@@ -61,7 +61,7 @@
 | # | 手段 | 做法 |
 |---|---|---|
 | 1 | 换槽启动 | 开机时按 `space` 呼出 systemd-boot 菜单,选另一个槽的条目(`keel-a.efi` / `keel-b.efi`) |
-| 2 | 追加内核参数 | 菜单里选中条目按 `e` 编辑 cmdline:**仅在未启用 Secure Boot 时有效**(v1 没启用;这条路径本身也待验证,§13.1 #5)。常用 `systemd.unit=rescue.target`(单人维护模式)、`rd.break`(在 initrd 里停下,查 `/Volume` 挂载问题)、`systemd.log_level=debug`。改动只影响这一次启动 |
+| 2 | 追加内核参数 | 菜单里选中条目按 `e` 编辑 cmdline:**仅在未启用 Secure Boot 时有效**(v1 没启用;这条路径本身也待验证,§13.1 #5)。常用 `systemd.unit=rescue.target`(单人维护模式)、`rd.break`(在 initrd 里停下,查 `/data` 挂载问题)、`systemd.log_level=debug`。改动只影响这一次启动 |
 | 3 | 读条目名 | 菜单里像 `keel-b+2-1.efi` 这样的名字 = 新槽已尝试并失败过;计数归零后引导器会跳过它(§5.3 ⑩) |
 | 4 | U 盘 live 环境 | 把同一个 `keel.raw` 写到 U 盘、UEFI 启动:它就是一套完整 keel,可以直接 `os-rescue`、翻日志、重装系统(§7.1 B) |
 | 5 | 连菜单都没出来 | 主板固件可能清了 EFI 变量(R4):系统会走 fallback 路径 `EFI/BOOT/BOOTX64.EFI`;进系统后 `bootctl install` 重建 NVRAM 启动项(`keel-firstboot` 也是这么做的,§7.2 ③) |
@@ -77,7 +77,7 @@
 systemctl --failed                        # 失败的单元清单
 journalctl -b -p warning --no-pager | tail -40
 journalctl -b | grep -E 'Dependency failed|Timed out|Ordering cycle'
-findmnt -o TARGET,SOURCE,FSTYPE,OPTIONS   # /Volume 到底挂上没有
+findmnt -o TARGET,SOURCE,FSTYPE,OPTIONS   # /data 到底挂上没有
 lsblk -o NAME,SIZE,TYPE,PARTLABEL,FSTYPE  # 分区标签对不对
 ```
 
@@ -85,10 +85,10 @@ lsblk -o NAME,SIZE,TYPE,PARTLABEL,FSTYPE  # 分区标签对不对
 
 | 症状 | 原因 |
 |---|---|
-| `Timed out waiting for device dev-disk-by-partlabel-volume.device` → `Volume.mount` / `efi.mount` 依赖失败 → `local-fs.target` 失败 | cmdline 的 `systemd.mount-extra=PARTLABEL=…` 需要 udev 建符号链接,而 udev 又要等可写的 `/etc`,`/etc` overlay 又要等 `/Volume` ⇒ 环形依赖。日志里会有一行 `[ SKIP ] Ordering cycle found, skipping local-fs-pre.target` |
-| `systemd-random-seed.service` / `systemd-timesyncd.service` 失败 | 它们是往 `/var`(→ `/Volume`)写的,而 `/Volume` 那时还没挂上 |
+| `Timed out waiting for device dev-disk-by-partlabel-volume.device` → `data.mount` / `efi.mount` 依赖失败 → `local-fs.target` 失败 | cmdline 的 `systemd.mount-extra=PARTLABEL=…` 需要 udev 建符号链接,而 udev 又要等可写的 `/etc`,`/etc` overlay 又要等 `/data` ⇒ 环形依赖。日志里会有一行 `[ SKIP ] Ordering cycle found, skipping local-fs-pre.target` |
+| `systemd-random-seed.service` / `systemd-timesyncd.service` 失败 | 它们是往 `/var`(→ `/data`)写的,而 `/data` 那时还没挂上 |
 
-现在 `/Volume` 由 `keel-mounts.service` 自己挂(不依赖 udev),ESP 由 gpt-auto 按需挂载。
+现在 `/data` 由 `keel-mounts.service` 自己挂(不依赖 udev),ESP 由 gpt-auto 按需挂载。
 如果你在别的机器上看到这两类失败,先确认跑的是不是 2026-09 之后的镜像(`os-status` 里的版本号)。
 
 > **VM 测试的一个坑**:`mkosi vm` 会往 cmdline 追加 `rw`,所以虚拟机里根分区是**可写**的 ——
@@ -101,8 +101,8 @@ lsblk -o NAME,SIZE,TYPE,PARTLABEL,FSTYPE  # 分区标签对不对
 | 症状 | 结论 |
 |---|---|
 | 只有文本控制台 | **预期行为**:`main` 不含 GPU 驱动/固件,靠 `simpledrm`/`efifb` 出文本(§7.3)。要图形界面得等 `desktop` profile |
-| 控制台登录不了 | 初始凭据尚未在 `architecture.md` 中规定(待验证);用 U 盘 live 环境进去看 `/etc/passwd` 与 `/Volume/keel/state` |
-| SSH 连不上 | `systemctl status sshd`;`ip a` 确认有 IP;`journalctl -b -u sshd -p warning`。用户的公钥要自己放进 `~/.ssh/authorized_keys`(`/home` 在 `/Volume` 上,会持久化) |
+| 控制台登录不了 | 初始凭据尚未在 `architecture.md` 中规定(待验证);用 U 盘 live 环境进去看 `/etc/passwd` 与 `/data/keel/state` |
+| SSH 连不上 | `systemctl status sshd`;`ip a` 确认有 IP;`journalctl -b -u sshd -p warning`。用户的公钥要自己放进 `~/.ssh/authorized_keys`(`/home` 在 `/data` 上,会持久化) |
 
 ### 2.2 网络不通
 
@@ -131,7 +131,7 @@ journalctl -b -u systemd-networkd | grep -iE 'DHCP|ENOPKG'
 (新版本报的是 `Failed to start DHCPv4 client: …`,同一个 errno);
 同一个原因还会让 IPv6 稳定隐私地址、resolved 的 DNSSEC 密钥一起失效。
 正常流程由 `keel-mounts` 在挂完 `/etc` overlay 之后立刻**把 PID1 本次启动的
-`/run/machine-id` 固化进 `/etc/machine-id`**(写进 overlay 的 upper ⇒ 在 `/Volume` 上,
+`/run/machine-id` 固化进 `/etc/machine-id`**(写进 overlay 的 upper ⇒ 在 `/data` 上,
 换槽/更新都不丢)。手动修:
 
 ```bash
@@ -147,7 +147,38 @@ systemctl restart systemd-networkd   # 让 networkd 重新配 DUID/DHCP
 > 根因修掉之后 dhcpcd 已从镜像移除。**不要**为了"先有网"再挂第二个 DHCP 客户端:
 > 两个客户端抢一块网卡只会互相打架,而 `/etc/machine-id` 该修就得修 —— 它影响的不只是 DHCP。
 
-### 2.3 装机时 `os-install` 报错
+### 2.3 `os-status` 说「ESP 挂载: 没有挂上」/ 看不到任何 UKI
+
+```bash
+os-status                      # 「ESP 挂载」那一行是不是「没有挂上」
+findmnt /boot                  # 期望:vfat,源是 /dev/...;不是挂载点就是没挂上
+ls -l /boot/EFI/Linux/         # 这里必须有 keel-a.efi / keel-b.efi(可能带 +N 计数)
+journalctl -b -u keel-mounts | grep -i esp
+```
+
+ESP 由 `keel-mounts` 在启动早期扫 `PARTNAME=esp` 自己挂到 `/boot`
+(`systemd-gpt-auto-generator` 已被 cmdline 的 `systemd.gpt_auto=no` 关掉,决策 D18)。
+它没挂上时,**别的都不会报错**:`os-update` 会拒绝写(它在写根分区之前先检查 ESP),
+`bootctl set-preferred`、boot counting 改名、`keel-confirm` 确认槽全部失效
+(表现:`os-status` 的 `上次启动结果: 无记录` 长期不变)。修:
+
+```bash
+sudo os-rescue --repair-boot   # 会先确保 ESP 挂上,再 bootctl install
+sudo systemctl restart keel-mounts   # 只是想把挂载重做一遍
+```
+
+还不行就按顺序查:
+
+| 检查 | 期望 |
+|---|---|
+| `lsblk -o NAME,SIZE,PARTLABEL /dev/vda` | 有 `PARTLABEL=esp` 的分区 |
+| `dmesg | tail`(挂载时) | 没有 vfat 的 I/O 报错(FAT 损坏时会挂不上) |
+| `systemctl status keel-mounts --no-pager` | 没有失败;日志里有「已把 ESP(PARTNAME=esp)挂到 /boot」 |
+
+> 旧文档/旧日志里的 `/Volume` 就是现在的 `/data`(2026-09 改名,决策 D17);
+> 分区标签仍是 `volume`,所以 `lsblk` 里看到的还是 `volume`。
+
+### 2.4 装机时 `os-install` 报错
 
 | 现象 | 原因 | 修 |
 |---|---|---|
@@ -159,39 +190,39 @@ systemctl restart systemd-networkd   # 让 networkd 重新配 DUID/DHCP
 > 注意:`os-install` 会**擦除整块目标盘**。在 VM 里演练时,目标盘要是另一块盘
 > (`qemu-img create -f raw keel-target.raw 30G` 挂成 vda/vdb),别指向启动盘。
 
-## 3. `/Volume` 相关
+## 3. `/data` 相关
 
-`/Volume` 由 `keel-mounts.service` 在启动早期挂载(不变量 2:扫 `/sys` 的 `PARTNAME=volume`,
+`/data` 由 `keel-mounts.service` 在启动早期挂载(不变量 2:扫 `/sys` 的 `PARTNAME=volume`,
 不依赖 udev)。`/var`、`/root` 是指向它的符号链接,`/home`、`/nix` 由它 bind 上来。
-所以 `/Volume` 一出问题,表现就是"到处都是空目录、机器像刚装好一样"。
+所以 `/data` 一出问题,表现就是"到处都是空目录、机器像刚装好一样"。
 
 ```bash
-findmnt /Volume                          # 挂上了吗(由 keel-mounts 挂,见 AGENTS.md 坑 #24)
-ls /Volume                               # var home nix overlayfs ota keel ...
-systemctl status keel-mounts.service     # 挂 /Volume + bind /home + 挂 /etc overlay
+findmnt /data                          # 挂上了吗(由 keel-mounts 挂,见 AGENTS.md 坑 #24)
+ls /data                               # var home nix overlayfs ota keel ...
+systemctl status keel-mounts.service     # 挂 /data + bind /home + 挂 /etc overlay
 systemctl status keel-firstboot.service  # 首启五件事:骨架 / 扩容 / NVRAM / swapfile / state
 lsblk -o NAME,SIZE,TYPE,PARTLABEL,FSTYPE,LABEL   # PARTLABEL=volume 的分区在不在
-du -xh -d1 /Volume | sort -h             # 空间去哪了
+du -xh -d1 /data | sort -h             # 空间去哪了
 journalctl --disk-usage                  # journal 占了多少
 ```
 
 | 症状 | 处理 |
 |---|---|
 | 骨架不见了(目录缺失、`/var/log` 空) | `sudo os-rescue --init-volume`(幂等重建/修复骨架,§9) |
-| `/etc` 被改坏、回滚后行为异常 | `sudo os-rescue --reset-etc`:清空 overlay upper,下次启动从镜像重新播种。**先备份**:它会丢掉 ssh 主机密钥、machine-id、账号、网络配置 —— 把要留的东西复制到 `/Volume/home/<user>/` 下(那不在 upper 里) |
-| 装机后 `/Volume` 还是很小 | 正常应由首启的 `keel-firstboot` 自动扩盘(§7.2 ②);没扩成就用手动入口 `sudo os-rescue --grow-volume`,再 `lsblk` 确认 |
-| `/Volume` 满了 | 先清 `/Volume/ota/`(用 `os-update gc`,§8),再清 journal(`journalctl --vacuum-size=`) |
+| `/etc` 被改坏、回滚后行为异常 | `sudo os-rescue --reset-etc`:清空 overlay upper,下次启动从镜像重新播种。**先备份**:它会丢掉 ssh 主机密钥、machine-id、账号、网络配置 —— 把要留的东西复制到 `/data/home/<user>/` 下(那不在 upper 里) |
+| 装机后 `/data` 还是很小 | 正常应由首启的 `keel-firstboot` 自动扩盘(§7.2 ②);没扩成就用手动入口 `sudo os-rescue --grow-volume`,再 `lsblk` 确认 |
+| `/data` 满了 | 先清 `/data/ota/`(用 `os-update gc`,§8),再清 journal(`journalctl --vacuum-size=`) |
 
 ## 4. nix 相关
 
 | 症状 | 排查 |
 |---|---|
 | `nix` 命令不存在 | 基底包是 `nix-bin` + `nix-setup-systemd`(决策 D7);`command -v nix` 都没有说明镜像不对 |
-| `/nix` 空 / 没挂上 | `findmnt /nix` 应该看到一个 bind 挂载(源 `/Volume/nix`);`ls -ld /nix` 必须是**目录**(不能是符号链接,坑 #34);再看 `findmnt /Volume` 与 `ls /Volume/nix`。`/Volume` 没挂 ⇒ 回到 §3 |
-| `error: the path '/nix' is a symlink; this is not allowed for the Nix store and its parent directories` | 这个系统装的是**旧镜像**:那时 `/nix` 还是指向 `/Volume/nix` 的符号链接。nix 硬性拒绝符号链接的 store 路径,改 store 位置也没用(二进制与 RPATH 里写死了 `/nix/store/…`)。新版已改成「真实目录 + bind mount」(`AGENTS.md` 坑 #34) | ① 正路:换到新槽(`os-update`)或重装 —— 新根文件系统里的 `/nix` 就是真目录;② 想马上用,按下面热修 |
-| `nix-daemon` 不工作 | 它的单元带 `ConditionPathIsReadWrite=/nix/var/nix/daemon-socket`,所以 **`/Volume` 没挂好时它根本不会启动**:`systemctl status nix-daemon` 会写 condition 未满足被跳过,而不是失败。先把 `/Volume` 修好,再 `systemctl restart nix-daemon` |
+| `/nix` 空 / 没挂上 | `findmnt /nix` 应该看到一个 bind 挂载(源 `/data/nix`);`ls -ld /nix` 必须是**目录**(不能是符号链接,坑 #34);再看 `findmnt /data` 与 `ls /data/nix`。`/data` 没挂 ⇒ 回到 §3 |
+| `error: the path '/nix' is a symlink; this is not allowed for the Nix store and its parent directories` | 这个系统装的是**旧镜像**:那时 `/nix` 还是指向 `/data/nix` 的符号链接。nix 硬性拒绝符号链接的 store 路径,改 store 位置也没用(二进制与 RPATH 里写死了 `/nix/store/…`)。新版已改成「真实目录 + bind mount」(`AGENTS.md` 坑 #34) | ① 正路:换到新槽(`os-update`)或重装 —— 新根文件系统里的 `/nix` 就是真目录;② 想马上用,按下面热修 |
+| `nix-daemon` 不工作 | 它的单元带 `ConditionPathIsReadWrite=/nix/var/nix/daemon-socket`,所以 **`/data` 没挂好时它根本不会启动**:`systemctl status nix-daemon` 会写 condition 未满足被跳过,而不是失败。先把 `/data` 修好,再 `systemctl restart nix-daemon` |
 | `nix` 报数据库 schema 太新 | 回滚造成的:基底升级过 nix,旧槽的 nix 读不了新 DB(§13.2 R3)。见 `update.md` §5 —— 要么回到新槽用新版 nix,要么按 R3 处理,别在旧版上反复跑 nix 试图"修好"它 |
-| 换到另一个槽后 nix 里的包"消失" | 不应该发生:`/nix` 在 `/Volume` 上,两个槽共用同一个 store。真发生了说明 `/Volume` 挂载或符号链接有问题,回到 §3 |
+| 换到另一个槽后 nix 里的包"消失" | 不应该发生:`/nix` 在 `/data` 上,两个槽共用同一个 store。真发生了说明 `/data` 挂载或符号链接有问题,回到 §3 |
 
 **旧系统的热修**(只在 `error: the path '/nix' is a symlink` 那条上需要;新镜像不需要):
 
@@ -202,20 +233,20 @@ rm -f /nix && install -d -m 0755 /nix
 mount -o remount,ro /
 
 # 2. 立刻 bind 一次并验证
-mount --bind /Volume/nix /nix
+mount --bind /data/nix /nix
 findmnt /nix && nix --version
 
-# 3. 让每次启动都自动做(单元写在 /etc overlay 里,持久保存在 /Volume 上)
+# 3. 让每次启动都自动做(单元写在 /etc overlay 里,持久保存在 /data 上)
 cat >/etc/systemd/system/keel-nixbind.service <<'EOF'
 [Unit]
 Description=keel:/nix bind mount(hotfix;正式镜像由 keel-mounts 做)
 After=local-fs.target
-RequiresMountsFor=/Volume
+RequiresMountsFor=/data
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/mount --bind /Volume/nix /nix
+ExecStart=/bin/mount --bind /data/nix /nix
 
 [Install]
 WantedBy=multi-user.target
@@ -237,10 +268,10 @@ journalctl -b -u nix-daemon -p warning
 |---|---|
 | 更新后卡住 / 反复重启 | 看 `bootctl list` 的条目名:`keel-b+2-1.efi` 这种计数递减 = 新槽连续启动失败,即将自动回滚(§5.3 ⑩) |
 | 怎么确认回滚了 | `os-status` 里槽/版本没变;ESP 上有 `keel-<目标>.efi.failed`;`journalctl -b -u keel-confirm.service` 有告警;`state` 的 pending 被清空并记 failed(详见 `update.md` §3.1) |
-| 坏掉的载荷在哪 | 下载的载荷在 `/Volume/ota/`(§4.2);看完原因用 `os-update gc` 清理(保留最近 2 个版本 + 当前,§8) |
+| 坏掉的载荷在哪 | 下载的载荷在 `/data/ota/`(§4.2);看完原因用 `os-update gc` 清理(保留最近 2 个版本 + 当前,§8) |
 | 新版本"起来了但不对" | `os-update rollback` 回上一个已知良好的槽;当前槽确实坏了再 `os-rescue --mark-bad`,并先确认另一个槽是好的(见 `update.md` §3.2) |
 | `stage` 报写不下 | 槽位尺寸装机时定死(不变量 9):只能重装,或在装机前留足 |
-| `fetch` 校验失败 | 载荷不完整/被改过:重下;确认更新源 URL(`/Volume/keel/config`,见 `update.md` §6) |
+| `fetch` 校验失败 | 载荷不完整/被改过:重下;确认更新源 URL(`/data/keel/config`,见 `update.md` §6) |
 
 ```bash
 os-status
@@ -252,7 +283,7 @@ journalctl -b -u keel-confirm.service -u keel-firstboot.service -p warning
 ## 6. 怎么收集信息求助
 
 ```bash
-os-status                     # 当前槽/版本/内核、/Volume 用量、schema、pending、上次结果
+os-status                     # 当前槽/版本/内核、/data 用量、schema、pending、上次结果
 journalctl -b -p warning      # 本次启动的告警以上日志
 bootctl status                # ESP、固件、引导条目、当前与下次启动的条目
 lsblk -f                      # 分区标签 esp/root-a/root-b/volume、文件系统、挂载点
@@ -260,7 +291,7 @@ lsblk -f                      # 分区标签 esp/root-a/root-b/volume、文件�
 
 | 附加项 | 用途 |
 |---|---|
-| `/Volume/keel/state` | 机器可读的状态(pending、上次结果) |
+| `/data/keel/state` | 机器可读的状态(pending、上次结果) |
 | `/proc/cmdline` | 当前槽由 `root=PARTLABEL=root-<x>` 体现 |
 | `$(bootctl --print-esp-path)/EFI/Linux/` 目录列表 | UKI 的实际名字与计数,以及有没有 `.failed` |
 

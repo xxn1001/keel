@@ -26,40 +26,40 @@
 
 ## D3 目录挂载方式
 
-- **决策**(2026-09 修订):`/var`、`/root` 用**符号链接**指向 `/Volume`;
+- **决策**(2026-09 修订):`/var`、`/root` 用**符号链接**指向 `/data`;
   **`/home` 与 `/nix` 用真目录 + bind mount**。
 - **理由**:尊重"根目录留软链接"的原始设计意图,能链接就链接(少一层挂载、少一处启动期依赖);
   但这两个目录**必须**是真实挂载点:
-  - `/home`:符号链接会让 `ProtectHome=` 这类沙箱设置失效(服务仍能经 `/Volume/home` 摸到用户数据);
+  - `/home`:符号链接会让 `ProtectHome=` 这类沙箱设置失效(服务仍能经 `/data/home` 摸到用户数据);
   - `/nix`:`nix` 硬性拒绝符号链接的 store 路径 ——
     `error: the path '/nix' is a symlink; this is not allowed for the Nix store and its parent directories`
     (装机后实测,见 `AGENTS.md` 坑 #34);而 store 位置搬不动(二进制与脚本把 `/nix/store/…`
     写死在 ELF interpreter 与 RPATH 里),只能让 `/nix` 本身是真目录。
-- **关键约束**:符号链接无法参与挂载顺序约束 ⇒ `/Volume` 必须极早挂载(见 D4)。
+- **关键约束**:符号链接无法参与挂载顺序约束 ⇒ `/data` 必须极早挂载(见 D4)。
 
-## D4 `/Volume` 的挂载时机
+## D4 `/data` 的挂载时机
 
 - **决策(2026-09 修订)**:由 `keel-mounts.service`(initrd 之后、`sysinit` 之前)自己扫
   `/sys/class/block/*/uevent` 的 `PARTNAME=volume` 找到分区并挂载,`blkid -t LABEL=volume` 兜底。
   不经过 udev、不生成 `.mount` 单元。
 - **原决策(已推翻)**:写进 UKI 的 kernel cmdline:
-  `systemd.mount-extra=PARTLABEL=volume:/Volume:ext4:rw,noatime`。
+  `systemd.mount-extra=PARTLABEL=volume:/data:ext4:rw,noatime`。
   当时的理由是"`systemd-fstab-generator` 在主系统和 initrd 里都会解析它,initrd 里自动加 `/sysroot/` 前缀"。
 - **推翻原因(真机 VM 实测,`AGENTS.md` 坑 #24)**:这两条理由都不成立 ——
-  initrd 阶段根本没有生成 `/sysroot/Volume`(initrd 里连我们的文件都没有);
-  主系统阶段它生成的 `Volume.mount` 要等 udev 建 `by-partlabel` 符号链接,而 udev 要等
-  `systemd-sysusers`、sysusers 要可写的 `/etc`、可写的 `/etc` 又挂在 `/Volume` 上 ⇒ 环形依赖 ⇒
+  initrd 阶段根本没有生成 `/sysroot/data`(initrd 里连我们的文件都没有);
+  主系统阶段它生成的 `data.mount` 要等 udev 建 `by-partlabel` 符号链接,而 udev 要等
+  `systemd-sysusers`、sysusers 要可写的 `/etc`、可写的 `/etc` 又挂在 `/data` 上 ⇒ 环形依赖 ⇒
   systemd 丢掉 `local-fs-pre.target`、udev 被推到 emergency 之后、挂载 90 秒超时 ⇒ emergency mode。
 - **仍然否决**:靠 `/etc/fstab` + `x-initrd.mount`(需要把 fstab 注入 initrd 树,多一层构建魔法);
   靠普通 systemd `.mount` 单元(依赖 udev,同一个环)。
 
 ## D5 `/etc` 必须可写,用 overlayfs
 
-- **决策**:lower = 只读镜像的 `/etc`,upper/work = `/Volume/overlayfs/etc/{upper,work}`。
+- **决策**:lower = 只读镜像的 `/etc`,upper/work = `/data/overlayfs/etc/{upper,work}`。
 - **理由**:`/etc` 有大量必须可写的硬需求 —— `machine-id`、ssh 主机密钥、
   `passwd/group/shadow/subuid`、`nix.conf`(换镜像源是刚需)、NetworkManager/sysd-networkd 配置、
   `localtime`/`hostname`/`locale.conf`。只读 `/etc` 直接不可行。
-- **否决**:把 `/Volume/etc` 整体 bind 到 `/etc` —— 那是一次性快照,新版本镜像里 `/etc` 的任何改进
+- **否决**:把 `/data/etc` 整体 bind 到 `/etc` —— 那是一次性快照,新版本镜像里 `/etc` 的任何改进
   会被旧副本**永久遮蔽**,而且没有合并机制。
 - **否决**:每槽独立的 `/etc` upper —— 每次更新都要重新配置一遍,体验不可接受。共享 upper 的代价
   (新版本可能写了旧版本不认识的 `/etc` 文件)用 `os-rescue --reset-etc` 兜底。
@@ -67,12 +67,12 @@
 ## D6 加密
 
 - **决策**:不做。
-- **理由**:当前是笔记本 + 未来是服务器,先不做;LUKS 会把 initrd 与 /Volume 的挂载链一并复杂化。
+- **理由**:当前是笔记本 + 未来是服务器,先不做;LUKS 会把 initrd 与 /data 的挂载链一并复杂化。
   要做的话是独立的一次设计(需要把密钥/TPM 纳入启动链)。
 
 ## D7 nix 的来源与位置
 
-- **决策**:用 Debian 官方包 `nix-bin` + `nix-setup-systemd`;`/nix` 通过符号链接落在 `/Volume` 上;
+- **决策**:用 Debian 官方包 `nix-bin` + `nix-setup-systemd`;`/nix` 通过符号链接落在 `/data` 上;
   nixbld 用户与 `/nix` 骨架在**构建期**烤进镜像(不依赖首启时的网络或写 `/etc` 的时序)。
 - **理由**:发行版打包 = 可直接由 mkosi 在构建期安装、可复现、带 systemd 单元与 sysusers/tmpfiles,
   比"构建时 curl 官方安装器"干净得多。
@@ -91,7 +91,7 @@
 
 ## D9 swap
 
-- **决策**:`/Volume/keel/swapfile`,首次启动创建并启用(mkswap + swapon)。**不做休眠**。
+- **决策**:`/data/keel/swapfile`,首次启动创建并启用(mkswap + swapon)。**不做休眠**。
 - **理由**:根只读 ⇒ swap 文件必须放在可写分区;休眠需要 `resume=` + `resume_offset=` 且偏移会变,
   在 A/B 布局下不可靠。
 - **否决**:分区 swap(占用宝贵的 GPT 槽位,且 A/B 布局下没有地方放);纯 zram(内存小的机器不够用)。
@@ -107,7 +107,7 @@
 ## D11 分支策略:单主干 + profile
 
 - **决策**:`main` 单一主干;`desktop`/`server` 是 **mkosi profile**,不是 git 分支;
-  机器差异进 `machines/*.conf`;单机运行期状态进 `/Volume`。
+  机器差异进 `machines/*.conf`;单机运行期状态进 `/data`。
 - **理由**:分支表达"并行的改动线",不表达"同一东西的不同形态"。三分支会导致 main 上每个修复
   都要重复合并、三个月后必然漂移。profile 方案的杀手性质是"一个 commit 同时构建出所有变体,
   物理上不可能不一致"。
@@ -136,13 +136,13 @@
 
 - **决策**:main **不带任何 GPU 驱动**;将来做 `desktop` profile 时,开源栈(i915/amdgpu + mesa +
   拆分的固件包)进基底,而 NVIDIA 专有驱动走"第三方内核模块外置"方案
-  (把 `/usr/lib/modules/<kver>` 在启动早期叠一层 upper 在 `/Volume` 的 overlay,
+  (把 `/usr/lib/modules/<kver>` 在启动早期叠一层 upper 在 `/data` 的 overlay,
   镜像里保留发行版模块作保命底线);`server` profile 则完全不需要驱动(GPU 直通给 VM)。
 - **理由**:nix **装不了**内核模块 —— nixpkgs 的 `nvidia_x11` 是针对 nixpkgs 自己的内核编译的,
   与 Debian 内核的 vermagic/符号 CRC 不匹配,`modprobe` 会直接拒绝。所以"驱动怎么装"和"驱动放哪"
   是两个独立问题:驱动必须由镜像构建流水线产出(构建期 DKMS),但**放哪**可以自由设计。
-  外置方案的额外好处:模块按内核版本分目录,回滚到旧槽时旧内核的驱动仍在 `/Volume` 上。
-- **否决**:用 nix 装内核模块(原理上不可行);把整个 `/usr/lib/modules` 直接搬到 `/Volume`
+  外置方案的额外好处:模块按内核版本分目录,回滚到旧槽时旧内核的驱动仍在 `/data` 上。
+- **否决**:用 nix 装内核模块(原理上不可行);把整个 `/usr/lib/modules` 直接搬到 `/data`
   (会让"可写分区故障"升级成"整机没有驱动",所以改为 overlay + 保留镜像内模块作底线);
   做成 sysext(sysext 的 `extension-release` 必须匹配基底版本 ⇒ 每次基底更新都要重建 sysext,
   而 NVIDIA 的更新节奏比基底还快,耦合方向是反的)。
@@ -162,6 +162,39 @@
   `/etc/machine-id`(不能只调 `systemd-machine-id-setup`:它对 `uninitialized` 内容是**故意空转**的),
   `DHCP=yes` 交回 networkd,
   dhcpcd 已从镜像里彻底移除(它同时也会喂 DNS 给 resolved,现在这一步由 networkd 直接做)。
+
+## D17 持久分区的挂载点叫 `/data`
+
+- **决策**:`volume` 分区挂到 **`/data`**(2026-09 从 `/Volume` 改名);
+  **GPT 分区标签仍然是 `volume`**,不跟着改。
+- **理由**:挂载点是给人看的,`/data` 更直白(也少一次"Volume 是什么"的解释)。
+  标签不跟着改是**兼容性硬约束**:标签写在已经做好的分区表里,装机后不会再改 ——
+  改成 `data` 之后,(a) 老机器上根本找不到这个分区,(b) 另一个槽里的旧镜像也找不到它
+  (旧镜像扫的是 `PARTNAME=volume`)⇒ 回滚时直接起不来。挂载点名字属于镜像,分区标签属于磁盘。
+- **代价/边界**:镜像里不再有 `/Volume`;早期文档与旧日志里的 `/Volume` 指的都是 `/data`。
+  分区内的目录结构(`keel/`、`var/`、`overlayfs/`、`home/`、`nix/`)一个都没动,
+  所以**换槽/改名不丢任何状态**(同一个分区,只是挂到了新路径)。
+
+## D18 ESP 由我们自己挂,`systemd-gpt-auto-generator` 退场
+
+- **决策**:`keel-mounts` 在启动早期扫 `PARTNAME=esp` 把 ESP 以 **rw** 挂到 `/boot`;
+  kernel cmdline 加 `systemd.gpt_auto=no`;`lib.sh` 只承认"挂载表里的 ESP"或"确实是挂载点的路径",
+  `bootctl --print-esp-path` 降级成兜底参考。
+- **理由**:装机后的系统上实测 ESP 压根没挂上,而 `keel_esp()` 把 bootctl 的**猜测路径**
+  (`/boot` 目录存在就报 `/boot`)当真 ⇒ 后面所有 UKI/bootctl 操作都在一个空目录上"成功":
+  `os-status` 看不到任何 UKI、`os-update` 写不进新 UKI、`bootctl set-preferred` 切不了槽、
+  `keel-confirm` 确认不了槽 —— A/B 更新这条链整条是断的,而且**没有一处报错**。
+  gpt-auto 挂 ESP 的前置条件有好几条(fstab 里有 `/boot` 条目、`/boot` 不为空、
+  能读到 EFI 变量 `LoaderDevicePartUUID`…),任何一条不满足都只是"静默不挂" ——
+  这种依赖不该由一个需要 100% 可用的功能来承担。
+- **否决**:
+  - 继续用 gpt-auto(静默失败模式太多,排查一次的成本已经证明不划算);
+  - 给 ESP 打 `NoAuto=` GPT 标志位(systemd-repart 确实支持,但 `gpt_partition_type_knows_no_auto()`
+    的白名单里**没有 ESP**,设了只会打印一行 warning);
+  - 用 `/etc/fstab` 挂 ESP(fstab 会生成依赖 udev 设备单元的 `boot.mount` —— 正是坑 #24 的形状)。
+- **代价**:ESP 路径固定成 `/boot`(gpt-auto 原来可能在 `/efi`);手工把 ESP 挂到别处的系统
+  仍然靠 bootctl 兜底那一支。关掉 gpt-auto 后也不再有"根分区自动 rw 重挂/扩容"——
+  我们的根是**故意**只读且定长的,不需要它。
 
 ## D16 命令命名
 

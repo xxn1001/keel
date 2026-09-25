@@ -1,9 +1,9 @@
 #!/bin/bash
-# os-rescue —— 救援与修复入口:重建 /Volume 骨架、请求重置 /etc、扩展 volume、
+# os-rescue —— 救援与修复入口:重建 /data 骨架、请求重置 /etc、扩展 volume、
 #              标记当前槽为坏、重装引导器。
 #
-# 见 docs/architecture.md §9(命令集)与 §4.2(/Volume 骨架);用户操作见
-# docs/update.md §3.2(回滚/标记坏槽)与 docs/troubleshooting.md §3(/Volume 出问题)。
+# 见 docs/architecture.md §9(命令集)与 §4.2(/data 骨架);用户操作见
+# docs/update.md §3.2(回滚/标记坏槽)与 docs/troubleshooting.md §3(/data 出问题)。
 #
 # 本脚本只做"幂等且只增不破"的修复:除了 --grow-volume 会改分区表(只扩不缩),
 # 没有别的破坏性动作 —— 清空 /etc 这种不可逆的事由 keel-mounts 在下次启动时做,
@@ -19,18 +19,18 @@ set -euo pipefail
 
 readonly SKELETON="/usr/share/keel/volume-skeleton"
 readonly REPART_DEFS="/usr/lib/keel/repart.d"
-readonly RESET_FLAG="/Volume/overlayfs/.reset-etc-requested"
+readonly RESET_FLAG="/data/overlayfs/.reset-etc-requested"
 readonly VOLUME_PART="/dev/disk/by-partlabel/volume"
 
 usage() {
     cat <<'EOF'
 用法:os-rescue <--init-volume|--reset-etc|--grow-volume|--mark-bad|--repair-boot>
 
-  --init-volume   幂等修补 /Volume 骨架:把镜像里的骨架用 no-clobber 方式补进去,
+  --init-volume   幂等修补 /data 骨架:把镜像里的骨架用 no-clobber 方式补进去,
                   不删除任何已有文件。骨架缺失、/var/lib/dbus/machine-id 链接
                   丢失(mkosi.finalize 里显式重建过,见 AGENTS.md 坑 #3)都走这里。
   --reset-etc     请求"下次启动清空 /etc 的可写层"。本命令**不清空**:只写标志文件
-                  /Volume/overlayfs/.reset-etc-requested,由 keel-mounts 在挂载前
+                  /data/overlayfs/.reset-etc-requested,由 keel-mounts 在挂载前
                   先把旧 upper 备份成 etc.bak-<时间戳>,再清空。
   --grow-volume   用 systemd-repart 把 volume 分区扩到整盘剩余空间(只扩不缩;
                   文件系统由 repart 的 GrowFileSystem 负责,不需要手动 resize2fs)。
@@ -57,24 +57,24 @@ do_init_volume() {
     if [ ! -d "$SKELETON" ]; then
         keel_die "镜像里的骨架不存在:${SKELETON}(这个镜像不完整?)"
     fi
-    if [ ! -d /Volume ]; then
-        keel_die "/Volume 没有挂载。它是 initrd 按 kernel cmdline 的 systemd.mount-extra 挂的,先确认:findmnt /Volume"
+    if [ ! -d /data ]; then
+        keel_die "/data 没有挂载。它是 initrd 按 kernel cmdline 的 systemd.mount-extra 挂的,先确认:findmnt /data"
     fi
-    keel_log "把骨架补进 /Volume(已存在的文件不会被覆盖,也不会删除任何东西)"
+    keel_log "把骨架补进 /data(已存在的文件不会被覆盖,也不会删除任何东西)"
     # 末尾的 /. 表示"复制目录内容"而不是目录本身
-    cp -a -n "$SKELETON/." /Volume/ || keel_die "复制骨架失败(磁盘满了?)"
+    cp -a -n "$SKELETON/." /data/ || keel_die "复制骨架失败(磁盘满了?)"
     sync
 
     # 两个最常见的"单独丢失"点,直接检查并报告,省得用户去猜。
     # readlink 对损坏的链接会失败,所以带 || true(set -e 下不能让它中断修复)。
-    if [ -L /Volume/var/lib/dbus/machine-id ]; then
-        keel_log "dbus machine-id 链接存在:$(readlink /Volume/var/lib/dbus/machine-id 2>/dev/null || echo '无法解析')"
+    if [ -L /data/var/lib/dbus/machine-id ]; then
+        keel_log "dbus machine-id 链接存在:$(readlink /data/var/lib/dbus/machine-id 2>/dev/null || echo '无法解析')"
     else
-        install -d -m 0755 /Volume/var/lib/dbus
-        ln -sfn /etc/machine-id /Volume/var/lib/dbus/machine-id
-        keel_log "已重建 /Volume/var/lib/dbus/machine-id -> /etc/machine-id"
+        install -d -m 0755 /data/var/lib/dbus
+        ln -sfn /etc/machine-id /data/var/lib/dbus/machine-id
+        keel_log "已重建 /data/var/lib/dbus/machine-id -> /etc/machine-id"
     fi
-    [ -d /Volume/var/log/journal ] || keel_log "注意:/Volume/var/log/journal 仍然缺失,这次启动的日志会是易失的"
+    [ -d /data/var/log/journal ] || keel_log "注意:/data/var/log/journal 仍然缺失,这次启动的日志会是易失的"
 
     echo "骨架修补完成。已有文件一件没动;缺的目录/文件/链接补上了。"
 }
@@ -86,11 +86,11 @@ do_init_volume() {
 # 早就挂好了。所以本命令只留一个请求标志,真正的动作在 keel-mounts 里做(它会先备份)。
 # ---------------------------------------------------------------------------
 do_reset_etc() {
-    if [ ! -d /Volume ]; then
-        keel_die "/Volume 没有挂载,写不了请求标志;先确认:findmnt /Volume"
+    if [ ! -d /data ]; then
+        keel_die "/data 没有挂载,写不了请求标志;先确认:findmnt /data"
     fi
-    if ! install -d -m 0755 /Volume/overlayfs; then
-        keel_die "创建 /Volume/overlayfs 失败"
+    if ! install -d -m 0755 /data/overlayfs; then
+        keel_die "创建 /data/overlayfs 失败"
     fi
     if ! : >"$RESET_FLAG"; then
         keel_die "写请求标志失败:${RESET_FLAG}"
@@ -99,14 +99,14 @@ do_reset_etc() {
     keel_log "已写入请求标志:${RESET_FLAG}"
     echo "已登记请求:**下次启动**会把 /etc 的可写层清空,并重新从只读镜像播种。"
     echo "清空前 keel-mounts 会先把旧内容备份成:"
-    echo "  /Volume/overlayfs/etc.bak-<时间戳>/"
+    echo "  /data/overlayfs/etc.bak-<时间戳>/"
     echo
     echo "注意:这样一来下面这些东西会回到出厂状态,而且不会自动恢复 ——"
     echo "  - 账号与密码(/etc/passwd、/etc/shadow、/etc/group)"
     echo "  - SSH 主机密钥(/etc/ssh/ssh_host_*)"
     echo "  - machine-id(/etc/machine-id,以及依赖它的 journal 关联)"
     echo "  - 网络配置、hostname、你改过的任何 /etc 下的文件"
-    echo "要留的东西先复制到 /Volume/home/ 下面(那不在 overlay 的 upper 里)。"
+    echo "要留的东西先复制到 /data/home/ 下面(那不在 overlay 的 upper 里)。"
     echo "备份不满意还能从上面那个 etc.bak-<时间戳> 目录里找回来。"
 }
 
@@ -125,8 +125,8 @@ do_reset_etc() {
 #   systemd-growfs@.service —— 而我们的 volume 是用 cmdline 的
 #   systemd.mount-extra=PARTLABEL=volume 显式挂的,不经过 gpt-auto-generator
 #   (repart.d(5):这三个 flag "only affect automatic partition mounting")。
-#   ⇒ 所以这一步只保证**分区**变大;若实测 df 没变,需要在挂载好的 /Volume 上
-#   跑 systemd-growfs /Volume(它会按文件系统类型调 resize2fs)。
+#   ⇒ 所以这一步只保证**分区**变大;若实测 df 没变,需要在挂载好的 /data 上
+#   跑 systemd-growfs /data(它会按文件系统类型调 resize2fs)。
 #   在真机确认之前不要假设文件系统也一起变大了。
 # ---------------------------------------------------------------------------
 do_grow_volume() {
@@ -177,15 +177,15 @@ do_grow_volume() {
     # 第二步:把文件系统顶满分到的新空间(需要 resize2fs,e2fsprogs 提供)。
     # 已经到顶时 systemd-growfs 什么也不做,所以重复执行是安全的。
     if command -v systemd-growfs >/dev/null 2>&1 || [ -x /usr/lib/systemd/systemd-growfs ]; then
-        if systemd-growfs /Volume; then
+        if systemd-growfs /data; then
             keel_log "文件系统已扩到分区大小"
         else
-            keel_log "systemd-growfs 失败:确认 e2fsprogs(resize2fs)装了、/Volume 是可写的 ext4"
+            keel_log "systemd-growfs 失败:确认 e2fsprogs(resize2fs)装了、/data 是可写的 ext4"
         fi
     else
         keel_log "找不到 systemd-growfs,文件系统没扩;手动跑 resize2fs $(readlink -f "$VOLUME_PART")"
     fi
-    keel_log "完成。用 lsblk 和 df -h /Volume 确认新的大小"
+    keel_log "完成。用 lsblk 和 df -h /data 确认新的大小"
 }
 
 # ---------------------------------------------------------------------------
@@ -228,8 +228,21 @@ do_mark_bad() {
 # 还能起来;进来了就用这条命令把引导器与启动项重新装好(docs/architecture.md §5.2)。
 # ---------------------------------------------------------------------------
 do_repair_boot() {
-    local slot counted f
+    local slot counted f mnt
     slot="$(keel_current_slot 2>/dev/null)" || slot=""
+
+    # ESP 没挂上就先挂 —— 这条命令本来就有"修引导"的职责,而 ESP 没挂上正是
+    # 最常见的那种"引导看着没事、其实更新/确认全废"的状态(坑 #36)
+    if [ "$KEEL_ESP_MOUNTED" != yes ]; then
+        if mnt=$(keel_esp_mount); then
+            keel_log "ESP 原来没挂上,已挂到 $mnt"
+            KEEL_ESP=$mnt
+            KEEL_UKI_DIR="$mnt/EFI/Linux"
+            KEEL_ESP_MOUNTED=yes
+        else
+            keel_die "找不到/挂不上 PARTNAME=esp 的分区:先 lsblk -o NAME,SIZE,PARTLABEL 看有没有 esp;分区在但挂载失败就看 dmesg | tail 里 vfat 的报错(比如 FAT 损坏)"
+        fi
+    fi
 
     if bootctl install; then
         keel_log "bootctl install 完成(systemd-boot + fallback BOOTX64.EFI + NVRAM 启动项)"

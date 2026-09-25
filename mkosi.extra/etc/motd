@@ -1,3 +1,3 @@
 keel —— 不可变基座 + A/B 双槽 + nix 用户态
-根只读;/var /home /root /nix 在 /Volume 上,/etc 是 overlayfs。
+根只读;/var /home /root /nix 在 /data 上,/etc 是 overlayfs。
 装软件用 nix(nix profile install nixpkgs#<包>);系统状态看 os-status,更新用 os-update。
