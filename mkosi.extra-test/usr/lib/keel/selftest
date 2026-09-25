@@ -39,6 +39,15 @@ done
 # ---------------------------------------------------------------------------
 echo
 echo "################ keel-selftest 启动现场(一次性)################"
+echo "--- 到宿主的 HTTP 吞吐(OTA 演练要下 ~13 GiB,先估算要多久;宿主没起服务就跳过)"
+http_probe=$(curl -fsS --max-time 30 -o /dev/null \
+    -w '%{speed_download} %{size_download} %{time_total}' \
+    http://10.0.2.2:8000/blob.bin 2>/dev/null) || http_probe=""
+if [ -n "$http_probe" ]; then
+    printf '%s\n' "$http_probe" | awk '{ printf "  速度 %.1f MiB/s,本次下了 %.1f MiB,用时 %.1fs ⇒ 13 GiB 约需 %.1f 分钟\n", $1/1048576, $2/1048576, $3, 13312/($1/1048576)/60 }'
+else
+    echo "  跳过(宿主没有在 10.0.2.2:8000 提供服务)"
+fi
 echo "--- 登录账号(决策 D21:admin 是唯一交互账号,root 锁定)"
 echo "  id admin   : $(id admin 2>&1)"
 echo "  admin shadow 字段: $(awk -F: '$1=="admin"{print $2}' /etc/shadow 2>/dev/null)"
