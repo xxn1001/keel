@@ -76,6 +76,14 @@ step "6/7 准备**坏载荷**(让某个槽真的起不来,验自动回滚)"
 # 演练里"目标槽"总是**另一个槽**:p2 阶段跑在槽 a 上,所以要用 slot-b 的产物。
 # 大的根镜像用 cp --reflink(不行就普通复制);其余文件用符号链接,省 13 GiB 的拷贝。
 BAD_SLOT=${KEEL_DRILL_BAD_SLOT:-b}
+# 破坏方式(2026-09 实测两种,决策 D25 / 坑 #50):
+#   userspace(默认)= 把根里的 default.target 换成**悬空符号链接** ⇒ 根里的 systemd 起来后
+#       找不到默认目标 ⇒ 启动失败/进 emergency(挂住)⇒ **主系统的运行时看门狗**(已实测生效:
+#       RuntimeWatchdogUSec=1min + /dev/watchdog0)到点复位 ⇒ 自动回退。这条链路 v1 能验证。
+#   initrd = 删掉 PID1 与 init 兜底 ⇒ initrd 在 switch-root 时判"没有可用的 init"并**冻结**
+#       (不 panic、不重启)。实测:机器挂住 650+ 秒没有被复位 ⇒ **v1 覆盖不到这种情况**
+#       (initrd 里的看门狗没生效:配置没进去?还是没有 /dev/watchdog?待查,见 docs/roadmap.md 3.0)。
+SABOTAGE=${KEEL_DRILL_SABOTAGE:-userspace}
 command -v debugfs >/dev/null 2>&1 || {
     apt-get update -qq
     apt-get install -y -qq --no-install-recommends e2fsprogs >/dev/null 2>&1
@@ -91,22 +99,37 @@ done
 cp --reflink=auto --sparse=always "/work/$DRILL_PAYLOAD/slot-$BAD_SLOT.root.raw" \
    "/tmp/drill-serve/bad/slot-$BAD_SLOT.root.raw"
 BAD_IMG=/tmp/drill-serve/bad/slot-$BAD_SLOT.root.raw
-for target in /usr/lib/systemd/systemd /usr/bin/dash /usr/bin/bash; do
-    # 注意:**不要**只看 debugfs 的退出码 —— 它干什么都返回 0(坑 #47 实测)
-    debugfs -w -R "rm $target" "$BAD_IMG" >/dev/null 2>&1 || true
-done
-# 回读确认真的删掉了:判据只能是**输出文本**(`File not found by ext2_lookup`),
-# 因为 `debugfs -R "stat …"` 对不存在的路径同样返回 0(实测)。
-for target in /usr/lib/systemd/systemd /usr/bin/dash /usr/bin/bash; do
-    if debugfs -R "stat $target" "$BAD_IMG" 2>&1 | grep -q 'File not found'; then
-        echo "   已确认删掉:$target"
+if [ "$SABOTAGE" = initrd ]; then
+    for target in /usr/lib/systemd/systemd /usr/bin/dash /usr/bin/bash; do
+        # 注意:**不要**只看 debugfs 的退出码 —— 它干什么都返回 0(坑 #47 实测)
+        debugfs -w -R "rm $target" "$BAD_IMG" >/dev/null 2>&1 || true
+    done
+    # 回读确认真的删掉了:判据只能是**输出文本**(`File not found by ext2_lookup`),
+    # 因为 `debugfs -R "stat …"` 对不存在的路径同样返回 0(实测)。
+    for target in /usr/lib/systemd/systemd /usr/bin/dash /usr/bin/bash; do
+        if debugfs -R "stat $target" "$BAD_IMG" 2>&1 | grep -q 'File not found'; then
+            echo "   已确认删掉:$target"
+        else
+            echo "   错误:坏载荷里 $target 还在(或 debugfs 读不出来)⇒ 演练没有意义" >&2
+            debugfs -R "stat $target" "$BAD_IMG" 2>&1 | tail -2 >&2
+            exit 1
+        fi
+    done
+else
+    # userspace:把 default.target 换成悬空符号链接(先删再建,保证内容是我们写的)
+    debugfs -w -R "rm /etc/systemd/system/default.target" "$BAD_IMG" >/dev/null 2>&1 || true
+    debugfs -w -R "symlink /etc/systemd/system/default.target /nonexistent-keel.target" "$BAD_IMG" >/dev/null 2>&1 || true
+    # 回读:符号链接的目标必须是 /nonexistent-keel.target(同样只看输出,不看退出码)
+    if debugfs -R "stat /etc/systemd/system/default.target" "$BAD_IMG" 2>&1 |
+        grep -q 'nonexistent-keel.target'; then
+        echo "   已确认:default.target -> /nonexistent-keel.target(用户态起不来)"
     else
-        echo "   错误:坏载荷里 $target 还在(或 debugfs 读不出来)⇒ 那个槽不会 panic,演练没有意义" >&2
-        debugfs -R "stat $target" "$BAD_IMG" 2>&1 | tail -2 >&2
+        echo "   错误:坏载荷的 default.target 没换成悬空链接" >&2
+        debugfs -R "stat /etc/systemd/system/default.target" "$BAD_IMG" 2>&1 | tail -3 >&2
         exit 1
     fi
-done
-echo "   已把 slot-$BAD_SLOT.root.raw 做成起不来的(删掉 PID1 与 init 兜底,回读已确认)"
+fi
+echo "   已把 slot-$BAD_SLOT.root.raw 做成起不来的(破坏方式:$SABOTAGE,回读已确认)"
 # manifest:版本比好载荷再高一档(否则 stage 会说"不比当前新"),并把被改过的那个产物的
 # sha256 换成新值 —— 其余行为原样复制(其余产物是符号链接,内容没变)
 GOOD_VER=$(sed -n 's/^version=//p' "/work/$DRILL_PAYLOAD/manifest" | head -n1)

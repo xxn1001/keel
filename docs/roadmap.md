@@ -31,7 +31,7 @@
 
 | # | 事项 | 说明 |
 |---|---|---|
-| 3.0 | **initrd 阶段的挂死兜底** | v1 靠 `RuntimeWatchdogSec=60` + 硬件/虚拟看门狗(决策 D25);initrd 里**没有 `softdog` 模块**,所以**没有硬件看门狗**的真机上,initrd 冻结仍然救不回来。要做的:把 `softdog` 塞进 initrd 的模块集,或改用"initrd 里带超时"的方案(需要先确认 mkosi 的 initrd 模块集怎么扩) |
+| 3.0 | **initrd 阶段的冻结兜底**(v1 明确不覆盖) | 实测(坑 #50):候选槽的根镜像坏掉时 initrd 会停在 `Switch root target contains no usable init.` 并**冻结**;主系统的看门狗已生效(`RuntimeWatchdogUSec=1min`),但**没能救回这次冻结**(挂住 650+ 秒)。待查:① `mkosi.extra-initrd` 里的配置到底进没进 initrd(我们那个检查也可能误报);② initrd 里有没有 `/dev/watchdog`(没有就得把看门狗驱动/`softdog` 加进 initrd 的模块集);③ 或者给 initrd 加超时。查实之后再决定是修还是接受 |
 | 3.1 | `--autologin` 秒退的根因 | 坑 #26/#28 只查清到"`/bin/login` 缺失"这一层;autologin 那条路径为什么秒退没再深挖(v1 不用它) |
 | 3.2 | 微码是否真的进了 UKI | 目前只有"VM 能启动"这种间接证据;真机上 `dmesg | grep -i microcode` 可以直接确认 |
 | 3.3 | 文档里的历史陈述 | `docs/*.md` 里还留着一些"尚未实现/待验证"的旧话术,发 v1 时统一清一遍 |
