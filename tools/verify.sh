@@ -860,6 +860,18 @@ if grep -q 'readarray -t ovmf' tools/libvirt-test.sh; then
 else
     ok "没有把「找不到固件」押在 readarray 的退出码上(它根本不传,坑 #55)"
 fi
+# 域 XML:os/boot 与 per-device boot order 不能混用(现代 libvirt 直接拒绝定义,
+# 报 "per-device boot elements cannot be used together with os/boot elements" —— 坑 #56)
+if grep -q "boot dev='hd'" tools/libvirt-test.sh; then
+    no "域 XML 里还有 <os><boot dev='hd'/>(和磁盘上的 <boot order=> 冲突,libvirt 拒绝定义,坑 #56)"
+else
+    ok "域 XML 只用 per-device <boot order=> 定启动顺序(不与 os/boot 冲突,坑 #56)"
+fi
+if grep -q 'virsh define "\$(xml_path)" >/dev/null || die' tools/libvirt-test.sh; then
+    ok "virsh define 的退出码被检查(define 失败不会再伪装成 start 失败,坑 #56)"
+else
+    no "virsh define 没检查退出码 ⇒ define 被拒后报的是「域未定义」这种误导性错误(坑 #56)"
+fi
 if grep -q 'console=ttyS0' mkosi.conf.d/30-content.conf; then
     ok "cmdline 里有 console=ttyS0(服务器串口/带外管理与 libvirt 验证都要它)"
 else

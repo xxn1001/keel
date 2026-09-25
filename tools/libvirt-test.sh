@@ -112,7 +112,11 @@ render_xml() {
     <type arch='x86_64' machine='q35'>hvm</type>
     <loader readonly='yes' type='pflash'>$ovmf_code</loader>
     <nvram>$PWD/$WORK/nvram.fd</nvram>
-    <boot dev='hd'/>
+    <!-- 启动顺序**只用**磁盘上的 per-device <boot order=>**(见下面 vda/vdb)。
+         这里以前还写着 os 级的 boot dev=hd,现代 libvirt 会直接拒绝定义:
+           unsupported configuration: per-device boot elements cannot be used
+           together with os/boot elements
+         (2026-09 第一次真的跑 libvirt 演练时撞到,坑 #56) -->
   </os>
   <features><acpi/><apic/></features>
   <cpu mode='host-passthrough' check='none'/>
@@ -194,8 +198,10 @@ cmd_start() {
         log "启动 libvirt 的 default 网络(guest 需要 DHCP 与宿主 192.168.122.1)"
         virsh net-start default >/dev/null || die "virsh net-start default 失败(需要 root?)"
     fi
-    # 每次都 define:改了启动顺序(或换了产物)时,已存在的域配置要跟着更新
-    virsh define "$(xml_path)" >/dev/null
+    # 每次都 define:改了启动顺序(或换了产物)时,已存在的域配置要跟着更新。
+    # **检查退出码**:以前这里不检查,define 被 libvirt 拒绝之后还会继续往下走,
+    # 报出来的是 "Failed to start domain … which is not defined"(坑 #56)。
+    virsh define "$(xml_path)" >/dev/null || die "virsh define 失败:域 XML 被 libvirt 拒绝(把 $(xml_path) 喂给 virsh define 看完整错误)"
     virsh start "$DOMAIN" >/dev/null || die "virsh start $DOMAIN 失败(看 /var/log/libvirt/qemu/$DOMAIN.log)"
     log "已启动。串口控制台:tools/libvirt-test.sh console    串口日志:tools/libvirt-test.sh log"
 }

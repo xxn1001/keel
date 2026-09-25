@@ -1008,3 +1008,20 @@
        凡是要知道"子命令成没成",就得自己去检查结果(文件在不在、数组是不是空的);
     ③ 报错信息指向的位置(`ovmf[0]`)不是错误的位置 —— 顺着它修只会把 `set -u` 关掉,
        那等于把判据彻底拆了。
+
+56. **域 XML 里 `os/boot` 与"每设备 boot order"不能混用 —— 现代 libvirt 直接拒绝定义(2026-09,第一次跑 libvirt 演练,连着坑 #55 撞上)。**
+    现象:`tools/libvirt-test.sh start` 里 `virsh define` 失败:
+    ```
+    error: Failed to define domain from mkosi.output/libvirt/keel-test.xml
+    error: unsupported configuration: per-device boot elements cannot be used together with os/boot elements
+    ```
+    我们的 XML 从写下的第一天起就同时有两套启动顺序:`<os><boot dev='hd'/></os>` 和磁盘上的
+    `<boot order='1|2'/>`。老 libvirt 容忍这种组合,现在直接拒绝 —— 而脚本**没有检查
+    `virsh define` 的退出码**,于是接着往下走,第二句报的是
+    `Failed to start domain 'keel-test' which is not defined`,把注意力引到"域不存在"上。
+    ⇒ 修法:删掉 `os/boot`,只用 per-device `boot order`(记 boot_target 的那套本来就更精确);
+    `virsh define` 加 `|| die`。`tools/verify.sh` 加两条断言。
+    **教训**:① 和坑 #54/#55 一模一样的形状:**"写下来"不等于"跑过"** —— 这份 XML 写了很久,
+    却是在第一次真的调用它的时候才第一次被 libvirt 解析;
+    ② 一条命令失败后**必须立刻停**,否则下一句会用一个更误导的错误盖住真正的原因
+    (`define` 被拒 → "域未定义")。

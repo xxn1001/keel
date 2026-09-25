@@ -227,7 +227,7 @@ userspace 型(能进 initrd、起不来),**验证决策 D26 并挖出坑 #51**�
 
 **还没做**(按下一轮的顺序):
 `os-install` 在 `UnifiedKernelImageFormat=keel-a` 改名之后的**整盘重验证**、
-`os-rescue` 的五条路径(`--repair-boot` / `--reset-etc` / `--grow-data` / `--force-gc` / `--factory-reset`)、
+`os-rescue` 的五条路径(`--init-data` / `--reset-etc` / `--grow-data` / `--mark-bad` / `--repair-boot`)、
 ESP 容量账(1 GiB ESP × 163 MB UKI:连续多次更新后 `gc` 与拒绝阈值的边界)、
 `/data` 写满演练(看门人三级动作 + 满盘时 `os-update` 的行为)、
 坑 #51 修好之后"迁移载荷在下载前就被拒"的行为复验、
