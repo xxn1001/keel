@@ -1,5 +1,8 @@
 #!/bin/bash
-# keel 静态校验 —— 不需要 root、不需要 loop 设备、不构建镜像
+# keel 静态校验 —— 不需要 loop 设备、不构建镜像
+#
+# 大部分检查不需要 root;只有「假镜像树实跑 mkosi.finalize」那条需要(它要 chown admin 家目录),
+# 非 root 时那条会**明确跳过**而不是假装失败(在 NixOS 宿主上以 admin 跑过一次,见坑 #52)。
 #
 # 能在这里查的:
 #   1. mkosi 三个 profile 的配置解析
@@ -994,19 +997,32 @@ else
 fi
 
 # 假镜像树实跑 finalize:账号搬运 + 系统标识断言必须真的有效(不是只写了代码)
+#
+# 两棵树只差一个 hostname,别的地方都补全 —— 否则"finalize 失败了"可能根本不是因为
+# hostname(第一版就是这样:树里缺 data-skeleton 目录,它在写 keel-check 转发时就死了,
+# 于是"标识断言生效"那条检查**假通过**,而真正的 bug 是坑 #53)。
+fake_tree() { # fake_tree <root> <hostname>
+    local r=$1 hn=$2
+    mkdir -p "$r/etc" "$r/var/log/journal" "$r/usr/lib/credstore" "$r/usr/share/zoneinfo/Asia"
+    printf 'root:x:0:0:root:/root:/bin/bash\nadmin:x:1000:1000:Keel Admin:/home/admin:/bin/bash\n' >"$r/etc/passwd"
+    printf 'root:x:0:\nadmin:x:1000:\n' >"$r/etc/group"
+    printf 'root:$6$FAKE$HASH:19000:0:99999:7:::\nadmin:!*:20721::::::\n' >"$r/etc/shadow"
+    echo cred >"$r/usr/lib/credstore/passwd.hashed-password.root"
+    printf '%s\n' "$hn" >"$r/etc/hostname"
+    echo "LANG=C.UTF-8" >"$r/etc/locale.conf"
+    echo tzdata >"$r/usr/share/zoneinfo/Asia/Shanghai"
+    ln -s /usr/share/zoneinfo/Asia/Shanghai "$r/etc/localtime"
+}
 FIN_R=$(tmpd); FIN_S=$(tmpd)
-mkdir -p "$FIN_R/etc" "$FIN_R/var/log/journal" "$FIN_R/usr/lib/credstore" "$FIN_R/usr/share/zoneinfo/Asia"
-printf 'root:x:0:0:root:/root:/bin/bash\nadmin:x:1000:1000:Keel Admin:/home/admin:/bin/bash\n' >"$FIN_R/etc/passwd"
-printf 'root:x:0:\nadmin:x:1000:\n' >"$FIN_R/etc/group"
-printf 'root:$6$FAKE$HASH:19000:0:99999:7:::\nadmin:!*:20721::::::\n' >"$FIN_R/etc/shadow"
-echo cred >"$FIN_R/usr/lib/credstore/passwd.hashed-password.root"
-echo keel >"$FIN_R/etc/hostname"
-echo "LANG=C.UTF-8" >"$FIN_R/etc/locale.conf"
-echo tzdata >"$FIN_R/usr/share/zoneinfo/Asia/Shanghai"
-ln -s /usr/share/zoneinfo/Asia/Shanghai "$FIN_R/etc/localtime"
+fake_tree "$FIN_R" keel
 echo "ssh-ed25519 AAAAfake keel@verify" >"$FIN_S/authorized_keys"
 echo 1 >"$FIN_S/schema-version"
-if BUILDROOT="$FIN_R" SRCDIR="$FIN_S" bash "$FIN" >/dev/null 2>&1; then
+if [ "$(id -u)" != 0 ]; then
+    # 这条要真的跑 finalize,而 finalize 会给 admin 家目录 chown(镜像里的 uid 1000)。
+    # 非 root 跑必然 EPERM ⇒ 以前它会在 NixOS 宿主上以"账号逻辑有问题"的面目失败,
+    # 那是**环境**问题不是代码问题(坑 #52 的同一个形状:判据自己要说真话)。
+    skip "非 root:跳过「假镜像树实跑 finalize」(它要 chown admin;用 sudo 或进构建容器跑完整版)"
+elif BUILDROOT="$FIN_R" SRCDIR="$FIN_S" bash "$FIN" >/dev/null 2>&1; then
     if grep -q '^admin:\$6\$FAKE\$HASH:' "$FIN_R/etc/shadow" &&
        grep -q '^root:!:' "$FIN_R/etc/shadow" &&
        [ ! -e "$FIN_R/usr/lib/credstore/passwd.hashed-password.root" ] &&
@@ -1023,17 +1039,23 @@ else
     no "finalize 在假镜像树上直接失败了(账号/标识逻辑有问题)"
 fi
 
-# 反向:标识不对时必须让构建失败,而不是"退出码 0"
+# 反向:标识不对时必须让构建失败,而不是"退出码 0"。
+# 判据要**对准失败原因**:只看"退出码非 0"的话,finalize 因为任何别的理由失败
+# (例如非 root 跑不了 chown)都会让这条检查假通过 —— 断言必须抓到那句话。
+# 这棵树**故意不给 authorized_keys**(SRCDIR 里只有 schema-version):顺带覆盖
+# "仓库里没有 authorized_keys 时构建也必须能走完"这一条(坑 #53)。
 FIN_R2=$(tmpd); FIN_S2=$(tmpd)
-mkdir -p "$FIN_R2/etc" "$FIN_R2/var" "$FIN_R2/usr/share/zoneinfo/Asia"
-printf 'root:x:0:0:root:/root:/bin/bash\nadmin:x:1000:1000::/home/admin:/bin/bash\n' >"$FIN_R2/etc/passwd"
-printf 'root:x:0:\nadmin:x:1000:\n' >"$FIN_R2/etc/group"
-printf 'root:!:1:0:99999:7:::\nadmin:!*:1::::::\n' >"$FIN_R2/etc/shadow"
-echo localhost >"$FIN_R2/etc/hostname"
-if BUILDROOT="$FIN_R2" SRCDIR="$FIN_S2" bash "$FIN" >/dev/null 2>&1; then
+fake_tree "$FIN_R2" localhost
+echo 1 >"$FIN_S2/schema-version"
+if [ "$(id -u)" != 0 ]; then
+    skip "非 root:跳过「标注不对时构建必须失败」的实跑(同一个 chown 限制)"
+elif BUILDROOT="$FIN_R2" SRCDIR="$FIN_S2" bash "$FIN" >"$FIN_R2/out" 2>&1; then
     no "finalize 在 /etc/hostname 是 localhost 时仍然成功了 ⇒ 标识断言没生效"
-else
+elif grep -q 'hostname' "$FIN_R2/out"; then
     ok "finalize 在系统标识不对时会让构建失败(hostname 断言真的在跑)"
+else
+    no "finalize 失败了,但原因不是标识断言(⇒ 这条检查证明不了标识断言在跑):"
+    head -5 "$FIN_R2/out" | sed 's/^/      /'
 fi
 
 # ---------------------------------------------------------------------------

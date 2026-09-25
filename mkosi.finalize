@@ -66,6 +66,11 @@ install -d -m 0755 "$SKEL/var/log/journal"
 # admin 没密码 + 没公钥 = 只能抱着键盘看登录提示。
 install -d -m 0755 "$SKEL/home"
 install -d -m 0700 "$SKEL/home/root"          # /root 仍然指向这里(见下面第 2 节)
+# admin 的家目录**先无条件建出来**:下面要往里写 keel-check 转发文件,而"仓库根目录有没有
+# authorized_keys"是可选的(那份文件被 .gitignore 排除,公开仓库里根本没有)。少了这一行,
+# 一次"没有 authorized_keys"的构建会卡在写转发文件那步直接失败(2026-09 由 verify 的
+# 假镜像树抓到,坑 #53)。属主在下面按镜像里的 admin uid/gid 重新设。
+install -d -m 0755 "$SKEL/home/admin"
 if [ -n "${SRCDIR:-}" ] && [ -f "$SRCDIR/authorized_keys" ]; then
     install -d -m 0700 "$SKEL/home/admin/.ssh"
     install -m 0600 "$SRCDIR/authorized_keys" "$SKEL/home/admin/.ssh/authorized_keys"
