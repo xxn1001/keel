@@ -76,6 +76,21 @@ else
     log "      见 docs/install.md §2.5"
 fi
 
+# 装机后的体检入口:admin 家目录里放一个薄转发(真正的脚本在镜像里)
+#
+# 为什么这么拆:家目录在 /data 上,骨架只在**首启**用 `cp -a -n` 播种一次 ——
+# 之后升级系统时,家目录里那份**不会**被更新。所以家目录里只放三行转发,
+# 真身放镜像的 /usr/share/keel/keel-check(每个槽一份,随更新原子替换)。
+# 这样"装好之后 sudo ~/keel-check"永远跑的是当前系统自带的最新版,
+# 而且真机装完、libvirt 装完、U 盘 live 里都能用同一个入口。
+cat >"$SKEL/home/admin/keel-check" <<'WRAPPER'
+#!/bin/sh
+# keel:装机后的体检入口。真身是 /usr/share/keel/keel-check(随系统更新),
+# 这里只转发,所以升级之后你跑到的永远是最新版。
+exec /usr/share/keel/keel-check "$@"
+WRAPPER
+chmod 0755 "$SKEL/home/admin/keel-check"
+
 # admin 的家目录必须归 admin 所有:骨架首启是 `cp -a`,属主会原样带进 /data。
 # uid/gid 从**镜像里**的 passwd 读,不写死 1000(sysusers 的分配结果才是事实)。
 admin_ids=$(awk -F: '$1=="admin"{print $3":"$4; exit}' "$R/etc/passwd")

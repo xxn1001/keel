@@ -196,6 +196,9 @@ tools/libvirt-test.sh prepare && tools/libvirt-test.sh start
 tools/libvirt-test.sh console          # 串口控制台(Ctrl+] 退出)
 tools/libvirt-test.sh update-serve     # 在 libvirt 宿主上起本地更新源(guest 用 192.168.122.1:8000)
 
+# 装机之后的体检(在目标系统里跑;libvirt 装完、真机装完都适用)
+sudo ~/keel-check                      # 转发到 /usr/share/keel/keel-check(随系统更新)
+
 # 烧到目标盘
 sudo tools/burn.sh /dev/nvme0n1
 ```

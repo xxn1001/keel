@@ -836,6 +836,21 @@ else
     no "cmdline 里没有 console=ttyS0 ⇒ libvirt 的 virsh console 看不到启动日志"
 fi
 
+# 装机后的体检:真身在镜像里(随更新),家目录里只放转发(骨架只播种一次)
+if [ -x mkosi.extra/usr/share/keel/keel-check ] &&
+   grep -q 'SKEL/home/admin/keel-check' mkosi.finalize &&
+   grep -q '/usr/share/keel/keel-check' mkosi.finalize; then
+    ok "体检脚本在镜像里,admin 家目录里是转发入口(升级后跑到的仍是最新版)"
+else
+    no "缺少 keel-check 或它没有注入 admin 家目录(装机后没有体检入口)"
+fi
+if bash -n mkosi.extra/usr/share/keel/keel-check 2>/dev/null &&
+   grep -q 'head1 "9. nix' mkosi.extra/usr/share/keel/keel-check; then
+    ok "keel-check 语法通过且检查项齐全(身份/挂载/data/账号/网络/服务/引导链/硬件/nix)"
+else
+    no "keel-check 语法有问题或检查项不全"
+fi
+
 head1 "7. 账号模型(决策 D21:admin 是唯一交互账号,root 锁定)"
 # ---------------------------------------------------------------------------
 if grep -qE '^[[:space:]]*sudo$' mkosi.conf.d/20-packages.conf; then

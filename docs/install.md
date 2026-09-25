@@ -216,7 +216,8 @@ admin 的账号与密码哈希都在**镜像的只读 `/etc`** 里,所以即使 
 ## 5. 装完之后的第一步
 
 ```bash
-os-status     # 当前槽/版本/内核、/data 用量、schema 版本、pending、上次结果、槽位占用
+sudo ~/keel-check   # 体检:九组检查逐项 ✓ / ✗(见 §9);退出码 0 = 没有硬伤
+os-status           # 当前槽/版本/内核、/data 用量、schema 版本、pending、上次结果、槽位占用
 ip a          # 确认网络,再看 sshd 能不能连
 ```
 
@@ -282,6 +283,7 @@ tools/libvirt-test.sh console   # 串口控制台(virsh console;退出按 Ctrl+]
 | 5 | guest | `nix-shell -p fastfetch` | 装机后 nix 可用(不变量 7) |
 | 6 | 宿主 + guest | 宿主 `tools/libvirt-test.sh update-serve`;guest 里把 `UPDATE_SOURCE=http://192.168.122.1:8000` 写进 `/data/keel/config`,然后 `os-update check && fetch && stage --reboot` | 新槽启动、`last_result=success`、条目被 bless 成 `keel-b.efi` |
 | 7 | guest | `sudo os-update rollback` + 重启 | 回到旧槽(版本回退)—— 真机上的 A/B 就是这样 |
+| 8 | guest | `sudo ~/keel-check` | 九组检查全绿(装好之后的正式验收;见 §9) |
 
 ### libvirt 能模拟什么、不能模拟什么
 
@@ -295,3 +297,24 @@ tools/libvirt-test.sh console   # 串口控制台(virsh console;退出按 Ctrl+]
 
 > **结论**:libvirt 能挡掉装机和 A/B 链路里绝大多数问题,适合每次改完都跑一遍;
 > 但它替代不了真机那一趟 —— 真机剩下的风险集中在固件、驱动、TPM 与物理介质上。
+
+## 9. 装好之后:跑一遍体检
+
+装机(真机或 libvirt)完成后,admin 家目录里有一个体检入口:
+
+```bash
+sudo ~/keel-check                 # 逐项 ✓ / ✗ / !,退出码 0 = 没有 ✗
+sudo ~/keel-check --nix-install-test   # 顺带真的装一个包(nix-shell -p fastfetch),要联网
+```
+
+它检查九组东西:**系统身份**(hostname/版本/槽/是否 UEFI)、**挂载与布局**(只读根、`/var` `/root`
+符号链接、`/home` `/nix` 真挂载点、`/etc` overlay、ESP)、**`/data`**(骨架、容量是否扩到位、
+应急空间、看门人、swap)、**账号与 SSH**(admin 的组与密码、root 锁定、`PermitRootLogin no`、
+公钥)、**网络**(链路/DHCP/默认路由/DNS)、**服务健康与失败单元**、**引导链与更新状态**
+(ESP 上的 UKI、`.failed`、`last_result`)、**硬件与兜底机制**(微码、TPM、看门狗、
+`panic=-1`、串口)、**nix**(`/nix` 是真目录且挂上、`nix --version`)。
+
+> 家目录里那份是**转发**:真身在 `/usr/share/keel/keel-check`,随系统更新一起换 ——
+> 所以升级之后 `~/keel-check` 跑到的永远是新版。
+> 想在 **live/U 盘**环境里先试一遍也可以,同一个入口就在那儿。
+
