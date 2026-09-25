@@ -202,6 +202,37 @@ cmd_fetch() {
     validate_version "$rv"
     keel_log "远端版本:${rv}"
 
+    # ⚠ 这两项检查(迁移、schema)刻意放在**下载之前**:它们只需要 manifest,
+    # 而一次下载是 13 GiB —— 先下载再拒绝,既浪费带宽也可能先撞上 /data 满
+    # (2026-09 演练实测:检查写在下载后面,结果 curl 先 ENOSPC,"拒绝"压根没发生)。
+    # 规矩:**便宜的检查放在动大钱之前**。
+    # --- /data 迁移(v1 明确不支持)----------------------------------------
+    # manifest 里的 `migrate=` 是**声明式迁移**的位置(docs/update.md §4):由**旧系统**在
+    # stage 阶段执行,只增不破。但 v1 **还没有迁移执行器**,所以这里必须**明确拒绝**带迁移的
+    # 载荷 —— 比"假装迁移过、装上去,然后回滚时旧系统读不懂 /data"好得多(那条路会静默毁数据)。
+    # 真正的实现(含 schema_min 语义、与下面 schema 检查的关系)见 docs/roadmap.md。
+    mig="$(manifest_get "$DEST/$MANIFEST" migrate)" || mig=""
+    if [ -n "$mig" ]; then
+        keel_die "这个载荷声明了 /data 迁移(migrate=${mig}),但 v1 还没有迁移执行器(docs/update.md §4、docs/roadmap.md)。拒绝安装:与其'假装迁移过',不如在这里明确失败。"
+    fi
+
+    # --- schema 兼容性 ----------------------------------------------------
+    # 只认十进制整数;manifest 里的 schema 是别的东西就当作"读不懂"直接拒绝,
+    # 免得 [ "$rs" -gt "$schema" ] 在 set -e 下抛出难懂的错误。
+    schema="$CURRENT_SCHEMA"
+    case "$rs" in
+        "") : ;;
+        *[!0-9]*)
+            keel_die "manifest 里的 schema 不是整数:'${rs}'(更新源坏了?)"
+            ;;
+        *)
+            if [ "$rs" -gt "$schema" ]; then
+                keel_die "这个更新需要更新的 /data 布局(manifest schema=${rs},本机=${schema})。当前系统不认识这个布局,拒绝安装;请先升级到中间版本,或重装。"
+            fi
+            ;;
+    esac
+
+
     for a in "${ARTIFACTS[@]}"; do
         keel_log "取 $a"
         if ! fetch_one "$a"; then
@@ -246,32 +277,6 @@ cmd_fetch() {
         echo "        v1 策略:继续,但请只使用自己控制的更新源。"
         echo "  ************************************************************"
     fi
-
-    # --- /data 迁移(v1 明确不支持)----------------------------------------
-    # manifest 里的 `migrate=` 是**声明式迁移**的位置(docs/update.md §4):由**旧系统**在
-    # stage 阶段执行,只增不破。但 v1 **还没有迁移执行器**,所以这里必须**明确拒绝**带迁移的
-    # 载荷 —— 比"假装迁移过、装上去,然后回滚时旧系统读不懂 /data"好得多(那条路会静默毁数据)。
-    # 真正的实现(含 schema_min 语义、与下面 schema 检查的关系)见 docs/roadmap.md。
-    mig="$(manifest_get "$DEST/$MANIFEST" migrate)" || mig=""
-    if [ -n "$mig" ]; then
-        keel_die "这个载荷声明了 /data 迁移(migrate=${mig}),但 v1 还没有迁移执行器(docs/update.md §4、docs/roadmap.md)。拒绝安装:与其'假装迁移过',不如在这里明确失败。"
-    fi
-
-    # --- schema 兼容性 ----------------------------------------------------
-    # 只认十进制整数;manifest 里的 schema 是别的东西就当作"读不懂"直接拒绝,
-    # 免得 [ "$rs" -gt "$schema" ] 在 set -e 下抛出难懂的错误。
-    schema="$CURRENT_SCHEMA"
-    case "$rs" in
-        "") : ;;
-        *[!0-9]*)
-            keel_die "manifest 里的 schema 不是整数:'${rs}'(更新源坏了?)"
-            ;;
-        *)
-            if [ "$rs" -gt "$schema" ]; then
-                keel_die "这个更新需要更新的 /data 布局(manifest schema=${rs},本机=${schema})。当前系统不认识这个布局,拒绝安装;请先升级到中间版本,或重装。"
-            fi
-            ;;
-    esac
 
     # --- 落盘到正式目录 ---------------------------------------------------
     # 先删旧的同版本目录:上一次 fetch 可能留下半份坏载荷,cp 不清理多余文件。

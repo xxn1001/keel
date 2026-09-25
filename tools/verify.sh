@@ -851,6 +851,16 @@ else
     no "keel-check 语法有问题或检查项不全"
 fi
 
+# 便宜的检查必须在下载之前(坑 #51):迁移与 schema 检查只看 manifest,而下载是 13 GiB
+OU=mkosi.extra/usr/bin/os-update
+n_mig=$(grep -n '没有迁移执行器' "$OU" | head -1 | cut -d: -f1)
+n_dl=$(grep -n 'for a in "${ARTIFACTS\[@\]}"' "$OU" | head -1 | cut -d: -f1)
+if [ -n "$n_mig" ] && [ -n "$n_dl" ] && [ "$n_mig" -lt "$n_dl" ]; then
+    ok "os-update fetch 先做迁移/schema 检查再下载(第 $n_mig 行 vs 第 $n_dl 行)"
+else
+    no "迁移/schema 检查在下载之后(第 ${n_mig:-?} 行 vs 第 ${n_dl:-?} 行)⇒ 会先下 13 GiB 才拒绝"
+fi
+
 head1 "7. 账号模型(决策 D21:admin 是唯一交互账号,root 锁定)"
 # ---------------------------------------------------------------------------
 if grep -qE '^[[:space:]]*sudo$' mkosi.conf.d/20-packages.conf; then

@@ -893,3 +893,23 @@
     这类机制必须显式设计出来并演练,不能默认它不存在;
     ③ 改这类"兜底"配置时注意**它跑在哪个 PID1 上**:initrd 的 PID1 与主系统的 PID1
     读的是**两份不同的 /etc**。
+
+51. **便宜的检查要放在"动大钱"之前 —— 迁移/schema 校验写在下载之后,结果 13 GiB 下完(或撞 ENOSPC)才轮到拒绝(2026-09 演练实测)。**
+    现象:演练里造了一个"声明了 /data 迁移"的载荷(v1 明确不支持,`fetch` 应该**直接拒绝**)。
+    期望是一行错误信息,实际日志是:
+    ```
+    keel: 从 http://10.0.2.2:8000/mig 取 manifest
+    keel: 取 slot-a.root.raw        ← 开始下 6 GiB
+    keel: 取 slot-a.uki.efi
+    keel: 取 slot-b.root.raw
+    curl: (23) Failure writing output to destination …      ← /data 先满了
+    ```
+    也就是说"拒绝带迁移的载荷"这条守门**根本没走到**:它被放在 sha256/签名/schema 那一串
+    检查里,而那一串都在**下载之后**。演习里更巧的是空间先不够,于是报的是"下载失败",
+    看起来像网络问题(坑 #49 的同一个形状)。
+    ⇒ 修法:把"迁移"与"schema 兼容性"两项挪到**读完 manifest、还没下载任何产物**的位置 ——
+    它们只需要 manifest 里的字段。顺带把这条写成规矩:
+    **任何"只看元数据就能判定"的拒绝,都要排在"下载/写盘"之前**。
+    `tools/verify.sh` 有断言(迁移检查的行号必须小于下载循环的行号)。
+    (同一次演练里 p3 的结论是**自动回滚成立**:坏槽进 emergency → `keel-boot-failed-reboot`
+    提示 + 60 秒 + 重启 → 回到旧槽、`last_result=failed`、坏 UKI 归入 `.failed` —— 决策 D26 验证通过。)
