@@ -57,22 +57,46 @@ find_install_image() {
     return 1
 }
 
-# OVMF 固件:不同发行版路径不一样,挨个试。NVRAM 要可写,所以复制一份到 WORK 里。
+# OVMF 固件:两套命名都要认(坑 #55)。
+#
+#   * 发行版常见:OVMF_CODE*.fd + 配对的 OVMF_VARS*.fd
+#   * NixOS / QEMU:edk2-x86_64-code.fd + edk2-i386-vars.fd
+#     (QEMU 的 "i386" 变量文件就是 x86 通用那份;virt-manager 生成的域 XML 也这么配 ——
+#      项目所有者的机器上 /run/libvirt/nix-ovmf 里**只有**这套命名,所以只认 OVMF_CODE*
+#      的写法在那台机器上必然找不到固件。)
+# NVRAM 要可写,所以调用方会复制一份到 WORK 里再给域用。
 find_ovmf() {
-    local d f
+    local d f v
     for d in /run/libvirt/nix-ovmf /usr/share/OVMF /usr/share/edk2/ovmf \
-             /usr/share/qemu/OVMF /usr/share/edk2/x64; do
+             /usr/share/qemu/OVMF /usr/share/edk2/x64 /usr/share/qemu; do
+        [ -d "$d" ] || continue
         for f in "$d"/OVMF_CODE*.fd; do
             [ -f "$f" ] || continue
-            # 配对的 VARS 文件:同名把 CODE 换成 VARS
-            local v=${f/OVMF_CODE/OVMF_VARS}
-            if [ -f "$v" ]; then
+            v=${f/OVMF_CODE/OVMF_VARS}
+            [ -f "$v" ] || continue
+            printf '%s\n%s\n' "$f" "$v"
+            return 0
+        done
+        for f in "$d"/edk2-x86_64-code.fd "$d"/edk2-i386-code.fd; do
+            [ -f "$f" ] || continue
+            for v in "$d"/edk2-i386-vars.fd "$d"/edk2-x86_64-vars.fd; do
+                [ -f "$v" ] || continue
                 printf '%s\n%s\n' "$f" "$v"
                 return 0
-            fi
+            done
         done
     done
     return 1
+}
+
+# 取固件并**显式校验条数**:`mapfile -t x < <(cmd)` **不会**把 cmd 的失败传出来
+# (进程替换的退出码被丢掉),所以 `readarray ... || die "找不到 OVMF"` 是死代码 ——
+# 真正报出来的是 `ovmf[0]: unbound variable`(set -u 下),看起来像脚本坏了,
+# 其实只是没找到固件。判据要自己去看结果(坑 #55)。
+load_ovmf() {
+    OVMF=()
+    mapfile -t OVMF < <(find_ovmf)
+    [ "${#OVMF[@]}" -ge 2 ] || die "找不到 OVMF 固件(两套命名都试了:/run/libvirt/nix-ovmf、/usr/share/OVMF 等)"
 }
 
 xml_path() { printf '%s/%s.xml' "$WORK" "$DOMAIN"; }
@@ -135,16 +159,16 @@ EOF
 cmd_prepare() {
     need virsh; need qemu-img
     local img; img=$(find_install_image) || die "找不到安装镜像:先跑 tools/build.sh(或 mkosi ... build)"
-    local ovmf; readarray -t ovmf < <(find_ovmf) || die "找不到 OVMF 固件(找过 /run/libvirt/nix-ovmf、/usr/share/OVMF 等)"
+    load_ovmf
     mkdir -p "$WORK"
     log "安装镜像:$img"
-    log "OVMF    :${ovmf[0]}"
+    log "OVMF    :${OVMF[0]}"
     # 盘:安装镜像用 qcow2 overlay(不复制 15 GiB);目标盘 40 GiB 稀疏
     rm -f "$WORK/install.qcow2" "$WORK/target.qcow2"
     qemu-img create -q -f qcow2 -F raw -b "$PWD/$img" "$WORK/install.qcow2"
     qemu-img create -q -f qcow2 "$WORK/target.qcow2" "$TARGET_SIZE"
-    cp -f "${ovmf[1]}" "$WORK/nvram.fd"
-    render_xml live "${ovmf[0]}"
+    cp -f "${OVMF[1]}" "$WORK/nvram.fd"
+    render_xml live "${OVMF[0]}"
     log "磁盘与域 XML 就绪:$WORK/"
     log "下一步:tools/libvirt-test.sh start"
 }
@@ -158,8 +182,8 @@ cmd_start() {
     # 改了启动顺序就重新渲染一次 XML(其它内容不变)
     if [ "$boot_target" = target ]; then
         local img; img=$(find_install_image) || die "找不到安装镜像"
-        local ovmf; readarray -t ovmf < <(find_ovmf) || die "找不到 OVMF"
-        render_xml target "${ovmf[0]}"
+        load_ovmf
+        render_xml target "${OVMF[0]}"
         log "启动顺序:目标盘(vdb)优先 —— 这次跑的是装机后的系统"
     fi
     # default 网络是活的吗(libvirt 默认不自动启动它)

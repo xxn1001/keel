@@ -844,6 +844,22 @@ if [ -x tools/libvirt-test.sh ] &&
 else
     no "tools/libvirt-test.sh 缺失或不完整(真机前的模拟没法做)"
 fi
+# 固件查找:两套命名 + 显式条数检查(坑 #55)。
+# 只认 OVMF_CODE* 的写法在 NixOS 宿主上必然找不到固件(/run/libvirt/nix-ovmf 里是
+# edk2-x86_64-code.fd);而 `readarray -t x < <(cmd) || die` 是**死代码** ——
+# 进程替换的退出码不会传给 readarray,真正报出来的是 unbound variable。
+if grep -q 'edk2-x86_64-code.fd' tools/libvirt-test.sh &&
+   grep -q 'load_ovmf' tools/libvirt-test.sh &&
+   grep -q 'OVMF\[@\]' tools/libvirt-test.sh; then
+    ok "libvirt-test.sh 认两套固件命名(OVMF_CODE*/edk2-*)且显式检查固件找到没(坑 #55)"
+else
+    no "libvirt-test.sh 只认 OVMF_CODE* 或不检查固件条数 ⇒ NixOS 宿主上只会报 unbound variable(坑 #55)"
+fi
+if grep -q 'readarray -t ovmf' tools/libvirt-test.sh; then
+    no "还有 mapfile/readarray ... || die 这种死代码(进程替换的退出码不传出来,坑 #55)"
+else
+    ok "没有把「找不到固件」押在 readarray 的退出码上(它根本不传,坑 #55)"
+fi
 if grep -q 'console=ttyS0' mkosi.conf.d/30-content.conf; then
     ok "cmdline 里有 console=ttyS0(服务器串口/带外管理与 libvirt 验证都要它)"
 else

@@ -985,3 +985,26 @@
     看到"文件在、权限也对"就先怀疑 shebang / 动态链接器;
     ③ 这条和坑 #15(`ToolsTree=default`,宿主只需要 mkosi + bubblewrap)是同一类:
     宿主越"非主流",越要把能被宿主直接执行的东西(脚本、`mkosi.version`)写成人畜无害的形式。
+
+55. **"找不到固件"被报成 `unbound variable`:两处判据同时说谎(2026-09,第一次在 libvirt 上跑装机演练时)。**
+    现象:`tools/libvirt-test.sh prepare` 在项目所有者的机器上直接崩:
+    ```
+    keel-libvirt: 安装镜像:dist/keel-2026.09.25.1329/keel.raw
+    tools/libvirt-test.sh: line 141: ovmf[0]: unbound variable
+    ```
+    两个独立的问题叠在一起:
+    ① **固件命名**:脚本只找 `OVMF_CODE*.fd`(Debian/发行版常见命名),而 NixOS 的
+       `/run/libvirt/nix-ovmf/` 里是 QEMU 那套 `edk2-x86_64-code.fd` + `edk2-i386-vars.fd`
+       (virt-manager 生成的域 XML 也正是这套)⇒ 那台机器上**必然**找不到;
+    ② **死代码判据**:`readarray -t ovmf < <(find_ovmf) || die "找不到 OVMF 固件"` ——
+       进程替换 `< <(...)` 的退出码**不会**传给 `readarray`,所以 `|| die` 永远不执行,
+       真正报出来的是 `set -u` 下的 `unbound variable`。人看到的是"脚本有 bug",
+       而不是"这台机器没有那种命名的固件"。
+    ⇒ 修法:两套命名都认;把"取固件"抽成 `load_ovmf()` 并**显式检查条数**
+    (`[ "${#OVMF[@]}" -ge 2 ] || die …`);`tools/verify.sh` 加两条断言
+    (认 edk2 命名 + 不许再出现 `readarray … || die`)。
+    **教训**:① 又一次"目标环境的一句话没落到代码上"(坑 #54 是 `/bin/bash`,这条是固件命名);
+    ② **`cmd < <(f)` 不传退出码**是个通用陷阱:`mapfile`/`readarray`/`while read` 全一样,
+       凡是要知道"子命令成没成",就得自己去检查结果(文件在不在、数组是不是空的);
+    ③ 报错信息指向的位置(`ovmf[0]`)不是错误的位置 —— 顺着它修只会把 `set -u` 关掉,
+       那等于把判据彻底拆了。
