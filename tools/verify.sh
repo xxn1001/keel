@@ -855,6 +855,21 @@ if grep -q 'edk2-x86_64-code.fd' tools/libvirt-test.sh &&
 else
     no "libvirt-test.sh 只认 OVMF_CODE* 或不检查固件条数 ⇒ NixOS 宿主上只会报 unbound variable(坑 #55)"
 fi
+# 仓库里的权限位会**原样**进镜像,而 git 不跟踪读权限(坑 #57):
+# 0600 的 /etc/systemd/network/*.network 会让 systemd-networkd 读不到 ⇒ 网络静默失效。
+# 断言仓库里不存在"组/其他人不可读"的文件(可执行文件放宽到 0755)。
+badmodes=$(find mkosi.extra mkosi.extra-initrd mkosi.extra-test -type f ! -perm -o+r 2>/dev/null | head -5)
+if [ -z "$badmodes" ]; then
+    ok "mkosi.extra*/ 里没有「其他用户不可读」的文件(git 不跟踪读权限,只能在构建前查,坑 #57)"
+else
+    no "这些文件不是其他用户可读的 ⇒ 镜像里会被对应的非 root 服务读不到(坑 #57):"
+    printf '%s\n' "$badmodes" | sed 's/^/      /'
+fi
+if grep -q 'etc/systemd/network' mkosi.postinst && grep -q '其他用户可读' mkosi.postinst; then
+    ok "mkosi.postinst 构建期归一化权限并回读断言(不指望 checkout 的 umask,坑 #57)"
+else
+    no "mkosi.postinst 没有把权限掰回来/没有断言 ⇒ 坏 umask 会静默产出没网的镜像(坑 #57)"
+fi
 if grep -q 'readarray -t ovmf' tools/libvirt-test.sh; then
     no "还有 mapfile/readarray ... || die 这种死代码(进程替换的退出码不传出来,坑 #55)"
 else

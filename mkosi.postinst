@@ -44,6 +44,54 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
+# 权限归一化:仓库里的权限位会**原样**进镜像(坑 #57)
+#
+# 背景(2026-09 实测):工作区里的文件如果因为 umask 之类的原因变成 0600,
+# mkosi 会照抄进镜像 —— 而 systemd 的单元与 networkd 的配置**不是**由 root 读的:
+#   * `/etc/systemd/network/*.network` 由 systemd-networkd 以 systemd-network 身份读
+#     ⇒ 0600 时它读不到,于是**网络静默失效**(没有 DHCP、没有任何报错,只有
+#       systemd 那句 "marked world-inaccessible" 的警告);
+#   * 单元文件 0600 时 systemd 会打 world-inaccessible 警告(它自己是 root,还能读)。
+# 更阴的是:**git 不跟踪读权限**(只记 100644/100755),所以这种损坏在 `git diff` 里
+# 完全看不见 —— 只有构建出来的镜像会坏。
+#
+# 与其指望每个人 checkout 时的 umask 正确,不如在构建期把它们掰回来,并且**回读断言**。
+# ---------------------------------------------------------------------------
+mode_fix_files=(
+    "$R/etc/motd"
+    "$R/etc/sudoers.d/10-keel-admin"
+    "$R/etc/ssh/sshd_config.d/10-keel.conf"
+    "$R/etc/systemd/journald.conf.d/keel.conf"
+    "$R/usr/lib/sysusers.d/keel.conf"
+    "$R/usr/lib/systemd/system-preset/00-keel.preset"
+)
+for f in "$R"/usr/lib/systemd/system/keel-*.service "$R"/usr/lib/systemd/system/keel-*.timer \
+         "$R"/etc/systemd/network/*.network "$R"/usr/lib/keel/repart.d/*.conf; do
+    [ -e "$f" ] || continue
+    mode_fix_files+=("$f")
+done
+for f in "${mode_fix_files[@]}"; do
+    [ -e "$f" ] || continue
+    # sudoers 在下面单独设成 0440;这里只保证其余的"能被对应的非 root 用户读到"
+    case "$f" in */sudoers.d/*) continue ;; esac
+    chmod 0644 "$f"
+done
+# 回读断言:凡是必须被**非 root 进程**读到的配置,权限位里"其他用户可读"这一位必须在。
+# 这里刻意只看权限位、不 su 到 systemd-network:那个用户在 postinst 之后才由 sysusers 建。
+for f in "$R"/etc/systemd/network/*.network; do
+    [ -e "$f" ] || continue
+    case "$(stat -c %a "$f")" in
+        *[4567]) : ;;
+        *)
+            log "致命:$f 不是「其他用户可读」(mode $(stat -c %a "$f"))⇒ systemd-network 读不到它,网络会静默失效(坑 #57)"
+            ls -l "$f" >&2
+            exit 1
+            ;;
+    esac
+done
+log "权限归一化完成(systemd 单元 / networkd 配置 / motd / sshd drop-in 都设为 0644)"
+
+# ---------------------------------------------------------------------------
 # 登录账号与 SSH(决策 D21)
 #
 # 账号本身由 mkosi.extra/usr/lib/sysusers.d/keel.conf 交给 systemd-sysusers 建

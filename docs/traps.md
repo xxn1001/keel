@@ -1025,3 +1025,31 @@
     却是在第一次真的调用它的时候才第一次被 libvirt 解析;
     ② 一条命令失败后**必须立刻停**,否则下一句会用一个更误导的错误盖住真正的原因
     (`define` 被拒 → "域未定义")。
+
+57. **仓库里的权限位会原样进镜像 —— `0600` 的 `/etc/systemd/network/*.network` = 网络静默失效(2026-09,第一次在 libvirt 里跑装机演练时)。**
+    现象:libvirt 里的 live 系统**完全没有网络**:串口上没有任何报错,networkd "Started" 了,
+    但 `virsh domifstat` 显示 `tx_packets 0` —— guest 一个包都没发出去,自然也没有 DHCP 租约,
+    自动化脚本就卡在"等 SSH"上。
+    根因:仓库里 `mkosi.extra/etc/systemd/network/20-wired.network` 的权限位是 **0600**,
+    mkosi 把它原样拷进镜像 ⇒ **systemd-networkd(以 `systemd-network` 身份运行)读不到自己的配置**,
+    于是"没有匹配的 .network" ⇒ 不配置接口 ⇒ 不发 DHCP。串口日志里唯一的线索是 systemd 那句
+    ```
+    Configuration file /usr/lib/systemd/system/keel-mounts.service is marked world-inaccessible.
+    ```
+    (**单元文件也是 0600**;systemd 自己是 root,还能读,所以只是警告 —— 它把"网络为什么不通"这个
+    真问题藏在了"看起来只是权限风格问题"后面。)
+    为什么以前没事:**git 只跟踪可执行位**(100644/100755),根本存不了 `r` 位。
+    项目所有者机器上的工作区是 git checkout 出来的(umask 022 ⇒ 0644),一切正常;
+    而 2026-09 那次我用 `tar` 把沙箱里的工作区整体同步过去,把沙箱里那套被 umask 弄坏的
+    0600/0711 **一起带了过去** ⇒ 下一次构建就产出了一个"没有网"的镜像。
+    `git diff` 里完全看不见这个变化(权限位不在 diff 里),`ls -l` 也不会有人天天看。
+    ⇒ 修法:① 仓库工作区权限归一到 0644/0755;② `mkosi.postinst` 构建期把
+    systemd 单元 / networkd 配置 / motd / sshd drop-in **掰成 0644** 并**回读断言**
+    ("其他用户可读"这一位必须在),这样坏 umask 再也产不出没网的镜像;
+    ③ `tools/verify.sh` 加断言:`mkosi.extra*/` 里不许有"其他用户不可读"的文件。
+    **教训**:① 权限位是镜像内容的一部分,而**版本控制对它几乎无感** —— 这类"只在产物里
+    体现的差异"必须有构建期归一化 + 回读断言,不能靠"大家 checkout 时 umask 都对";
+    ② 这次是"我自己的同步工具把宿主环境改坏了" —— **跨机器同步工作区时,mode 是要一起想清楚的东西**
+    (同理还有属主、sparse 文件、符号链接);
+    ③ 排查顺序值得记:串口无报错 → `domifstat` 看 tx=0 → 怀疑 guest 侧没发包 →
+    回头看"谁读这个配置、以什么身份读",比在宿主网络栈上瞎找快得多。
