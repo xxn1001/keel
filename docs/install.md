@@ -238,7 +238,7 @@ sudo sed -i 's#^UPDATE_SOURCE=.*#UPDATE_SOURCE=file:///data/ota/import#' /data/k
 
 sudo os-update check          # 应认出这个版本
 sudo os-update fetch          # 校验 sha256(没有 manifest.sig 会有醒目告警,v1 允许)
-sudo os-update stage          # 写进非活动槽 + 把 UKI 放到 ESP + 设 preferred
+sudo os-update stage          # 写进非活动槽 + 把 UKI 放到 ESP + 把候选条目设成 one-shot
 sudo systemctl reboot
 os-status                     # 起来后:当前槽变成 b,last_result=success
 ```
@@ -247,7 +247,8 @@ os-status                     # 起来后:当前槽变成 b,last_result=success
 只想切槽不重新写盘时,门面命令是 `sudo os-update switch a|b`。
 
 > 幂等提示:`stage` 会拒绝重复安排同一个目标槽,除非加 `--force`。
-> 失败时:**不要慌,等它自己回滚** —— 连续三次到不了 `boot-complete` 就会退回旧槽,
+> 失败时:**不要慌,等它自己回滚** —— 候选槽只有**一次**机会(systemd 257 没有
+> `set-preferred`,坑 #43):那次启动没到 `boot-complete` 就退回旧槽,
 > 起来后 `os-status` 会显示 `last_result=failed`(详见 `update.md`)。
 
 ## 6. 常见坑
@@ -317,4 +318,27 @@ sudo ~/keel-check --nix-install-test   # 顺带真的装一个包(nix-shell -p f
 > 家目录里那份是**转发**:真身在 `/usr/share/keel/keel-check`,随系统更新一起换 ——
 > 所以升级之后 `~/keel-check` 跑到的永远是新版。
 > 想在 **live/U 盘**环境里先试一遍也可以,同一个入口就在那儿。
+
+### 9.1 第一次实跑(2026-09-25,libvirt 装好的系统)
+
+项目所有者按 §8 装好盘、从目标盘首启之后,在 guest 里跑了 `sudo ~/keel-check`
+(那一轮没带 `--nix-install-test`,所以有 1 个"-";nix 装包那条另行确认过可用):
+
+| 结果 | 数量 | 内容 |
+|---|---|---|
+| ✓ | 49 | 身份与 UEFI、只读根 + `/var` `/root` 符号链接、`/home` `/nix` 真挂载点、`/etc` overlay、ESP 挂 `/boot`、`/data` 骨架与容量(49.9 GiB / 分区 52222 MiB 一致)、应急空间、swap 5861 MiB、admin 与 root 锁定、sshd、DHCP `192.168.122.58` + 默认路由 + DNS、9 个单元全 active、`keel-a.efi` 在 ESP 上、`last_result=success`、运行时看门狗 1 min、串口控制台 |
+| ✗ | 1 | `cmdline 里没有 panic=-1` —— **误报**,见下 |
+| ! | 3 | dmesg 无微码行、没有 TPM、看门人还没写结论 —— 虚拟机里的正常情况 |
+| - | 1 | 可选的 `--nix-install-test` 没跑 |
+
+那条 ✗ 是**体检脚本自己的 bug**,不是机器的问题:`grep '^panic=-1' /proc/cmdline`
+里 `^` 锚的是整行开头,而 `/proc/cmdline` 是一整行 ⇒ 除了第一个 token 谁也匹配不上
+(同一个 commit 产出的 UKI 里 `panic=-1` 明明在;坑 #52)。同一批还把三条 `!` 改成按环境判:
+虚拟机(微码/TPM 由宿主决定)与"看门人每次启动 3 分钟后才写结论"都不再报成警告。
+`tools/verify.sh` 里补了**功能测试**(在假 cmdline 上验证 token 匹配语义)与静态断言。
+
+⇒ 修完之后这一轮的预期是 **0 ✗ / 0 !(虚拟机里只剩 1 个可选"-")**;下次装机(§8)会复核。
+值得单独记一笔:这是**第一次**在"装好的系统"而不是 mkosi 的临时 VM 里跑体检 ——
+`last_result=success`(首启把 `os-install` 写的 pending 收掉)、ESP 上只有一个 `keel-a.efi`、
+`/data` 扩到整盘这些**装机路径**的结论都来自这一轮。
 

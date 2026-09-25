@@ -351,8 +351,8 @@ if [ -n "$target_uki" ]; then
         *+*.efi)
             # live U 盘本身就是"带计数启动"的:systemd-bless-boot 还没把它改名成 good
             keel_log "注意:这是带启动计数的名字。目标机首启若到达 boot-complete.target,"
-            keel_log "      systemd-bless-boot 会把它改名为 keel-${CURRENT_SLOT}.efi;若连续 3 次"
-            keel_log "      到不了,引导器会把它当作坏条目并跳过 —— 而目标盘上还没有别的槽可退。"
+            keel_log "      systemd-bless-boot 会把它改名为 keel-${CURRENT_SLOT}.efi;那次启动到不了,"
+            keel_log "      计数就被消耗一次,归零后引导器把它当坏条目跳过 —— 而目标盘上还没有别的槽可退。"
             keel_log "      第一次启动务必盯着控制台。"
             ;;
         *) : ;;

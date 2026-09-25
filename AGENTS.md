@@ -235,6 +235,11 @@ sudo tools/burn.sh /dev/nvme0n1
       演练顺带挖出并修掉坑 #41–#45(详见 `docs/traps.md` 与 `docs/update.md` §9)
 - [x] **第一次真机构建 / 虚拟机启动 / 装机**(2026-09,VM:构建 → live 启动 → `os-install` → 目标盘首启 ✓;
       途中修掉坑 #31–#34。**真机(U 盘 + 笔记本)仍未做过**)
+- [x] **装好的系统里跑体检(2026-09-25,libvirt,项目所有者实跑)**:`os-install` 装到整盘 → 目标盘首启
+      (槽 a、ESP 上 `keel-a.efi`、`last_result=success`、`/data` 扩到整盘 49.9 GiB)→ `sudo ~/keel-check`
+      → **49 ✓ / 1 ✗ / 3 ! / 1 -**。那条 ✗ 是**体检脚本自己的 bug**(`grep '^panic=-1' /proc/cmdline`
+      永不匹配,坑 #52),三条 ! 是虚拟机里的正常情况(无微码行、无 vTPM、看门人 3 分钟后才写结论)——
+      都已按"报出真实情况"修掉,`tools/verify.sh` 补了功能测试 + 静态断言(134 项全绿)
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 

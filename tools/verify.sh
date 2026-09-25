@@ -851,6 +851,41 @@ else
     no "keel-check 语法有问题或检查项不全"
 fi
 
+# 体检脚本的判据本身要有测试(坑 #52):它曾经用 `grep '^panic=-1' /proc/cmdline` 把一台
+# 好机器判成硬失败 —— /proc/cmdline 是**一整行**,`^` 锚的是整行开头,所以除了第一个 token
+# 谁也匹配不上。这里做两件事:① 功能测试 token 匹配;② 禁止再出现"对着 /proc/cmdline 用 ^"。
+cl_has() { bash -c '. ./mkosi.extra/usr/lib/keel/lib.sh 2>/dev/null; keel_cmdline_has "$1" "$2"' _ "$1" "$2"; }
+cld=$(tmpd); printf '%s\n' 'ro amd_iommu=on intel_iommu=on iommu=pt systemd.gpt_auto=no panic=-1 console=tty0 console=ttyS0,115200' >"$cld/cmdline"
+printf '%s\n' 'ro quiet nopanic=-1 panic=0' >"$cld/decoy"
+if cl_has panic=-1 "$cld/cmdline" && cl_has amd_iommu=on "$cld/cmdline" &&
+   cl_has console=ttyS0,115200 "$cld/cmdline" &&
+   ! cl_has panic=0 "$cld/cmdline" && cl_has nopanic=-1 "$cld/decoy" && ! cl_has panic=-1 "$cld/decoy"; then
+    ok "keel_cmdline_has 按整个 token 匹配(非首个 token 也命中;panic=0/nopanic=-1 不误命中,坑 #52)"
+else
+    no "keel_cmdline_has 的匹配语义不对 ⇒ 体检脚本会误判 cmdline(坑 #52)"
+fi
+if grep -rn "grep [^|]*'\^[^']*'[^|]*/proc/cmdline" mkosi.extra/ 2>/dev/null | grep -q .; then
+    bad=$(grep -rn "grep [^|]*'\^[^']*'[^|]*/proc/cmdline" mkosi.extra/ | head -3 | sed 's/^/      /')
+    no "还有地方对着 /proc/cmdline 用 ^ 锚定(grep 把整行当一行 ⇒ 永远不匹配,坑 #52):"
+    printf '%s\n' "$bad"
+else
+    ok "没有任何地方对着 /proc/cmdline 用 ^ 锚定(要么走 keel_cmdline_has,要么先切成 token)"
+fi
+if grep -q 'keel_cmdline_has panic=-1' mkosi.extra/usr/share/keel/keel-check &&
+   grep -q 'command -v keel_cmdline_has' mkosi.extra/usr/share/keel/keel-check; then
+    ok "keel-check 用 lib.sh 的 token 匹配判 panic=-1,且 lib.sh 读不到时自己兜一份"
+else
+    no "keel-check 的 cmdline 判据没走 keel_cmdline_has(坑 #52 会复发)"
+fi
+# 体检脚本报的每一类结论都要能对上"事实来源",否则又是一次"医生说谎":
+# 微码/TPM 在虚拟机里是宿主的事(应报跳过,不是警告),看门人在启动 3 分钟后才有结论。
+if grep -q 'systemd-detect-virt' mkosi.extra/usr/share/keel/keel-check &&
+   grep -q 'keel-data-guard.timer' mkosi.extra/usr/share/keel/keel-check; then
+    ok "keel-check 会区分「虚拟机/真机」与「看门人还没到点」,不把正常情况报成警告"
+else
+    no "keel-check 缺少环境区分(虚拟机里会把正常情况报成警告 —— 2026-09 实测)"
+fi
+
 # 便宜的检查必须在下载之前(坑 #51):迁移与 schema 检查只看 manifest,而下载是 13 GiB
 OU=mkosi.extra/usr/bin/os-update
 n_mig=$(grep -n '没有迁移执行器' "$OU" | head -1 | cut -d: -f1)

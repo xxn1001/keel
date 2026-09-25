@@ -66,7 +66,8 @@ if [ -n "$pending" ] && [ "$pending" = "$slot" ]; then
 
 elif [ -n "$pending" ] && [ "$pending" != "$slot" ]; then
     # 我们跑在旧槽上,而当时安排的是切到 $pending
-    # ⇒ 那个槽连续三次没能到达 boot-complete,引导器已经自动回滚。
+    # ⇒ 那个槽那次启动没到 boot-complete,引导器已经回到持久默认(旧槽)。
+    # 注意是**一次**机会:systemd 257 没有 `set-preferred`,候选条目用 set-oneshot(坑 #43)。
     keel_log "检测到更新失败并已回滚:现在运行在槽 $slot;失败的槽是 $pending(版本 ${pending_ver:-未知})"
     keel_state_set last_result failed
     keel_state_set last_result_version "$pending_ver"

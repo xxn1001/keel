@@ -25,6 +25,15 @@ head1(){ printf '\n\033[1m%s\033[0m\n' "$*"; }
 isroot() { [ "$(id -u)" = 0 ]; }
 have() { command -v "$1" >/dev/null 2>&1; }
 rd()   { cat "$1" 2>/dev/null || true; }
+# lib.sh 没读到(镜像半坏)时也要能判 cmdline —— 体检脚本的底线是"别自己崩、
+# 也别自己说谎",所以这里兜一份 token 匹配(坑 #52 就是这条判据写错了)。
+if ! command -v keel_cmdline_has >/dev/null 2>&1; then
+    keel_cmdline_has() { tr -s '[:space:]' '\n' <"${2:-/proc/cmdline}" 2>/dev/null | grep -qx -e "$1"; }
+fi
+virt() { systemd-detect-virt 2>/dev/null || true; }
+# 只有明确回答"是某种虚拟机"才算虚拟机;读不到(systemd-detect-virt 缺失)按真机查 ——
+# 这条判据的用途是"别把宿主的事算到镜像头上",不是"尽量少报错"。
+is_vm() { local v; v=$(virt); [ -n "$v" ] && [ "$v" != none ]; }
 
 NIX_TEST=0
 for a in "$@"; do
@@ -115,8 +124,16 @@ if [ -n "${dsize:-}" ]; then
     fi
 fi
 [ -e /data/keel/.reserve ] && ok "应急空间在(/data/keel/.reserve,256 MiB)" || wn "没有应急空间(小分区不建是正常的;真机应该建)"
+# 看门人:第一次跑是**每次启动 3 分钟后**(keel-data-guard.timer 的 OnBootSec),
+# 所以"刚起来 1 分钟、还没有结论"是正常的 —— 那不是问题,别报成警告(2026-09 实测踩到)。
 gv=$(sed -n 's/^verdict=//p' /data/keel/data-guard.state 2>/dev/null | tail -1)
-[ -n "$gv" ] && printf '  %-14s %s\n' "空间看门人" "$gv(见 /data/keel/data-guard.state)" || wn "看门人还没写过结论(keel-data-guard.timer 跑过吗)"
+if [ -n "$gv" ]; then
+    printf '  %-14s %s\n' "空间看门人" "$gv(见 /data/keel/data-guard.state)"
+elif systemctl is-active --quiet keel-data-guard.timer 2>/dev/null; then
+    sk "空间看门人还没写过结论(定时器在;本次启动 3 分钟后第一次跑,现在跑还太早)"
+else
+    wn "空间看门人既没结论、定时器也不在(keel-data-guard.timer 启用了没)"
+fi
 if [ -n "$(swapon --show 2>/dev/null)" ]; then ok "swap 已启用:$(( $(swapon --show=SIZE --noheadings --bytes 2>/dev/null | head -1 || echo 0) / 1048576 )) MiB"; else wn "没有 swap(空间紧张时不建是正常的,见决策 D9)"; fi
 
 # ---------------------------------------------------------------------------
@@ -219,7 +236,10 @@ for f in a b; do
         wn "找不到槽 $f 的分区($dev)"
     fi
 done
-printf '  %-14s 当前 %s / 上次结果 %s\n' "更新状态" "$(sed -n 's/^pending_slot=//p' /data/keel/state 2>/dev/null | tail -1 || true)" "$(sed -n 's/^last_result=//p' /data/keel/state 2>/dev/null | tail -1 || true)"
+# 这里以前把 pending_slot 当成"当前"打印,空着的时候就成了「当前  / 上次结果 success」——
+# 看起来像缺了个值。pending_slot 是"正在等确认的槽",没在更新就是没有,直说。
+pending=$(sed -n 's/^pending_slot=//p' /data/keel/state 2>/dev/null | tail -1 || true)
+printf '  %-14s %s\n' "待确认的槽" "${pending:-(无:没有正在等待确认的更新)}"
 last=$(sed -n 's/^last_result=//p' /data/keel/state 2>/dev/null | tail -1 || true)
 case "$last" in
     success) ok "上次启动结果:success" ;;
@@ -227,19 +247,42 @@ case "$last" in
     "")      wn "还没有启动结果记录(keel-confirm 没跑过?见坑 #41)" ;;
     *)       printf '  %-14s %s\n' "上次启动结果" "$last" ;;
 esac
-printf '  %-14s %s\n' "更新源" "$(keel_conf UPDATE_SOURCE "" 2>/dev/null || echo '未配置')"
+src=$(keel_conf UPDATE_SOURCE "" 2>/dev/null || true)
+printf '  %-14s %s\n' "更新源" "${src:-未配置(/data/keel/config 里的 UPDATE_SOURCE)}"
 
 # ---------------------------------------------------------------------------
 head1 "8. 硬件、固件与兜底机制"
 # ---------------------------------------------------------------------------
+# 微码:两个厂商的包都在镜像里(不变量 8),但**微码是给真机 CPU 用的** ——
+# 虚拟机里的"CPU"由宿主模拟,内核 (几乎) 不会打印微码加载行,这跟镜像好坏无关。
+# 所以按"是不是虚拟机"分开判:真机要证据,虚拟机只要包在、并且说清为什么跳过。
+mc_pkg=""
+for d in /usr/lib/firmware/amd-ucode /usr/lib/firmware/intel-ucode; do
+    [ -d "$d" ] && mc_pkg="${mc_pkg}${d##*/} "
+done
 mc=$(dmesg 2>/dev/null | grep -i -m1 'microcode' || true)
-if [ -n "$mc" ]; then ok "微码:$mc"; else wn "dmesg 里没有微码相关行(可能是内核没打印;不一定是问题)"; fi
-if [ -e /dev/tpm0 ] || [ -e /dev/tpmrm0 ]; then ok "TPM 存在($(ls /dev/tpm* 2>/dev/null | tr '\n' ' '))"; else wn "没有 TPM(v1 不需要它;pcrlock 已按决策 D20 关掉)"; fi
+if [ -z "$mc_pkg" ]; then
+    no "微码:镜像里既没有 amd-ucode 也没有 intel-ucode ⇒ 真机上拿不到 CPU 微码更新(不变量 8)"
+elif is_vm; then
+    sk "微码:镜像里有 $mc_pkg;虚拟机($(virt))里 CPU 由宿主模拟,不验证加载(真机上会检查 dmesg)"
+elif [ -n "$mc" ]; then
+    ok "微码:$mc"
+else
+    wn "微码:镜像里有 $mc_pkg,但本次启动的 dmesg 里没有微码行(真机上值得查一下)"
+fi
+if [ -e /dev/tpm0 ] || [ -e /dev/tpmrm0 ]; then
+    ok "TPM 存在($(ls /dev/tpm* 2>/dev/null | tr '\n' ' '))"
+elif is_vm; then
+    sk "虚拟机($(virt))里没有 vTPM(宿主没给);v1 不需要 TPM,pcrlock 已按决策 D20 关掉"
+else
+    wn "没有 TPM(v1 不需要它;pcrlock 已按决策 D20 关掉;将来 Secure Boot 密封密钥才需要)"
+fi
 wd=$(ls /dev/watchdog* 2>/dev/null | tr '\n' ' ')
 rw=$(systemctl show -p RuntimeWatchdogUSec --value 2>/dev/null || true)
 if [ -n "$rw" ] && [ "$rw" != "0" ]; then ok "运行时看门狗已武装($rw;$wd)(决策 D25)"; else no "运行时看门狗**没武装**(冻住时没人复位;决策 D25)"; fi
-if grep -qs '^panic=-1' /proc/cmdline; then ok "cmdline 有 panic=-1(panic 会立即重启,决策 D24)"; else no "cmdline 里没有 panic=-1 ⇒ panic 会停在黑屏"; fi
-if grep -q 'console=ttyS0' /proc/cmdline; then ok "串口控制台已启用(服务器带外管理用)"; else wn "cmdline 里没有 console=ttyS0(服务器的串口/带外管理看不到日志)"; fi
+# cmdline 判据必须是**整个 token**:/proc/cmdline 是一整行,`grep '^panic=-1'` 永远不匹配(坑 #52)
+if keel_cmdline_has panic=-1; then ok "cmdline 有 panic=-1(panic 会立即重启,决策 D24)"; else no "cmdline 里没有 panic=-1 ⇒ panic 会停在黑屏"; fi
+if tr -s '[:space:]' '\n' </proc/cmdline 2>/dev/null | grep -q '^console=ttyS0'; then ok "串口控制台已启用(服务器带外管理用)"; else wn "cmdline 里没有 console=ttyS0(服务器的串口/带外管理看不到日志)"; fi
 [ -e /run/keel/boot-complete ] && ok "本次启动已到过 boot-complete(看门狗不会误重启)" || wn "本次启动还没有 boot-complete 标记(如果 keel-confirm 没跑,恢复时要小心)"
 
 # ---------------------------------------------------------------------------

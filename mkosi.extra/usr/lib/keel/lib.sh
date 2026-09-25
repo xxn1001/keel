@@ -126,6 +126,20 @@ keel_other_slot() {
     esac
 }
 
+# cmdline 里有没有某个**完整的 token**(第二个参数是给人做测试用的 cmdline 文件)。
+#
+# 为什么要有这个函数,而不是到处 `grep 'flag' /proc/cmdline`:
+#   * /proc/cmdline 是**一整个行** —— `grep '^flag'` 锚的是整行开头,所以除了第一个 token,
+#     别的永远匹配不上。我们就这么在体检脚本里把一台好机器判成了硬失败(坑 #52)。
+#   * 光去掉 `^` 也不够:子串匹配既会误命中(`root=PARTLABEL=root-a` 会匹配
+#     `foo=root=PARTLABEL=root-a`),又说不清"我要的是这个 token"。
+# 所以:按空白切成 token,整行比较(`-x`);`-e` 负责吃掉以 `-` 开头的 token。
+keel_cmdline_has() {
+    local tok=$1 file=${2:-/proc/cmdline}
+    [ -n "$tok" ] || return 1
+    tr -s '[:space:]' '\n' <"$file" 2>/dev/null | grep -qx -e "$tok"
+}
+
 # 读 /data/keel/config 的键;为空则输出默认值。
 keel_conf() {
     local key=$1 def=${2:-} v=

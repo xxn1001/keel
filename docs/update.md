@@ -12,8 +12,9 @@
 
 根分区是只读的,所以更新不是"修改系统",而是"**整个槽换掉**":A/B 两个槽各有一个**完整 UKI**
 (内核 + initrd + `root=PARTLABEL=` + 微码全在一份文件里,永远配对),`os-update stage` 把新版本写进
-**当前没在用的那个槽**,重启才切过去;成功与否由 boot counting + `systemd-bless-boot` 判定,
-新槽连续 3 次没到 `boot-complete.target`(panic、initrd 失败、systemd 起不来都算)就自动回退到旧槽。
+**当前没在用的那个槽**,重启才切过去;成功与否由 boot counting + `systemd-bless-boot` 判定。
+候选槽只有**一次**机会(systemd 257 没有 `set-preferred`,坑 #43):那次启动没到
+`boot-complete.target`(panic、initrd 失败、systemd 起不来都算)就自动回退到旧槽。
 用户软件(nix)不在这里管:基础系统原子更新和随便装软件是彻底解耦的两件事(README)。
 
 ## 2. 标准操作流程
@@ -66,9 +67,10 @@ v1 **没有自动更新定时器**(§8):手动触发,便于在真机上边用边
 | journal 里有 `keel-confirm.service` 的告警 | `journalctl -b -u keel-confirm.service` |
 | 条目名带递减的计数 | `bootctl list`,例如 `keel-b+2-1.efi` |
 
-判定逻辑(§5.3 ⑩⑪):连续 3 次没到 `boot-complete.target` → tries-left 归零 → 条目标记 bad →
-引导器跳过它、回退到旧槽 → 旧槽起来后 `keel-confirm.service` 发现"跑在旧槽,但 state 说 pending 新槽"
-⇒ 判定失败,清 preferred、把坏 UKI 挪成 `.failed` 并告警。
+判定逻辑(§5.3 ⑩⑪):候选条目只有**一次**机会(systemd 257 没有 `set-preferred`,坑 #43)——
+那次启动没到 `boot-complete.target` ⇒ 计数被消耗、条目标记 bad → 引导器跳过它、回到持久默认(旧槽)
+→ 旧槽起来后 `keel-confirm.service` 发现"跑在旧槽,但 state 说 pending 新槽"
+⇒ 判定失败,把坏 UKI 挪成 `.failed` 并告警。
 
 ### 3.2 手动回滚与标记坏槽
 
@@ -191,31 +193,45 @@ sudo tools/build-container.sh -p <临时密码> drill
 | p0 | 好载荷:等源 → `check` → `fetch` → `stage` → 重启 | `/data/ota/<新版本>/` 里 4 个产物 + sha256 全对;ESP 上出现 `keel-<目标>+3.efi`;`state` 里有 pending |
 | p1 | 已在新槽 → `rollback` → 重启 | 当前槽 b、版本 = 载荷版本;条目已 bless 成 `keel-b.efi`;`keel-confirm` 记 `last_result=success`、pending 已清 |
 | p2 | 已回旧槽 → 换**坏载荷**源 → `check`/`fetch`/`stage` → 重启 | 坏载荷的版本更高、sha256 也对(它的根镜像被做了手脚,但校验和是重算过的);候选条目指向那个槽 |
-| p3 | 坏槽那次启动 panic(`panic=-1` 立即重启)之后**自动回到旧槽** → poweroff | 当前槽 = 旧槽、`last_result=failed`、ESP 上出现 `keel-<坏槽>+N.efi.failed`;控制台里能看到 panic 现场 |
+| p3 | 坏槽那次启动**起不来**之后**自动回到旧槽** → poweroff | 当前槽 = 旧槽、`last_result=failed`、ESP 上出现 `keel-<坏槽>+N.efi.failed` |
 
-坏载荷由 `tools/ota-drill-container.sh` 现场制作,做法是:把目标槽的根镜像复制一份,
-用 `debugfs` 删掉 **PID1**(`/usr/lib/systemd/systemd`)与内核的 init 兜底(`/bin/sh` → `dash`、`bash`)
-⇒ 内核找不到任何 init ⇒ **panic**;`panic=-1` 让它立即重启 ⇒ 下次启动回到持久默认(旧槽)。
-删完会**回读确认**,并重算那个产物的 sha256 写进坏 manifest(版本号加 `.bad` 后缀)。
+坏载荷由 `tools/ota-drill-container.sh` 现场制作,两种破坏方式各验证一类失败
+(`KEEL_DRILL_SABOTAGE=initrd|userspace`):把目标槽的根镜像复制一份,用 `debugfs` 删掉
+**PID1**(`/usr/lib/systemd/systemd`)/内核的 init 兜底(`/bin/sh` → `dash`、`bash`)/initrd 里的东西
+⇒ 内核要么 panic、要么进 emergency。删完会**回读确认**(按输出文本,不看退出码 —— 坑 #47),
+并重算那个产物的 sha256 写进坏 manifest(版本号加 `.bad` 后缀)。
 
-### v1 实测结果(2026-09,VM;`tools/build-container.sh -p <密码> drill`)
+### v1 实测结果(2026-09,VM;三轮 `tools/build-container.sh -p <密码> drill`)
 
-| 阶段 | 实测证据 |
+三轮的分工:第 1 轮跑通"更新 → bless → 回滚",挖出坑 #41–#45;第 2 轮第一次上坏载荷
+(panic 型),撞上坑 #49、#50,于是补了运行时看门狗(决策 D25);第 3 轮把坏载荷换成
+userspace 型(能进 initrd、起不来),**验证决策 D26 并挖出坑 #51**。
+
+| 阶段 | 实测证据(第 1 / 第 3 轮) |
 |---|---|
 | p0 | `远端版本 2026.09.25.0720(schema 1)` / `当前版本 2000.01.01.0001(槽 a)`;4 个产物(约 13 GiB)约 11 秒下完 → `sha256 全部匹配(4 个产物)` → `载荷已就位:/data/ota/2026.09.25.0720`;`当前槽 a → 目标槽 b`;`根分区写入完成`;`UKI 已写入 /boot/EFI/Linux/keel-b+3.efi`;`候选条目(ID keel-b.efi,文件 keel-b+3.efi)已设为下次启动` |
 | p1 | `当前槽 b`、`系统版本 2026.09.25.0720`、`上次启动结果 success`;ESP 上是 `keel-a.efi` + `keel-b.efi`(计数条目已被 `systemd-bless-boot` 改名成正式名字);演练判定"更新成功" |
 | p1 回滚 | `回滚:把下次启动指向槽 a(当前槽 b,2026.09.25.0720)`;pending 清空、`last_result=failed`(主动回滚的语义:认为当前这版不行) |
-| p2 | `当前槽=a,版本=2000.01.01.0001,last_result=failed` → 演练结束 → 自己 `poweroff`(宿主 `mkosi vm` 退出码 0) |
+| p3(第 3 轮) | 坏槽启动只走到 emergency(initrd 没问题、PID1 起不来):控制台出现 `keel-boot-failed-reboot` 的提示(含 `systemctl stop keel-boot-failed-reboot` 取消办法)→ 等 60 秒 → **自动重启** → 回到槽 a、`last_result=failed`、ESP 上 1 个 `.failed` 条目 → 演练自己 `poweroff`(宿主 `mkosi vm` 退出码 0)。**决策 D26 / 坑 #50 验证通过** |
 
-**这一轮演练本身还挖出并修掉了 5 个真 bug**(每一个都只会在"第一次真的执行"时暴露):
+**三轮演练一共挖出并修掉 11 个真 bug**(每一个都只会在"第一次真的执行"时暴露):
 坑 #41 `keel-confirm` 从来没跑过(`boot-complete.target` 只在计数启动被拉起)、
 #42 `systemd-growfs` 不在镜像里(分区扩了、文件系统没扩)、
 #43 `bootctl set-preferred` 在 systemd 257 里不存在、
 #44 ESP 里 UKI 的名字由 `UnifiedKernelImageFormat` 决定(装好的机器上不叫 `keel-a.efi`)、
-#45 `bootctl` 的条目 ID 与文件名不是一回事(传错时 one-shot 被静默忽略 → 假回滚)。
-**还没做**:破坏性回滚演练(让新槽连着起不来,看引导器自动退回旧槽)、
-schema 迁移演练、ESP 容量账、`/data` 写满演练。
+#45 `bootctl` 的条目 ID 与文件名不是一回事(传错时 one-shot 被静默忽略 → 假回滚)、
+#46 "自动回滚"缺前提 `panic=-1`、#47 `debugfs` 的退出码永远为 0、
+#48 schema 迁移只有字段没有执行器、#49 第二份 13 GiB 载荷装不下 + `fetch` 失败后 `stage` 静默装回旧载荷、
+#50 "起不来"分三类,而坏槽实测是**永久冻结**(看门狗才救得回来)、
+#51 迁移/schema 检查排在下载之后(13 GiB 下完才轮到拒绝)。
 
+**还没做**(按下一轮的顺序):
+`os-install` 在 `UnifiedKernelImageFormat=keel-a` 改名之后的**整盘重验证**、
+`os-rescue` 的五条路径(`--repair-boot` / `--reset-etc` / `--grow-data` / `--force-gc` / `--factory-reset`)、
+ESP 容量账(1 GiB ESP × 163 MB UKI:连续多次更新后 `gc` 与拒绝阈值的边界)、
+`/data` 写满演练(看门人三级动作 + 满盘时 `os-update` 的行为)、
+坑 #51 修好之后"迁移载荷在下载前就被拒"的行为复验、
+initrd 阶段的冻结(看门狗覆盖不到,见 `docs/roadmap.md` 3.0)。
 
-**还没做的**:破坏性回滚演练(让新槽连着三次到不了 `boot-complete`,看引导器自动退回旧槽)——
-见 `docs/roadmap.md`。
+**装机路径**:`os-install` 装到整盘之后的第一轮体检由项目所有者在 libvirt 里跑过
+(`sudo ~/keel-check`,49 ✓ / 1 ✗ —— 那条 ✗ 是体检脚本自己的 bug,坑 #52;详见 `docs/install.md` §9)。

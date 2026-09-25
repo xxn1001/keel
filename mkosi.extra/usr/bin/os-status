@@ -108,7 +108,7 @@ echo "  观测到的槽 : ${running:-未知}"
 if [ -n "$pending_slot" ]; then
     echo "待确认更新   : 槽 ${pending_slot},版本 ${pending_ver:-未知}"
     echo "               下次启动已指向槽 ${pending_slot};启动成功会自动确认,"
-    echo "               连续 3 次没到 boot-complete 则自动回退(§5.3 ⑩⑪)。"
+    echo "               那次启动没到 boot-complete 就自动回退(候选条目只有一次机会,坑 #43)。"
 else
     echo "待确认更新   : 无"
 fi
