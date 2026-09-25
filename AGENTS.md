@@ -2,7 +2,7 @@
 
 > 这份文件是给**后续接手的 agent / 未来的自己**看的。它写两件事:
 > **哪些规则不能违反**(架构不变量)、**仓库怎么组织**。
-> 40 条**已知的坑**在 [`docs/traps.md`](docs/traps.md)(太长,2026-09 拆出去了);
+> 40+ 条**已知的坑**在 [`docs/traps.md`](docs/traps.md)(太长,2026-09 拆出去了);
 > 文中提到的「坑 #N」都是那里的编号。
 > 完整方案见 `docs/architecture.md`,历史取舍见 `docs/decisions.md`,不要在这里堆流水账。
 
@@ -71,11 +71,14 @@
 
 4. **槽切换与回滚只用 systemd 现成机制,不自己发明。**
    `os-update` 是**门面**:对外子命令与状态语义稳定,底层可替换(决策 D8)。
-   - 槽切换 = `bootctl set-preferred`(只写 EFI 变量,不碰 ESP 上的 `loader.conf`);
+   - 槽切换 = `bootctl set-oneshot`(候选槽只试一次)与 `bootctl set-default`(确认后固化);
+     **不要**写 `set-preferred` —— Debian 的 systemd 257 没有这个动词(坑 #43),
    - 成功判定 = boot counting + `systemd-bless-boot.service`(它挂在 `boot-complete.target` 上,
      自动把 `keel-x+2-1.efi` 改名成 `keel-x.efi` 表示 good);
-   - 失败回滚 = 引导器:连续三次到不了 `boot-complete` 就把条目标成 bad,
-     `LoaderEntryPreferred` 会跳过它、退回另一个槽。
+   - 失败回滚 = 引导器:one-shot 只试一次,引导器用完就把那个 EFI 变量删掉 ⇒ 起不来的
+     下次启动自动回到持久默认(旧槽),不需要人工介入。**注意**:文档里承诺过的"连续三次
+     才回退"在 systemd 257 上做不到(`set-preferred` 不存在,坑 #43),现在是"试一次就回退";
+     等基底 systemd 到 ≥261 再换回来(见 `docs/roadmap.md`)。
    **v1 的底层是"直接写盘"**(`dd` 进目标分区),不是 `systemd-sysupdate` ——
    后者的 `Type=partition` 匹配语义还没在真机验证过,而写错分区是不可接受的失败模式。
    验证通过后再换底层,门面不动。
@@ -145,7 +148,7 @@
 
 ---
 
-## 3. 已知的坑(40 条)
+## 3. 已知的坑(都搬到了 docs/traps.md)
 
 **已移到 [`docs/traps.md`](docs/traps.md)。**
 

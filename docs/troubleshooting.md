@@ -159,7 +159,7 @@ journalctl -b -u keel-mounts | grep -i esp
 ESP 由 `keel-mounts` 在启动早期扫 `PARTNAME=esp` 自己挂到 `/boot`
 (`systemd-gpt-auto-generator` 已被 cmdline 的 `systemd.gpt_auto=no` 关掉,决策 D18)。
 它没挂上时,**别的都不会报错**:`os-update` 会拒绝写(它在写根分区之前先检查 ESP),
-`bootctl set-preferred`、boot counting 改名、`keel-confirm` 确认槽全部失效
+`bootctl set-oneshot`/`set-default`、boot counting 改名、`keel-confirm` 确认槽全部失效
 (表现:`os-status` 的 `上次启动结果: 无记录` 长期不变)。修:
 
 ```bash
@@ -324,7 +324,7 @@ lsblk -f                      # 分区标签 esp/root-a/root-b/data、文件系�
 |---|---|
 | `mount -o remount,rw /` 然后改 `/usr`、往里装东西 | 装软件用 **nix**;改系统行为用 `/etc`(overlay,可写且持久) |
 | 直接 `dd` 或 `mount` 去写 `/dev/disk/by-partlabel/root-a` / `root-b` | `os-update`:它只写非活动槽,并记 pending |
-| 手改 `$(bootctl --print-esp-path)/EFI/Linux/keel-*.efi` 的文件名来"手动回滚" | `os-update rollback`,或 `bootctl set-preferred keel-<槽>.efi`(§5.3 ⑤) |
+| 手改 `$(bootctl --print-esp-path)/EFI/Linux/keel-*.efi` 的文件名来"手动回滚" | `os-update rollback`,或 `bootctl set-default keel-<槽>.efi`(§5.3 ⑤;候选槽试一次用 `set-oneshot`) |
 | 在正跑着的那块盘上执行 `os-install /dev/<自己>` | 会覆盖正在运行的槽;`os-install` 只在 U 盘 live 环境里对**目标盘**执行(§7.1 B) |
 
 真的需要改根文件系统的内容(例如加一个基底包),正确路径是改仓库里的 mkosi 配置 →

@@ -1,4 +1,4 @@
-# keel 已知的坑(40 条,都是真踩过的)
+# keel 已知的坑(43 条,都是真踩过的)
 
 > 这份清单原来在 `AGENTS.md` §3。2026-09 拆出来,是因为 `AGENTS.md` 长到 65 KB 之后
 > **超出"工作区指令"的加载预算、末尾会被静默截断**(实测被砍掉过"下一步要验证的事"那一段),
@@ -667,3 +667,33 @@
     别只打"成功/失败";② 吞掉工具的输出(`>/dev/null 2>&1`)等于扔掉唯一的线索 ——
     live 镜像里那句"没能扩容"曾经被当成"实验环境的预期噪音"蒙混过关,直到有人把盘放大
     才暴露出来(这正是"退出码 0 / 日志说成功 ≠ 事情做成了"的又一个变体,见坑 #29/#36)。
+
+43. **`bootctl set-preferred` 在 Debian 的 systemd 257 里**根本不存在** —— 槽切换那一步从写下来就没生效过(2026-09 演练实测)。**
+    现象(OTA 演练 p0 阶段的 `os-update stage`,第一次真的走到"切槽"这一步):
+    ```
+    keel: 根分区写入完成
+    keel: UKI 已写入 /boot/EFI/Linux/keel-b+3.efi(名字里的 +3 是 boot counting 的 tries-left)
+    Unknown command verb 'set-preferred'.
+    keel: 错误:bootctl set-preferred keel-b+3.efi 失败:引导器不接受这个条目……
+    ```
+    根因:`set-preferred` 是 systemd **后来**才加的动词(语义 = 感知 boot assessment 的
+    `set-default`,会跳过 tries-left 归零的条目;我本地 systemd 261 的 man 与二进制里都有)。
+    Debian trixie 带的是 systemd **257**,它不认识这个动词 ⇒
+    `docs/architecture.md` §5.3 ⑤ 那条"槽切换"从来没成功过,
+    而因为 `os-update stage` 是**新增**功能(以前从没跑过),这个错误一直没机会暴露。
+    (同一次演练里 `systemd-bless-boot.service` 倒是跑起来了 —— 因为候选条目名带 `+3`,
+    计数生效,generator 把 bless 拉进了事务;也就是说"起新槽"实际是靠**文件名+one-shot**
+    的自动选择完成的,不是靠我们设的 preferred。)
+    ⇒ 修法(`lib.sh` 里收敛成两个 helper,调用点全部改用它们):
+    * 候选槽 = `bootctl set-oneshot <条目>`(257 就有)—— 只试**一次**;
+    * 已确认的槽 = `bootctl set-default <条目>` —— 持久默认;
+    * `keel-confirm` 启动成功后用 `set-default` 把新槽固化,回滚时也是 `set-default`。
+    **代价要写清楚**:原文档承诺的"连续三次到不了 boot-complete 才回退"在 257 上做不到,
+    现在是"试一次就回退"(one-shot 在引导时就被引导器消费掉)。条目名里的 `+3`
+    仍然有用:它让 bless-boot 参与进来,成功时把条目改名成 good。
+    等基底 systemd 提供 `set-preferred` 再把三次的语义换回来(已记 `docs/roadmap.md`)。
+    **教训**:① 文档里"我们用 X 做 Y"的每一句都要有一次**真的执行过**的记录 ——
+    这一条(以及坑 #41 的 target、坑 #42 的 growfs)都属于同一类:
+    **代码写对了、逻辑也自洽,但那个 API 在你用的版本里不存在**;
+    ② 报错信息要**原样留着**(`Unknown command verb` 一眼就能定位),别急着包装成
+    "引导器不接受这个条目"这种听起来像硬件问题的解释。

@@ -20,7 +20,7 @@
 | 能力 | 说明 |
 |---|---|
 | 只读根 + A/B 双槽 | 卡槽身份靠 PARTLABEL,切换靠 UKI |
-| 原子更新 + 自动回滚 | boot counting + `systemd-bless-boot` + `LoaderEntryPreferred` |
+| 原子更新 + 自动回滚 | boot counting + `systemd-bless-boot` + `LoaderEntryOneShot` / `LoaderEntryDefault` |
 | `/etc` 可写 | overlayfs(lower = 镜像,upper = `/data`) |
 | `/data` 状态分区 | `/var`、`/home`、`/root`、`/nix` 全部落在这里;含 swapfile |
 | nix 可用 | Debian 包 `nix-bin` + `nix-setup-systemd`;flakes 打开 |
@@ -247,23 +247,33 @@ os-update stage
  ② 迁移 /data(声明式,由**旧系统**执行,只增不破,成功后 bump schema-version)
  ③ 把 slot-<目标>.root.raw 写进 /dev/disk/by-partlabel/root-<目标>;sync + blockdev --flushbufs
  ④ mount -o remount,rw /efi;把 slot-<目标>.uki.efi 写成 /efi/EFI/Linux/keel-<目标>+3.efi
- ⑤ bootctl set-preferred keel-<目标>+3.efi          (只写 EFI 变量,不动 loader.conf)
+ ⑤ bootctl set-oneshot keel-<目标>+3.efi           (候选槽只试**一次**;见下面的说明与坑 #43)
  ⑥ 写 /data/keel/state 的 pending 块
  ⑦ 提示重启(os-update stage --reboot 直接重启)
 
 重启
- ⑧ systemd-boot 选中 preferred → 文件名退化为 keel-<目标>+2-1.efi → 启动
+ ⑧ systemd-boot 用那个 one-shot 启动候选条目 → 文件名退化为 keel-<目标>+2-1.efi
 
 成功路径
  ⑨ 到达 boot-complete.target:
     - systemd-bless-boot.service 自动把 UKI 改名为 keel-<目标>.efi(good)
-    - keel-confirm.service:bootctl set-preferred keel-<目标>.efi;state 记 success;清 pending
+    - keel-confirm.service:bootctl set-default keel-<目标>.efi(把它固化成持久默认);
+      state 记 success;清 pending
 
-失败路径(连续 3 次没到 boot-complete:内核 panic / initrd 失败 / systemd 起不来都算)
- ⑩ tries-left 归零 → 条目标记 bad → LoaderEntryPreferred 感知并跳过 → 回退到旧槽启动
+失败路径(**试用一次**没到 boot-complete:内核 panic / initrd 失败 / systemd 起不来都算)
+ ⑩ one-shot 在引导时就被引导器消费掉了 ⇒ 下次启动回到**持久默认**(旧槽,见 ⑨ 记下的
+    `set-default`)—— 自动回退,不需要人工介入
  ⑪ 旧槽起来后 keel-confirm.service 发现"跑在旧槽,但 state 说 pending 新槽" → 判定失败:
-    清空 preferred、把坏 UKI 挪成 keel-<目标>.efi.failed、state 记 failed 并 journal 告警
+    清 pending、把坏 UKI 挪成 keel-<目标>.efi.failed、state 记 failed 并 journal 告警
 ```
+
+> ⚠ **为什么不是"连续三次"**(2026-09 演练实测,坑 #43):原设计用
+> `bootctl set-preferred`(它 = 感知 boot assessment 的 set-default,会跳过 tries-left 归零的条目),
+> 但 **Debian trixie 的 systemd 257 没有这个动词**(VM 实测 `Unknown command verb 'set-preferred'`;
+> systemd 261 才有)。现在用 257 就有的 `set-oneshot`:候选槽**只试一次**,失败即回退。
+> 条目名里的 `+3` 仍然有用 —— 它让 `systemd-bless-boot-generator` 把 bless 拉进事务,
+> 成功时把条目改名成"good"。等基底 systemd 提供 `set-preferred`,再把"三次机会"换回来
+> (见 `docs/roadmap.md`)。
 
 **为什么迁移要由旧系统执行**(不变量 6):如果让新系统在首启时迁移 `/data`,而它随后启动失败,
 回滚后的旧系统面对的是一份"被新系统改过"的 `/data`。反过来,旧系统自己做的迁移按定义就是
@@ -537,7 +547,7 @@ keel/
 | R1 | **`/data` schema 迁移与回滚不兼容** —— 共享可写分区做 A/B 的最大隐患 | 只增不破的硬约定 + 声明式迁移 + 由旧系统执行 + 迁移后回滚演练 |
 | R2 | `/etc` upper 里留下新版本才认识的配置,回滚后旧版本行为异常 | `os-rescue --reset-etc` 兜底;文档写清 |
 | R3 | **nix store 的 DB schema 单向升级** —— 基底升级 nix 后回滚,旧 nix 可能读不了新 DB | 基底里的 nix 版本保守升级;发版说明标注;必要时回滚前 `nix-store --repair` |
-| R4 | 部分主板固件会清 EFI 变量(NVRAM)⇒ `LoaderEntryPreferred` 丢失 | fallback 路径 `EFI/BOOT/BOOTX64.EFI` 保证能起;`loader.conf` 的 `default` 兜底;文档给手动切槽步骤 |
+| R4 | 部分主板固件会清 EFI 变量(NVRAM)⇒ `LoaderEntryOneShot` / `LoaderEntryDefault` 丢失 | fallback 路径 `EFI/BOOT/BOOTX64.EFI` 保证能起;`loader.conf` 的 `default` 兜底;文档给手动切槽步骤 |
 | R5 | **槽位尺寸装机即定死**,将来变体放不下就只能重装 | 首次装机前按最大变体留足(现在 6 GiB);在架构文档里写明这个约束 |
 | R6 | dm-verity + 两个 root 分区时的 roothash 归属问题 | v2 专项设计;`SplitArtifacts=partitions` 文档明确支持"root + verity + UKI"组合,工具链具备 |
 | R7 | 未启用 `non-free-firmware` 会导致微码/固件包找不到 | 构建会直接失败(不会静默),`tools/verify.sh` 里加一条断言 |

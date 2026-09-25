@@ -33,7 +33,7 @@ fi
 #
 # 装机后的系统上实测:ESP 压根没挂上,而 os-status 只看得到 lower 里那个空 /boot,
 # 于是"看不到任何 UKI"、`上次启动结果: 无记录`;更糟的是 os-update 写新 UKI、
-# `bootctl set-preferred` 切槽、boot counting 改名全都在一个空目录上"成功"
+# `bootctl set-oneshot/set-default` 切槽、boot counting 改名全都在一个空目录上"成功"
 # ⇒ A/B 更新与槽确认这条链整条是断的。
 # gpt-auto 挂 ESP 的条件有好几条,而且**任何一条不满足都只是静默跳过**
 # (fstab 里有 /boot 条目、/boot 不空、读不到 EFI 变量 LoaderDevicePartUUID …),
@@ -53,7 +53,7 @@ else
     # 不 die:没有 ESP 也能进系统(引导器是固件那侧的事)。但没有它,更新/切槽/确认
     # 全都做不了,所以必须**大声**说清楚,而不是让上层在空目录上继续"成功"。
     keel_log "警告:没找到/挂不上 PARTNAME=esp 的分区(或者 EFI 变量那侧不对)"
-    keel_log "      ⇒ 这次启动里 os-update / bootctl set-preferred / keel-confirm 都不会生效;"
+    keel_log "      ⇒ 这次启动里 os-update / bootctl 切槽 / keel-confirm 都不会生效;"
     keel_log "      用 os-status 看 ESP 一节,或在救援盘上跑 os-rescue --repair-boot"
 fi
 

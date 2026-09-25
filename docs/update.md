@@ -32,7 +32,7 @@ sudo os-update stage --reboot  # 同上,并立即重启
 | `os-update check` | 查询更新源里有没有比当前更新的版本 | 先查网络,再查 `/data/keel/config` 里的 URL(§6) |
 | `os-update fetch` | 下载到 `/data/ota/<ver>/`,校验 sha256、签名(v1 只留接口)、schema 兼容性(§8) | 什么都没写进槽,重试即可 |
 | `os-update stage` | §5.3 的 ①–⑦(见下表) | 写分区阶段失败只是白写了一遍非活动槽,当前系统不受影响 |
-| 重启 | systemd-boot 选中 preferred,文件名从 `keel-<目标>+3.efi` 退化为 `keel-<目标>+2-1.efi` 并启动;到达 `boot-complete.target` 后 `systemd-bless-boot` 把它改名成 `keel-<目标>.efi`,`keel-confirm.service` 把 preferred 指向它、记 success、清 pending(§5.3 ⑧⑨) | 见 §3 |
+| 重启 | systemd-boot 用 one-shot 启动候选条目,文件名从 `keel-<目标>+3.efi` 退化为 `keel-<目标>+2-1.efi`;到达 `boot-complete.target` 后 `systemd-bless-boot` 把它改名成 `keel-<目标>.efi`,`keel-confirm.service` 把它设成**持久默认**、记 success、清 pending(§5.3 ⑧⑨) | 见 §3 |
 
 `os-update stage` 内部按顺序做这些事(§5.3 ①–⑦):
 
@@ -42,7 +42,7 @@ sudo os-update stage --reboot  # 同上,并立即重启
 | ② | **迁移 `/data`**,成功后 bump schema-version | 由**旧系统**执行,声明式,只增不破 —— 见 §4 |
 | ③ | 把 `slot-<目标>.root.raw` 写进 `/dev/disk/by-partlabel/root-<目标>`,再 `sync` + `blockdev --flushbufs` | 新根落盘 |
 | ④ | 把 `slot-<目标>.uki.efi` 写成 `$KEEL_ESP/EFI/Linux/keel-<目标>+3.efi`(`KEEL_ESP` 由 `bootctl --print-esp-path` 得到,通常是 `/boot`) | 新 UKI + 启动计数 |
-| ⑤ | `bootctl set-preferred keel-<目标>+3.efi` | 只写 EFI 变量,不动 `loader.conf` |
+| ⑤ | `bootctl set-oneshot keel-<目标>+3.efi` | 候选槽只试一次;为什么不用 `set-preferred` 见坑 #43 |
 | ⑥ | 写 `/data/keel/state` 的 pending 块 | 供下次启动判定成功/失败 |
 | ⑦ | 提示重启(`--reboot` 直接重启) | — |
 
@@ -56,7 +56,7 @@ v1 **没有自动更新定时器**(§8):手动触发,便于在笔记本上边用
 
 | 证据 | 在哪看 |
 |---|---|
-| 重启后槽和版本**都没变**(还是旧槽、旧版本) | `os-status` |
+| 重启后槽和版本**都没变**(还是旧槽、旧版本) | `os-status`(one-shot 已被消费 ⇒ 回到持久默认) |
 | ESP 上出现 `keel-<目标>.efi.failed` | `ls -l "$(bootctl --print-esp-path)/EFI/Linux/"` |
 | `state` 里 pending 被清空、记了 failed | `os-status`;`/data/keel/state` |
 | journal 里有 `keel-confirm.service` 的告警 | `journalctl -b -u keel-confirm.service` |
@@ -115,7 +115,7 @@ sudo os-rescue --mark-bad   # 把当前槽标记为 bad(systemd-bless-boot bad)
 | **`/etc` overlay 的 upper 是共享的**(R2) | 新版本往 `/etc` 写了旧版本不认识的配置(新 drop-in、新格式),回滚后旧系统行为异常 | `sudo os-rescue --reset-etc` 兜底:清空 overlay upper,下次启动重新从镜像播种。**它会丢掉你在 `/etc` 里的本机配置**(ssh 主机密钥、machine-id、账号、网络配置)——先备份到 `/data/home/...` 再执行 |
 | **nix store 的 DB schema 单向升级**(R3) | 基底升级 nix 后回滚,旧 nix 报数据库 schema 太新,`nix` 不可用 | 基底里的 nix **保守升级**;发版说明标注 nix 版本变化;必要时按 §13.2 R3 用 `nix-store --repair` |
 | 槽位尺寸不足(R5) | `stage` 写不下新的根镜像 | 尺寸装机时定死,只能重装;装机前按最大变体留足 |
-| 主板固件清空 NVRAM(R4) | `LoaderEntryPreferred` 丢失,重启后起的还是原来那个槽 | fallback 路径 `EFI/BOOT/BOOTX64.EFI` 保证能起;按 `troubleshooting.md` 手动切槽 |
+| 主板固件清空 NVRAM(R4) | `LoaderEntryOneShot` / `LoaderEntryDefault` 丢失,重启后起的还是原来那个槽 | fallback 路径 `EFI/BOOT/BOOTX64.EFI` 保证能起;按 `troubleshooting.md` 手动切槽 |
 
 ## 6. 更新源怎么配
 

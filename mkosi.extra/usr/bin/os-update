@@ -369,8 +369,9 @@ cmd_stage() {
     done
 
     pref="keel-${target}+${TRIES}.efi"
-    if ! bootctl set-preferred "$pref"; then
-        keel_die "bootctl set-preferred ${pref} 失败:引导器不接受这个条目(文件确实在 ESP 上?ESP 是可写的?),或固件拒绝写 EFI 变量(部分主板只读 LoaderEntryPreferred)。可改用开机菜单手动选择槽 ${target}。"
+    # 候选槽只试一次(keel_boot_candidate = set-oneshot;为什么不用 set-preferred 见 lib.sh 的注释)
+    if ! keel_boot_candidate "$pref"; then
+        keel_die "bootctl set-oneshot ${pref} 失败:引导器不接受这个条目(文件确实在 ESP 上?ESP 是可写的?),或固件拒绝写 EFI 变量(部分主板只读这些变量)。可改用开机菜单手动选择槽 ${target}。"
     fi
     keel_log "preferred 条目已指向 ${pref}"
 
@@ -413,8 +414,8 @@ cmd_switch() {
         keel_die "ESP 上没有 ${KEEL_UKI_DIR}/${pref}:槽 ${slot} 还没有正式条目(先用 os-update stage 填这个槽,或用 bootctl list 看有没有带计数的 ${slot} 条目)。现有条目:${existing:- 无}"
     fi
     # 只写 EFI 变量 LoaderEntryPreferred,不动 ESP 上的 loader.conf(不变量 4)
-    if ! bootctl set-preferred "$pref"; then
-        keel_die "bootctl set-preferred ${pref} 失败(固件拒绝写 EFI 变量?)。可改用开机菜单(space)手动选择槽 ${slot}。"
+    if ! keel_boot_default "$pref"; then
+        keel_die "bootctl set-default ${pref} 失败(固件拒绝写 EFI 变量?)。可改用开机菜单(space)手动选择槽 ${slot}。"
     fi
     if [ "$slot" = "$CURRENT_SLOT" ]; then
         keel_log "preferred 已指向当前正在运行的槽 ${slot}(无实际变化)"

@@ -713,6 +713,29 @@ else
     no "演练结束后不会自己关机 ⇒ 宿主每次都得等 timeout"
 fi
 
+# 槽切换用的 bootctl 动词(坑 #43):Debian 的 systemd 257 没有 set-preferred,
+# 所以候选槽必须走 set-oneshot、持久选择走 set-default,而且都收敛到 lib.sh 的 helper。
+if grep -q '^keel_boot_candidate() { bootctl set-oneshot' mkosi.extra/usr/lib/keel/lib.sh &&
+   grep -q '^keel_boot_default() { bootctl set-default' mkosi.extra/usr/lib/keel/lib.sh; then
+    ok "lib.sh 定义了 keel_boot_candidate(set-oneshot)/keel_boot_default(set-default)(坑 #43)"
+else
+    no "lib.sh 缺少 bootctl 动词的封装(坑 #43)"
+fi
+if grep -q 'keel_boot_candidate "\$pref"' mkosi.extra/usr/bin/os-update &&
+   grep -q 'keel_boot_default "\$pref"' mkosi.extra/usr/bin/os-update &&
+   grep -q 'keel_boot_default "\$uki_name"' mkosi.extra/usr/lib/keel/confirm; then
+    ok "os-update(stage=候选/switch=固化)与 keel-confirm(固化)都走 helper"
+else
+    no "还有调用点没改用 helper(候选槽 set-oneshot / 固化 set-default)"
+fi
+# 只看**非注释行**:注释里提到"原设计用的是 set-preferred"是解释,不是调用
+if grep -rn '^[^#]*bootctl set-preferred' mkosi.extra/ >/dev/null 2>&1; then
+    bad=$(grep -rln '^[^#]*bootctl set-preferred' mkosi.extra/ | tr '\n' ' ')
+    no "仍有代码调用 bootctl set-preferred(systemd 257 会报 Unknown command verb):$bad"
+else
+    ok "没有任何地方再调用 bootctl set-preferred(它只出现在解释性注释里)"
+fi
+
 head1 "7. 账号模型(决策 D21:admin 是唯一交互账号,root 锁定)"
 # ---------------------------------------------------------------------------
 if grep -qE '^[[:space:]]*sudo$' mkosi.conf.d/20-packages.conf; then

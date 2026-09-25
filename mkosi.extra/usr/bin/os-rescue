@@ -225,7 +225,7 @@ do_mark_bad() {
     echo "  sudo os-update switch ${other}   # 把 preferred 指向另一个槽的正式条目"
     echo "  sudo systemctl reboot            # 重启后确认新槽可用"
     echo "如果另一个槽的正式条目(keel-${other}.efi)不存在,它的条目名可能带计数"
-    echo "(keel-${other}+N.efi):先用 bootctl list 看,再 bootctl set-preferred。"
+    echo "(keel-${other}+N.efi 或正式名):先用 bootctl list 看,再 bootctl set-default。"
 }
 
 # ---------------------------------------------------------------------------
@@ -275,7 +275,7 @@ do_repair_boot() {
             echo "当前槽没有正式条目(keel-$slot.efi),但有带启动计数的条目:${counted}"
             echo "说明上次启动**没有**走到 boot-complete.target(systemd-bless-boot 没来得及改名)。"
             echo "如果这个槽其实是好的,可以让引导器继续用它:"
-            echo "  sudo bootctl set-preferred ${counted}"
+            echo "  sudo bootctl set-default ${counted}"
             echo "想让引导器认为它已经确认可用(去掉计数),可以:"
             echo "  sudo systemd-bless-boot good"
         else

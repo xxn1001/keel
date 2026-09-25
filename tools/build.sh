@@ -58,11 +58,20 @@ mkdir -p mkosi.cache mkosi.pkgcache mkosi.output
 # 已经这么白测过一轮,见 docs/traps.md 坑 #23)。
 # -f 只重建输出,不动增量缓存(mkosi.cache/);要连缓存一起删是 -ff,我们不用。
 log "构建 install 镜像"
-mkosi --profile install --image-version "$VERSION" --force "${ROOTPW_ARGS[@]}" build
+# 演练(以及任何"要更新到一个还能继续自检的槽")可以追加 profile:
+#   KEEL_EXTRA_PROFILES=test sudo tools/build.sh
+# 用途:OTA 演练时新槽里也得有 keel-selftest / keel-ota-drill,否则状态机跨不过重启。
+EXTRA_PROFILE_ARGS=()
+for _p in ${KEEL_EXTRA_PROFILES:-}; do
+    EXTRA_PROFILE_ARGS+=(--profile "$_p")
+done
+[ ${#EXTRA_PROFILE_ARGS[@]} -gt 0 ] && log "额外 profile:${KEEL_EXTRA_PROFILES}"
+
+mkosi --profile install "${EXTRA_PROFILE_ARGS[@]+"${EXTRA_PROFILE_ARGS[@]}"}" --image-version "$VERSION" --force "${ROOTPW_ARGS[@]}" build
 log "构建 slot-a 载荷"
-mkosi --profile slot-a --image-version "$VERSION" --force "${ROOTPW_ARGS[@]}" build
+mkosi --profile slot-a "${EXTRA_PROFILE_ARGS[@]+"${EXTRA_PROFILE_ARGS[@]}"}" --image-version "$VERSION" --force "${ROOTPW_ARGS[@]}" build
 log "构建 slot-b 载荷"
-mkosi --profile slot-b --image-version "$VERSION" --force "${ROOTPW_ARGS[@]}" build
+mkosi --profile slot-b "${EXTRA_PROFILE_ARGS[@]+"${EXTRA_PROFILE_ARGS[@]}"}" --image-version "$VERSION" --force "${ROOTPW_ARGS[@]}" build
 
 # ---------------------------------------------------------------------------
 # 组装 dist/

@@ -52,7 +52,7 @@ keel_part_dev() {
 # 而 bootctl **只是在按 gpt-auto 的规则猜**(镜像里 /boot 目录存在就报 /boot),
 # 它**不检查那个路径是不是真的挂载点**。装机后的系统上 ESP 压根没挂上,于是所有
 # `$KEEL_UKI_DIR` 操作都落在一个空目录里,而且每一步都"成功"
-# ⇒ os-update 写不进 UKI、bootctl set-preferred 切不了槽、keel-confirm 确认不了槽。
+# ⇒ os-update 写不进 UKI、bootctl 切不了槽、keel-confirm 确认不了槽。
 #
 # 现在只有两个可信来源:
 #   ① 挂载表里有我们的 ESP(源设备就是 PARTNAME=esp 的那个分区)—— keel-mounts 挂的;
@@ -85,7 +85,7 @@ keel_esp_mount() {
     if keel_esp_mountpoint; then return 0; fi
     dev=$(keel_part_dev esp 2>/dev/null) || return 1
     install -d -m 0755 "$dir" 2>/dev/null || return 1
-    # 必须 rw:boot counting / `bootctl set-preferred` / os-update 写新 UKI 都要写它。
+    # 必须 rw:boot counting / `bootctl set-oneshot` / os-update 写新 UKI 都要写它。
     # 选项对齐 systemd 给 ESP 用的默认值(fmask=0133,dmask=0022)。
     mount -t vfat -o rw,fmask=0133,dmask=0022 "$dev" "$dir" 2>/dev/null || return 1
     printf '%s' "$dir"
@@ -174,6 +174,27 @@ keel_version() {
 
 keel_slot_device() { printf '/dev/disk/by-partlabel/root-%s' "$1"; }
 keel_uki_path() { printf '%s/keel-%s.efi' "$KEEL_UKI_DIR" "$1"; }
+
+# ---------------------------------------------------------------------------
+# 槽切换用哪两个 bootctl 动词(坑 #43,2026-09 演练实测)
+#
+# 原设计用的是 `bootctl set-preferred <条目>`(它的语义正好是我们要的:像 set-default,
+# 但**感知 boot assessment**,会跳过 tries-left 已经归零的条目)。问题是:
+# **Debian trixie 的 systemd 257 里没有这个动词** —— VM 实测报
+#     Unknown command verb 'set-preferred'.
+# (systemd 261 的 man 与二进制里它才有;也就是说这行代码从写下来那天起就没生效过,
+#  而"没生效"被 `if ! bootctl ...; then` 当成普通失败报了出来,是这次演练才让它现形。)
+#
+# 现在用 257 就有的两个动词:
+#   * 候选槽(试一次)= `set-oneshot` —— 引导器用完就删掉那个 EFI 变量 ⇒
+#     这一次起不来(panic、initrd 失败、systemd 没起来),下次启动自动回到持久默认(旧槽)。
+#     代价:只有**一次**机会,不是文档里写的"连续三次"。三次的语义要等基底 systemd
+#     提供 set-preferred(≥261)才能用,已记进 docs/roadmap.md。
+#   * 已经确认好的槽 = `set-default` —— 持久默认。
+# keel-confirm 在启动成功后用 keel_boot_default 把新槽固化下来。
+# ---------------------------------------------------------------------------
+keel_boot_candidate() { bootctl set-oneshot "$1"; }
+keel_boot_default() { bootctl set-default "$1"; }
 
 # 当前槽的 UKI 可能带 boot counting 后缀(keel-a+2-1.efi),取第一个匹配。
 keel_find_uki() {

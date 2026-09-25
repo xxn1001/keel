@@ -31,7 +31,10 @@ step "1/6 静态校验"
 tools/verify.sh
 
 step "2/6 构建新版本载荷(tools/build.sh)"
-tools/build.sh
+# KEEL_EXTRA_PROFILES=test:**新槽里也必须有没有自检/状态机**,否则重启到新槽之后
+# 状态机就断了(第一次演练就栽在这里:新槽是生产载荷,里面没有 keel-ota-drill,
+# 于是 p1/p2 永远不会跑,VM 就停在 login 提示符上)。
+env KEEL_EXTRA_PROFILES=test tools/build.sh
 DRILL_PAYLOAD=$(ls -1d dist/keel-* 2>/dev/null | sort -V | tail -n1) || DRILL_PAYLOAD=""
 [ -n "$DRILL_PAYLOAD" ] || { echo "错误:dist/ 下没有载荷目录" >&2; exit 1; }
 echo "   载荷目录:$DRILL_PAYLOAD(版本 $(sed -n 's/^version=//p' "$DRILL_PAYLOAD/manifest" | head -n1))"

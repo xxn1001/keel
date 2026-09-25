@@ -81,7 +81,8 @@
 ## D8 更新器:门面自研 + 机制用 systemd
 
 - **决策**:`os-update` 是我们的**门面**(策略/迁移/保留/报告);下载、验签、版本比较、
-  写分区交给 `systemd-sysupdate`;槽切换用 `bootctl set-preferred`;成功判定与回滚用
+  写分区交给 `systemd-sysupdate`;槽切换用 `bootctl set-oneshot`(候选)/ `set-default`(固化)
+  —— 原设计写的 `set-preferred` 在 Debian 的 systemd 257 里不存在,见坑 #43;成功判定与回滚用
   boot counting + `systemd-bless-boot.service`。
 - **理由**:"绝对不能出错"的部分(写分区、回滚判定)复用被大量发行版验证过的代码;
   "必须贴合本架构"的部分(schema 迁移、保留策略)自己写。门面模式还保证:
@@ -211,7 +212,7 @@
   `bootctl --print-esp-path` 降级成兜底参考。
 - **理由**:装机后的系统上实测 ESP 压根没挂上,而 `keel_esp()` 把 bootctl 的**猜测路径**
   (`/boot` 目录存在就报 `/boot`)当真 ⇒ 后面所有 UKI/bootctl 操作都在一个空目录上"成功":
-  `os-status` 看不到任何 UKI、`os-update` 写不进新 UKI、`bootctl set-preferred` 切不了槽、
+  `os-status` 看不到任何 UKI、`os-update` 写不进新 UKI、`bootctl` 切不了槽、
   `keel-confirm` 确认不了槽 —— A/B 更新这条链整条是断的,而且**没有一处报错**。
   gpt-auto 挂 ESP 的前置条件有好几条(fstab 里有 `/boot` 条目、`/boot` 不为空、
   能读到 EFI 变量 `LoaderDevicePartUUID`…),任何一条不满足都只是"静默不挂" ——

@@ -207,7 +207,7 @@ if [ "$KEEL_ESP_MOUNTED" = yes ]; then
 else
     echo "ESP 挂载     : 没有挂上(期望 $KEEL_ESP_MOUNT)"
     echo "               警告:下面这一节看到的是只读镜像里的空目录,不是 ESP 的内容!"
-    echo "               后果:os-update 写不进新 UKI、bootctl set-preferred 切不了槽、"
+    echo "               后果:os-update 写不进新 UKI、bootctl set-default 切不了槽、"
     echo "               keel-confirm 确认不了槽(docs/traps.md 坑 #36)。"
     echo "               自救:sudo os-rescue --repair-boot,或 systemctl restart keel-mounts"
 fi
