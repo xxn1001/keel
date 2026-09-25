@@ -697,3 +697,38 @@
     **代码写对了、逻辑也自洽,但那个 API 在你用的版本里不存在**;
     ② 报错信息要**原样留着**(`Unknown command verb` 一眼就能定位),别急着包装成
     "引导器不接受这个条目"这种听起来像硬件问题的解释。
+
+44. **ESP 里那份 UKI 的名字由 mkosi 的 `UnifiedKernelImageFormat` 决定,默认是 `&e-&k` —— 和"槽名"没有关系(2026-09 演练实测)。**
+    现象(演练 p1 更新成功、`os-update rollback` 却什么都没做,p2 还停在槽 b):
+    ```
+    keel-ota-drill[p1]: 判定:**更新成功** —— 当前槽 b、last_result=success
+    keel-ota-drill[p1]: ========== os-update rollback(手动回滚到旧槽)==========
+    keel-ota-drill[p2]: 判定:当前槽=b,版本=2026.09.25.0703,last_result=failed
+    ```
+    而 p0 的快照里,`bootctl list` 与 `ls /boot/EFI/Linux` 显示安装镜像里那份 UKI 其实是:
+    ```
+    id: keel-6.12.107+deb13-amd64.efi   (selected)
+    source: /boot/EFI/Linux/keel-6.12.107+deb13-amd64.efi
+    ```
+    也就是说:mkosi 按 `&e-&k`(entry token + 内核版本)给 UKI 命名,
+    **安装镜像里那份叫 `keel-<内核版本>.efi`,不是 `keel-a.efi`**。而
+    `os-update` / `os-rescue` / `keel-confirm` 全都按"槽名"找条目
+    (`keel_uki_path` = `$KEEL_UKI_DIR/keel-<槽>.efi`,架构文档 §5.3 也是这么写的)⇒
+    在一台**刚装好**的机器上:
+    * `os-update rollback` / `switch a` 会拒绝执行(找不到 `keel-a.efi`);
+    * `keel-confirm` 的 `set-default` 那一步会被 `if [ -e ... ]` 静默跳过(默认条目没人设)。
+    (槽 b 那边一直没问题,因为它的条目名是 **os-update 自己写 UKI 时起的** ——
+    我们复制产物到 ESP 时才决定叫 `keel-b+3.efi`,所以"更新"路径反而是对的,
+    只有"安装镜像自带的那个槽"名字对不上。)
+    ⇒ 修法:
+    1. `mkosi.profiles/install.conf` 里钉死 `UnifiedKernelImageFormat=keel-a`
+       —— 安装镜像的那份 UKI **就是槽 a**(cmdline 里写死 `root=PARTLABEL=root-a`);
+    2. `keel-confirm` 加兜底:如果 `keel-<槽>.efi` 不存在,就问引导器
+       "这次启动用的是哪个条目"(`bootctl list` 里标着 `(selected)` 的那个)并把它设成默认,
+       同时把用过的名字记进 `state`(`entry_<槽>=…`),下次不用再猜;
+    3. `os-update switch/rollback` 的报错里明确提示"条目名不一定等于槽名,
+       先 `bootctl list` 看实际名字再 `set-default`"。
+    **教训**:① "名字"是接口。凡是"按名字去磁盘上找东西"的逻辑,都要在**第一次真的执行**
+    时验证那个名字确实存在(我们的 `keel_uki_path` 用了几年,直到演练才第一次真被调用);
+    ② 同一个东西有两个命名者(构建期 mkosi 一份、运行期 os-update 一份)时,
+    必须显式对齐 —— 否则一半路径对、一半路径错,而错的那半恰好只有"装机后第一次"才会走到。

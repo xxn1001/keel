@@ -411,7 +411,9 @@ cmd_switch() {
         existing="$existing ${f##*/}"
     done
     if [ ! -e "$KEEL_UKI_DIR/$pref" ]; then
-        keel_die "ESP 上没有 ${KEEL_UKI_DIR}/${pref}:槽 ${slot} 还没有正式条目(先用 os-update stage 填这个槽,或用 bootctl list 看有没有带计数的 ${slot} 条目)。现有条目:${existing:- 无}"
+        keel_die "ESP 上没有 ${KEEL_UKI_DIR}/${pref}:槽 ${slot} 还没有正式条目(先用 os-update stage 填这个槽,或用 bootctl list 看有没有带计数的 ${slot} 条目)。现有条目:${existing:- 无}
+       提示:条目名不一定等于槽名 —— 镜像里那份 UKI 的名字由构建时的 UnifiedKernelImageFormat 决定(坑 #44);
+       先 bootctl list 看实际条目名,再 bootctl set-default <那个名字> 手动切槽。"
     fi
     # 只写 EFI 变量 LoaderEntryPreferred,不动 ESP 上的 loader.conf(不变量 4)
     if ! keel_boot_default "$pref"; then

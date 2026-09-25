@@ -30,9 +30,24 @@ fi
 # boot counting 生效时,systemd-bless-boot.service 已经在本单元之前把
 # keel-<槽>+N-M.efi 改名成 keel-<槽>.efi(状态 good),所以指向正式名字是稳定的。
 uki_name="keel-$slot.efi"
+if [ ! -e "$KEEL_UKI_DIR/$uki_name" ]; then
+    # 条目名不一定等于槽名:安装镜像里那份 UKI 的名字由 mkosi 的 UnifiedKernelImageFormat
+    # 决定(坑 #44,已钉成 keel-a;但老镜像/手工装过的机器可能还是别的名字)。
+    # 兜底:直接问引导器"这次启动用的是哪个条目"(bootctl list 里标着 (selected) 的那个),
+    # 把它设成默认 —— 我们此刻正在跑它,这就是当前槽的正确条目。
+    selected="$(bootctl list --no-pager 2>/dev/null |
+                awk '/\(selected\)/ { for (i = 1; i <= NF; i++) if ($i == "id:") { print $(i+1); exit } }')" || selected=""
+    if [ -n "$selected" ]; then
+        keel_log "注意:$KEEL_UKI_DIR/$uki_name 不存在,改用本次启动选中的条目 '$selected'(坑 #44)"
+        uki_name="$selected"
+    else
+        keel_log "警告:$KEEL_UKI_DIR/$uki_name 不存在,而且问不出当前选中的条目 ⇒ 跳过 set-default"
+    fi
+fi
 if [ -e "$KEEL_UKI_DIR/$uki_name" ]; then
     keel_boot_default "$uki_name" >/dev/null 2>&1 \
         || keel_log "bootctl set-default 失败(固件可能不接受写 EFI 变量,靠 fallback 路径仍可启动)"
+    keel_state_set "entry_$slot" "$uki_name"
 fi
 
 # --- ② 判定这次启动是"更新成功"还是"更新失败后回滚" ---

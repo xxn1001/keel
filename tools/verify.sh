@@ -736,6 +736,20 @@ else
     ok "没有任何地方再调用 bootctl set-preferred(它只出现在解释性注释里)"
 fi
 
+# 安装镜像 ESP 里的 UKI 名字必须是 keel-a.efi(mkosi 默认是 &e-&k = keel-<内核版本>,
+# 那样 os-update rollback / switch 在一台刚装好的机器上找不到槽 a 的条目 —— 坑 #44)
+if grep -qE '^UnifiedKernelImageFormat=keel-a$' mkosi.profiles/install.conf; then
+    ok "install profile 钉住 UnifiedKernelImageFormat=keel-a(ESP 里的槽 a 条目就叫 keel-a.efi)"
+else
+    no "install profile 没钉 UnifiedKernelImageFormat ⇒ ESP 里会是 keel-<kver>.efi,按槽名找不到(坑 #44)"
+fi
+if grep -q 'selected' mkosi.extra/usr/lib/keel/confirm &&
+   grep -q 'entry_\$slot' mkosi.extra/usr/lib/keel/confirm; then
+    ok "keel-confirm 在 keel-<槽>.efi 不存在时退回「本次启动选中的条目」,并把名字记进 state(坑 #44)"
+else
+    no "keel-confirm 缺少条目名兜底(坑 #44)"
+fi
+
 head1 "7. 账号模型(决策 D21:admin 是唯一交互账号,root 锁定)"
 # ---------------------------------------------------------------------------
 if grep -qE '^[[:space:]]*sudo$' mkosi.conf.d/20-packages.conf; then

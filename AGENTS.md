@@ -29,7 +29,7 @@
 | 项目内部单元 | `keel-*.service` / `/usr/lib/keel/` |
 | 持久状态目录 | `/data/keel/` |
 | 分区标签 | `esp`、`root-a`、`root-b`、`data` |
-| ESP 上的 UKI | `/efi/EFI/Linux/keel-a.efi`、`keel-b.efi`(带计数时 `keel-a+3.efi`) |
+| ESP 上的 UKI | `/efi/EFI/Linux/keel-a.efi`、`keel-b.efi`(带计数时 `keel-b+3.efi`);安装镜像里那份由 `UnifiedKernelImageFormat=keel-a` 钉住(坑 #44) |
 | 唯一登录账号 | `admin`(uid 1000,`sudo` 需要密码);**root 锁定**,SSH 侧 `PermitRootLogin no` |
 
 ---
