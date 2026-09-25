@@ -888,6 +888,45 @@ if grep -q 'systemd-detect-virt' mkosi.extra/usr/share/keel/keel-check &&
 else
     no "keel-check 缺少环境区分(虚拟机里会把正常情况报成警告 —— 2026-09 实测)"
 fi
+# 非 root 跑也要说真话(2026-09 在装好的系统上以 admin 跑过一次,抓到四条误报):
+#   * swapon 在 /usr/sbin,非交互 ssh 的 PATH 里没有 ⇒ 有 swap 被报成「没有」
+#   * /etc/sudoers.d/10-keel-admin 是 0440 root:root ⇒ `-r` 判成「缺」 ⇒ 假失败
+#   * blockdev 读块设备要权限 ⇒ 拿到 0 字节,却打出「分区 0 MiB,尺寸一致」的**假 ✓**
+#   * [ -w /sys/firmware/efi/efivars ] 是 0700 root:root ⇒ 能写也被报成「否」
+if grep -q '/proc/swaps' mkosi.extra/usr/share/keel/keel-check &&
+   ! grep -q 'swapon --show' mkosi.extra/usr/share/keel/keel-check; then
+    ok "keel-check 从 /proc/swaps 读 swap(不依赖 PATH 里的 /usr/sbin/swapon)"
+else
+    no "keel-check 用 swapon 判 swap ⇒ 非 root / 非交互 shell 下会把有 swap 报成没有"
+fi
+if grep -q '\[ -e /etc/sudoers.d/10-keel-admin \]' mkosi.extra/usr/share/keel/keel-check; then
+    ok "keel-check 判 sudoers 规则用 -e(非 root 用 -r 会得到「缺」的假失败)"
+else
+    no "keel-check 用 -r 判 /etc/sudoers.d/10-keel-admin ⇒ 非 root 下假失败"
+fi
+if grep -q '读不到 data 分区的设备大小' mkosi.extra/usr/share/keel/keel-check; then
+    ok "keel-check 读不到分区大小时报「跳过」,不会拿 0 比出假 ✓"
+else
+    no "keel-check 拿读不到的 0 字节和设备大小比 ⇒ 非 root 下会打出假 ✓"
+fi
+if grep -q 'findmnt -no OPTIONS /sys/firmware/efi/efivars' mkosi.extra/usr/share/keel/keel-check &&
+   ! grep -q '^[^#]*\[ -w /sys/firmware/efi/efivars \]' mkosi.extra/usr/share/keel/keel-check; then
+    ok "keel-check 从挂载选项判 EFI 变量可写性(不靠 0700 目录的 [ -w ])"
+else
+    no "keel-check 用 [ -w efivars ] 判可写性 ⇒ 非 root 下会说错"
+fi
+# 非 root 实跑:整份脚本必须能跑到汇总(不崩、也不半途而废)
+if have setpriv; then
+    setpriv --reuid=65534 --regid=65534 --clear-groups bash mkosi.extra/usr/share/keel/keel-check >"$cld/nonroot.out" 2>&1 || true
+    if grep -q '汇总' "$cld/nonroot.out"; then
+        ok "以非 root(uid 65534)实跑 keel-check 能跑完整份并给出汇总"
+    else
+        no "非 root 跑 keel-check 没跑到汇总:"
+        tail -5 "$cld/nonroot.out" | sed 's/^/      /'
+    fi
+else
+    skip "没装 setpriv(util-linux),跳过「非 root 实跑 keel-check」这条"
+fi
 
 # 便宜的检查必须在下载之前(坑 #51):迁移与 schema 检查只看 manifest,而下载是 13 GiB
 OU=mkosi.extra/usr/bin/os-update
@@ -1048,7 +1087,7 @@ FIN_R2=$(tmpd); FIN_S2=$(tmpd)
 fake_tree "$FIN_R2" localhost
 echo 1 >"$FIN_S2/schema-version"
 if [ "$(id -u)" != 0 ]; then
-    skip "非 root:跳过「标注不对时构建必须失败」的实跑(同一个 chown 限制)"
+    skip "非 root:跳过「标识不对时构建必须失败」的实跑(同一个 chown 限制)"
 elif BUILDROOT="$FIN_R2" SRCDIR="$FIN_S2" bash "$FIN" >"$FIN_R2/out" 2>&1; then
     no "finalize 在 /etc/hostname 是 localhost 时仍然成功了 ⇒ 标识断言没生效"
 elif grep -q 'hostname' "$FIN_R2/out"; then

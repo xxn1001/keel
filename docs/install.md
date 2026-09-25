@@ -337,7 +337,29 @@ sudo ~/keel-check --nix-install-test   # 顺带真的装一个包(nix-shell -p f
 虚拟机(微码/TPM 由宿主决定)与"看门人每次启动 3 分钟后才写结论"都不再报成警告。
 `tools/verify.sh` 里补了**功能测试**(在假 cmdline 上验证 token 匹配语义)与静态断言。
 
-⇒ 修完之后这一轮的预期是 **0 ✗ / 0 !(虚拟机里只剩 1 个可选"-")**;下次装机(§8)会复核。
+### 9.2 修完之后在同一台机器上复核(2026-09-25,guest 里以 admin 跑)
+
+脚本改完后没有再重装那台机器,而是把新版脚本拷进 guest、以 **admin(非 root)** 直接跑:
+
+| 结果 | 数量 | 说明 |
+|---|---|---|
+| ✓ | 47 | 与 9.1 同一台机器、同一批检查(UEFI 变量可写:是(rw)、swap 5861 MiB、data 分区与文件系统一致) |
+| ✗ | 0 | 结论行:`这台机器通过了全部硬性检查` |
+| ! | 0 | 微码/vTPM 两条已按"虚拟机里由宿主决定"报跳过 |
+| - | 5 | 全是"非 root 看不到"的东西:`/etc/shadow`、微码的 dmesg、vTPM、可选的 nix 装包测试、分区设备尺寸 |
+
+当场还确认了那台机器的 `cat /proc/cmdline` 末尾确实有 `panic=-1`(在 `root=PARTLABEL=root-a` 前面),
+所以 9.1 那条 ✗ 100% 是判据的问题。**非 root 这一轮又抓出四条只在非 root 下才现形的误报**:
+`swapon` 在 `/usr/sbin`(非交互 ssh 的 PATH 里没有)⇒ 有 swap 报成没有;
+`/etc/sudoers.d/10-keel-admin` 是 0440 root:root ⇒ 用 `-r` 判成"缺"⇒ 报"admin 无法 sudo";
+`blockdev` 读块设备要权限 ⇒ 拿到 0 却打出"分区 0 MiB,尺寸一致"的**假 ✓**;
+`[ -w /sys/firmware/efi/efivars ]` 是 0700 ⇒ 能写也报"否"。四条都已改成"读挂载选项 / 读 /proc/swaps /
+用 `-e` / 读不到就报跳过",并在 `tools/verify.sh` 里加了静态断言 + 一条**以 uid 65534 实跑整份脚本**的
+冒烟测试(必须跑到汇总,不能中途崩)。
+
+⇒ 以 root 跑(`sudo ~/keel-check`)在虚拟机里的预期是 **0 ✗ / 0 ! / 3 个跳过**
+(虚拟机微码、虚拟机 vTPM、可选的 nix 装包测试;启动不到 3 分钟时还会多一条"看门人还没到点")。
+
 值得单独记一笔:这是**第一次**在"装好的系统"而不是 mkosi 的临时 VM 里跑体检 ——
 `last_result=success`(首启把 `os-install` 写的 pending 收掉)、ESP 上只有一个 `keel-a.efi`、
 `/data` 扩到整盘这些**装机路径**的结论都来自这一轮。

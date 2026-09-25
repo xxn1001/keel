@@ -15,6 +15,16 @@ set -uo pipefail
 # shellcheck source=/usr/lib/keel/lib.sh
 # shellcheck disable=SC1091
 . /usr/lib/keel/lib.sh 2>/dev/null || true
+# lib.sh 没读到(镜像半坏、或者那个文件权限不对)时,`set -u` 会在第一次用到
+# $KEEL_UKI_DIR 时把整份体检**直接打死** —— 而"半坏的机器"恰恰是最需要它的时候
+# (2026-09 以非 root 跑时实测到这个形状:lib.sh 不是 o+r 的机器上会崩)。兜底值:
+: "${KEEL_STATE_DIR:=/data/keel}"
+: "${KEEL_CONFIG:=$KEEL_STATE_DIR/config}"
+: "${KEEL_STATE:=$KEEL_STATE_DIR/state}"
+: "${KEEL_OTA:=/data/ota}"
+: "${KEEL_UKI_DIR:=/boot/EFI/Linux}"
+: "${KEEL_ESP:=/boot}"
+: "${KEEL_ESP_MOUNTED:=unknown}"
 
 pass=0; fail=0; skip=0; warn=0
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; pass=$((pass+1)); }
@@ -53,7 +63,18 @@ printf '  %-14s %s\n' "hostname" "$(hostname 2>/dev/null || echo 未知)"
 printf '  %-14s %s\n' "系统版本" "$(keel_version 2>/dev/null || echo 未知)(/usr/lib/os-release 的 IMAGE_VERSION)"
 printf '  %-14s %s\n' "当前槽" "$(keel_current_slot 2>/dev/null || echo 未知)"
 printf '  %-14s %s\n' "内核" "$(uname -r)"
-printf '  %-14s %s\n' "启动方式" "$([ -d /sys/firmware/efi ] && echo "UEFI(EFI 变量可写:$([ -w /sys/firmware/efi/efivars ] && echo 是 || echo 否))" || echo "**不是 UEFI**")"
+# EFI 变量能不能写:**看挂载选项**(findmnt 谁都能读),别用 [ -w /sys/firmware/efi/efivars ]
+# —— 那个目录是 0700 root:root,非 root 会得到"否",把一台能改引导项的机器说成不能(2026-09 实测)。
+efi_w=""
+if [ -d /sys/firmware/efi ]; then
+    efiopts=$(findmnt -no OPTIONS /sys/firmware/efi/efivars 2>/dev/null || true)
+    case ",$efiopts," in
+        *,rw,*) efi_w="是(rw)" ;;
+        *,ro,*) efi_w="**否(ro)** —— A/B 切槽要写 EFI 变量,ro 时只能靠固件的 fallback 路径" ;;
+        *)      efi_w="未知(读不到 efivars 的挂载选项)" ;;
+    esac
+fi
+printf '  %-14s %s\n' "启动方式" "$([ -d /sys/firmware/efi ] && echo "UEFI(EFI 变量可写:$efi_w)" || echo "**不是 UEFI**")"
 printf '  %-14s %s\n' "运行时长" "$(uptime -p 2>/dev/null || cut -d' ' -f1 /proc/uptime)"
 
 if [ "$(hostname 2>/dev/null)" = keel ]; then ok "hostname 是 keel"; else wn "hostname 不是 keel(决策 D22 定的默认值)"; fi
@@ -116,7 +137,11 @@ if [ -n "${dsize:-}" ]; then
     ddev=$(keel_part_dev data 2>/dev/null || true)
     if [ -n "$ddev" ]; then
         dbytes=$(blockdev --getsize64 "$ddev" 2>/dev/null || echo 0)
-        if [ "${dbytes:-0}" -gt 0 ] && [ "${dsize:-0}" -lt $((dbytes - dbytes / 20)) ]; then
+        if [ "${dbytes:-0}" -le 0 ]; then
+            # blockdev 读块设备要权限(非 root 读 /dev/sda4 会失败)。**读不到就说读不到**,
+            # 不能拿 0 去比 —— 那会打出一个"分区 0 MiB,尺寸一致"的假 ✓(2026-09 实测)。
+            sk "读不到 data 分区的设备大小(非 root 读 /dev/* 受限)⇒ 没法核对分区是否扩到位"
+        elif [ "${dsize:-0}" -lt $((dbytes - dbytes / 20)) ]; then
             no "data 分区 $((dbytes / 1048576)) MiB,而文件系统只有 $((dsize / 1048576)) MiB —— 文件系统没扩到位(坑 #42;修复:sudo os-rescue --grow-data)"
         else
             ok "data 分区与文件系统尺寸一致(分区 $((dbytes / 1048576)) MiB)"
@@ -134,7 +159,10 @@ elif systemctl is-active --quiet keel-data-guard.timer 2>/dev/null; then
 else
     wn "空间看门人既没结论、定时器也不在(keel-data-guard.timer 启用了没)"
 fi
-if [ -n "$(swapon --show 2>/dev/null)" ]; then ok "swap 已启用:$(( $(swapon --show=SIZE --noheadings --bytes 2>/dev/null | head -1 || echo 0) / 1048576 )) MiB"; else wn "没有 swap(空间紧张时不建是正常的,见决策 D9)"; fi
+# swap:**直接读 /proc/swaps**(它对谁都可读),别用 swapon(命令在 /usr/sbin,
+# 非交互 ssh 的 PATH 里常常没有 ⇒ 会把"有 swap"报成"没有",2026-09 实测)。
+swap_kb=$(awk 'NR>1 { s += $3 } END { printf "%d", s+0 }' /proc/swaps 2>/dev/null || echo 0)
+if [ "${swap_kb:-0}" -gt 0 ]; then ok "swap 已启用:$((swap_kb / 1024)) MiB"; else wn "没有 swap(空间紧张时不建是正常的,见决策 D9)"; fi
 
 # ---------------------------------------------------------------------------
 head1 "4. 账号与 SSH(决策 D21)"
@@ -162,8 +190,14 @@ if isroot; then
 else
     sk "账号密码/root 锁定检查需要 root(用 sudo 跑能看)"
 fi
-if [ -r /etc/sudoers.d/10-keel-admin ]; then
-    ok "sudoers 规则在(/etc/sudoers.d/10-keel-admin,需要密码)"
+if [ -e /etc/sudoers.d/10-keel-admin ]; then
+    # 判"在不在"用 -e:这个文件是 0440 root:root,非 root 用 -r 会被判成"缺"
+    # ⇒ 一台本来能 sudo 的机器被告知"admin 无法 sudo"(2026-09 实测)。
+    if [ -r /etc/sudoers.d/10-keel-admin ]; then
+        ok "sudoers 规则在(/etc/sudoers.d/10-keel-admin,需要密码)"
+    else
+        ok "sudoers 规则在(/etc/sudoers.d/10-keel-admin;内容要 root 才能读)"
+    fi
 else
     no "缺 /etc/sudoers.d/10-keel-admin ⇒ admin 无法 sudo"
 fi
@@ -267,6 +301,9 @@ elif is_vm; then
     sk "微码:镜像里有 $mc_pkg;虚拟机($(virt))里 CPU 由宿主模拟,不验证加载(真机上会检查 dmesg)"
 elif [ -n "$mc" ]; then
     ok "微码:$mc"
+elif ! isroot; then
+    # dmesg_restrict / 非 root 时 dmesg 可能是空的 —— 那是权限问题,不是微码问题
+    sk "微码:镜像里有 $mc_pkg;但非 root 看不了 dmesg(用 sudo 跑这条会去查加载记录)"
 else
     wn "微码:镜像里有 $mc_pkg,但本次启动的 dmesg 里没有微码行(真机上值得查一下)"
 fi
