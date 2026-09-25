@@ -214,11 +214,30 @@ do_mark_bad() {
     echo "  引导器以后不再优先选它。如果另一个槽并不可用,你会把自己锁在门外。"
     echo "  ************************************************************"
 
-    if ! command -v systemd-bless-boot >/dev/null 2>&1; then
-        keel_die "找不到 systemd-bless-boot(systemd-boot 包没装?)"
+    # systemd 把 systemd-bless-boot 放在 /usr/lib/systemd/ 下,**不在 PATH 里** ——
+    # 用 `command -v` 找它会得到"没装"这个错误结论(2026-09 演练实测:二进制明明在,
+    # 单元文件里也是按绝对路径调的)。所以先试绝对路径,再退回 PATH。
+    local bless=/usr/lib/systemd/systemd-bless-boot
+    if [ ! -x "$bless" ]; then
+        if command -v systemd-bless-boot >/dev/null 2>&1; then
+            bless=$(command -v systemd-bless-boot)
+        else
+            keel_die "既没有 $bless 也不在 PATH 里 —— systemd 包不完整?"
+        fi
     fi
-    systemd-bless-boot bad ||
-        keel_die "systemd-bless-boot bad 失败:多半是这次启动没有 boot counting(LoaderBootCountPath 不存在),用 bootctl status 看当前条目名"
+    if ! "$bless" bad; then
+        echo "  ------------------------------------------------------------"
+        echo "  systemd-bless-boot bad 失败了。最常见的原因是**这次启动没有启动计数**:"
+        echo "  引导器只在'候选槽那一次尝试'里给我们留 LoaderBootCountPath;一旦槽被确认"
+        echo "  (systemd-bless-boot 把 keel-x+N.efi 改名成 keel-x.efi),就没有计数可标记了。"
+        echo "  想表达'这个槽我不想再用',正确做法是把**持久默认**指向另一个槽:"
+        echo "    sudo os-update switch ${other}      # 或 bootctl set-default keel-${other}.efi"
+        echo "    sudo systemctl reboot"
+        echo "  反过来,如果你此刻正跑在一个**还没确认的候选槽**上(bootctl list 里名字带 +N),"
+        echo "  这条命令才是它设计中的用途。"
+        echo "  ------------------------------------------------------------"
+        keel_die "槽 ${slot} 没有标记成功(原因见上)"
+    fi
 
     keel_log "槽 ${slot} 已标记为 bad"
     echo "接下来:"

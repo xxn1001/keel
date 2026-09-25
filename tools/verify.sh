@@ -729,6 +729,15 @@ fi
 
 # 槽切换用的 bootctl 动词(坑 #43):Debian 的 systemd 257 没有 set-preferred,
 # 所以候选槽必须走 set-oneshot、持久选择走 set-default,而且都收敛到 lib.sh 的 helper。
+# systemd-bless-boot 在 /usr/lib/systemd/ 下,不在 PATH 里(坑 #60):
+# os-rescue --mark-bad 以前用 `command -v systemd-bless-boot` 判「装没装」⇒ 永远说找不到。
+n_abs=$(grep -n '/usr/lib/systemd/systemd-bless-boot' mkosi.extra/usr/bin/os-rescue | head -1 | cut -d: -f1)
+n_cmd=$(grep -n 'command -v systemd-bless-boot' mkosi.extra/usr/bin/os-rescue | head -1 | cut -d: -f1)
+if [ -n "$n_abs" ] && { [ -z "$n_cmd" ] || [ "$n_abs" -lt "$n_cmd" ]; }; then
+    ok "os-rescue 先按绝对路径找 systemd-bless-boot(它不在 PATH 里;command -v 只作兜底,坑 #60)"
+else
+    no "os-rescue 用 command -v 找 systemd-bless-boot ⇒ 二进制明明在也会报「找不到」(坑 #60)"
+fi
 if grep -q '^keel_boot_candidate() { bootctl set-oneshot' mkosi.extra/usr/lib/keel/lib.sh &&
    grep -q '^keel_boot_default() { bootctl set-default' mkosi.extra/usr/lib/keel/lib.sh; then
     ok "lib.sh 定义了 keel_boot_candidate(set-oneshot)/keel_boot_default(set-default)(坑 #43)"

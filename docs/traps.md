@@ -1093,3 +1093,29 @@
     ② 交互确认这类保护在无人值守场景下会变成"静默不执行",脚本必须**查退出码**;
     ③ 真机流程里那些"顺手做掉的物理动作"(拔 U 盘、改启动顺序)在虚拟化里必须显式建模,
     否则测的就不是同一条路径。
+
+60. **"命令在不在"要用对判据:`systemd-bless-boot` 在 `/usr/lib/systemd/` 下,不在 `PATH` 里(2026-09,演练跑 `os-rescue --mark-bad` 时)。**
+    现象:`sudo os-rescue --mark-bad` 直接报
+    ```
+    keel: 错误:找不到 systemd-bless-boot(systemd-boot 包没装?)
+    ```
+    而同一台机器上:
+    ```
+    # ls -l /usr/lib/systemd/systemd-bless-boot
+    -rwxr-xr-x 1 root root 31224 … /usr/lib/systemd/systemd-bless-boot
+    # grep ExecStart /usr/lib/systemd/system/systemd-bless-boot.service
+    ExecStart=/usr/lib/systemd/systemd-bless-boot good
+    ```
+    二进制在、单元文件按绝对路径调它、boot counting 也确实在工作 —— 只有我们那句
+    `command -v systemd-bless-boot`(PATH 查找)是错的。systemd 故意把内部工具放在
+    `/usr/lib/systemd/` 下不暴露给 PATH,所以这类判断**必须按绝对路径**。
+    ⇒ 修法:先试 `/usr/lib/systemd/systemd-bless-boot`,再退回 `command -v`;
+    并且**失败时给出可执行的替代方案**:不是所有启动都有 boot counting(槽一旦被确认,
+    就没有 LoaderBootCountPath 了),那种情况下"标记 bad"没有落点,想弃用某个槽应该
+    `sudo os-update switch <另一个槽>`(把持久默认指过去)再重启 ——
+    原来那句"多半是这次启动没有 boot counting"只说对了一半,用户看完还是不知道该干什么。
+    `tools/verify.sh` 加断言:绝对路径必须出现在 `command -v` 之前。
+    **教训**:① `command -v` / `which` 只查 PATH —— 判"这个工具在不在"时,先想清楚
+    **发行版/上游把它放在哪**(systemd 的内部工具是最常见的例外);
+    ② 报错信息要**替用户走完下一步**(这条命令为什么没意义、那该用什么),否则等于把
+    "实现细节"丢给用户翻译。
