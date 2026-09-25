@@ -179,5 +179,25 @@ sudo tools/build-container.sh -p <临时密码> drill
 | p2 | 已回旧槽:记录证据 | 当前槽 a、版本回到引导镜像那个(2000.01.01.0001) |
 
 证据全在控制台(宿主终端的 `mkosi vm` 输出)与 guest 的 `/data/keel/ota-drill.log` 里。
+
+### v1 实测结果(2026-09,VM;`tools/build-container.sh -p <密码> drill`)
+
+| 阶段 | 实测证据 |
+|---|---|
+| p0 | `远端版本 2026.09.25.0720(schema 1)` / `当前版本 2000.01.01.0001(槽 a)`;4 个产物(约 13 GiB)约 11 秒下完 → `sha256 全部匹配(4 个产物)` → `载荷已就位:/data/ota/2026.09.25.0720`;`当前槽 a → 目标槽 b`;`根分区写入完成`;`UKI 已写入 /boot/EFI/Linux/keel-b+3.efi`;`候选条目(ID keel-b.efi,文件 keel-b+3.efi)已设为下次启动` |
+| p1 | `当前槽 b`、`系统版本 2026.09.25.0720`、`上次启动结果 success`;ESP 上是 `keel-a.efi` + `keel-b.efi`(计数条目已被 `systemd-bless-boot` 改名成正式名字);演练判定"更新成功" |
+| p1 回滚 | `回滚:把下次启动指向槽 a(当前槽 b,2026.09.25.0720)`;pending 清空、`last_result=failed`(主动回滚的语义:认为当前这版不行) |
+| p2 | `当前槽=a,版本=2000.01.01.0001,last_result=failed` → 演练结束 → 自己 `poweroff`(宿主 `mkosi vm` 退出码 0) |
+
+**这一轮演练本身还挖出并修掉了 5 个真 bug**(每一个都只会在"第一次真的执行"时暴露):
+坑 #41 `keel-confirm` 从来没跑过(`boot-complete.target` 只在计数启动被拉起)、
+#42 `systemd-growfs` 不在镜像里(分区扩了、文件系统没扩)、
+#43 `bootctl set-preferred` 在 systemd 257 里不存在、
+#44 ESP 里 UKI 的名字由 `UnifiedKernelImageFormat` 决定(装好的机器上不叫 `keel-a.efi`)、
+#45 `bootctl` 的条目 ID 与文件名不是一回事(传错时 one-shot 被静默忽略 → 假回滚)。
+**还没做**:破坏性回滚演练(让新槽连着起不来,看引导器自动退回旧槽)、
+schema 迁移演练、ESP 容量账、`/data` 写满演练。
+
+
 **还没做的**:破坏性回滚演练(让新槽连着三次到不了 `boot-complete`,看引导器自动退回旧槽)——
 见 `docs/roadmap.md`。

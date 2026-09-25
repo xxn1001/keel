@@ -214,6 +214,11 @@ sudo tools/burn.sh /dev/nvme0n1
       pcrlock 全部 masked、**`systemctl --failed` = 0 个单元**(此前 6 个);
       `keel-data-guard.service` 手动拉起 → `success`,`state` = `verdict=small`;
       两个定时器已排期;无回归(ESP 挂 `/boot`、machine-id 32 位、`/etc` WRITE_OK、DHCP routable)
+- [x] **OTA 演练 v1 走通(2026-09,VM,`tools/build-container.sh drill`)**:A→B→A 全链路实测通过 ——
+      check(版本比较)→ fetch(13 GiB / 11 秒 / sha256 全对)→ stage(写 root-b + `keel-b+3.efi` +
+      候选条目 one-shot)→ 重启进新槽(bless 成 `keel-b.efi`、`last_result=success`)→
+      `os-update rollback` → 重启回槽 a(版本回退、`last_result=failed`)。
+      演练顺带挖出并修掉坑 #41–#45(详见 `docs/traps.md` 与 `docs/update.md` §9)
 - [x] **第一次真机构建 / 虚拟机启动 / 装机**(2026-09,VM:构建 → live 启动 → `os-install` → 目标盘首启 ✓;
       途中修掉坑 #31–#34。**真机(U 盘 + 笔记本)仍未做过**)
 - [ ] `desktop` profile(笔记本用)
