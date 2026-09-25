@@ -1,7 +1,7 @@
 # keel 路线图:v1 之后要做的事
 
 > 这里只放**已经想清楚、但 v1 刻意不做**的事。每条都写清:为什么现在不做、做的时候要注意什么。
-> v1 的已知限制同时写在 `dist/keel-<版本>/install.md` 与 release notes 里。
+> v1 的已知限制写在 [`release-notes-v1.md`](release-notes-v1.md)(并随构建进入 `dist/keel-<版本>/`)。
 > 决策与理由见 [`decisions.md`](decisions.md),踩过的坑见 [`AGENTS.md`](../AGENTS.md) §3。
 
 ## 1. 安全(目前 v1 明确不做)

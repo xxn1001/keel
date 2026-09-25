@@ -196,9 +196,13 @@ SCHEMA=$(cat schema-version 2>/dev/null || echo 1)
 
 ( cd "$D" && sha256sum keel.raw >keel.raw.sha256 )
 
-# 人类可读的安装说明顺带放进去
+# 人类可读的说明顺带放进去(安装 / 更新 / 发布说明:已知限制的权威清单)
 [ -f docs/install.md ] && cp -f docs/install.md "$D/install.md"
 [ -f docs/update.md ] && cp -f docs/update.md "$D/update.md"
+for rn in docs/release-notes*.md; do
+    [ -f "$rn" ] || continue
+    cp -f "$rn" "$D/${rn##*/}"
+done
 
 log "完成:$D"
 
