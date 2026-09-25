@@ -130,6 +130,25 @@ sed -e "s/^version=.*/version=${GOOD_VER}.mig/" \
     "/work/$DRILL_PAYLOAD/manifest" >/tmp/drill-serve/mig/manifest
 echo "   迁移载荷版本:${GOOD_VER}.mig(manifest 里 migrate=mkdir:/data/keel/migtest:0755)"
 
+# 额外的一次"回读确认":看门狗配置**必须真的进了 initrd**(否则坏槽冻结时没人复位,
+# 演练会卡死在黑屏 —— 坑 #50 的现场)。这里直接从 UKI 里抽 .initrd 出来查文件名。
+if command -v objcopy >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends binutils >/dev/null 2>&1; then
+    if objcopy -O binary --only-section=.initrd /work/mkosi.output/keel.efi /tmp/keel-initrd.bin 2>/dev/null &&
+       [ -s /tmp/keel-initrd.bin ]; then
+        if command -v zstd >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends zstd >/dev/null 2>&1; then :; fi
+        if zstd -d -c /tmp/keel-initrd.bin >/tmp/keel-initrd.cpio 2>/dev/null ||
+           cp /tmp/keel-initrd.bin /tmp/keel-initrd.cpio; then :; fi
+        if command -v cpio >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends cpio >/dev/null 2>&1; then :; fi
+        if cpio -t < /tmp/keel-initrd.cpio 2>/dev/null | grep -q 'keel-watchdog'; then
+            echo "   initrd 里确认有 keel-watchdog.conf(冻结时看门狗能复位)"
+        else
+            echo "   警告:在 initrd 里没找到 keel-watchdog.conf —— 坏槽冻结时不会被复位,演练可能卡死" >&2
+        fi
+    else
+        echo "   警告:抽不出 .initrd(跳过这项检查)" >&2
+    fi
+fi
+
 step "7/7 起 VM(演练状态机自己跑;p3 结束时会 poweroff,所以这次 VM 会自己退出)"
 set +e
 timeout "$DRILL_VM_TIMEOUT" mkosi --profile install --profile test \
