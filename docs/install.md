@@ -49,9 +49,9 @@
 | 项 | 说明 |
 |---|---|
 | 构建产物 | `tools/verify.sh && tools/build.sh` → `dist/keel-<version>/keel.raw` |
-| **第一次要先 build** | `ToolsTree=default` 的 tools tree **只在 `build` 动作里**自动构建。tools tree 还没建时直接跑 `vm`,mkosi 会拒绝并提示你先 build(`AGENTS.md` 已知的坑 #19)。所以第一次是两条命令:`mkosi --profile install --profile test build`,成功之后 `mkosi --profile install --profile test vm`。`tools/build-container.sh vm` 已经替你做了这两步 |
-| **`--force` 不是可选项** | mkosi 的 `build` 是"**没有才建**":`mkosi.output/keel.raw` 已存在时它只打印 `‣ Output path … exists already. (Use --force to rebuild.)` 然后**返回成功、什么都不建**。版本号只写在镜像内部(文件名里没有版本),所以不加 `-f` 的结果是"版本号是新的、内容是旧的",你会拿着一份旧镜像去开机/装机(`AGENTS.md` 坑 #23)。`-f` 只重建输出、不动增量缓存;连缓存一起删是 `-ff`,我们不用 |
-| QEMU + OVMF | **不用手动装**:`ToolsTree=default`(推荐,`AGENTS.md` 坑 #10)时由 mkosi 的 tools tree 提供;mkosi 27 的 Debian runtime profile 里就是 `qemu-system` + `ovmf` |
+| **第一次要先 build** | `ToolsTree=default` 的 tools tree **只在 `build` 动作里**自动构建。tools tree 还没建时直接跑 `vm`,mkosi 会拒绝并提示你先 build(`docs/traps.md` 坑 #19)。所以第一次是两条命令:`mkosi --profile install --profile test build`,成功之后 `mkosi --profile install --profile test vm`。`tools/build-container.sh vm` 已经替你做了这两步 |
+| **`--force` 不是可选项** | mkosi 的 `build` 是"**没有才建**":`mkosi.output/keel.raw` 已存在时它只打印 `‣ Output path … exists already. (Use --force to rebuild.)` 然后**返回成功、什么都不建**。版本号只写在镜像内部(文件名里没有版本),所以不加 `-f` 的结果是"版本号是新的、内容是旧的",你会拿着一份旧镜像去开机/装机(`docs/traps.md` 坑 #23)。`-f` 只重建输出、不动增量缓存;连缓存一起删是 `-ff`,我们不用 |
+| QEMU + OVMF | **不用手动装**:`ToolsTree=default`(推荐,`docs/traps.md` 坑 #10)时由 mkosi 的 tools tree 提供;mkosi 27 的 Debian runtime profile 里就是 `qemu-system` + `ovmf` |
 | `/dev/kvm` | 有才快;没有会极慢,见 §1.2 |
 
 ### 1.2 启动、退出与追加 QEMU 参数
@@ -60,7 +60,7 @@
 # -p 给 **admin** 设一个**临时密码**,才能从文本控制台登录(用户名 admin / 你给的那个密码)。
 # 不加 -p 就没有密码:这时只能靠 authorized_keys 里的 SSH 公钥进(见 §2.5)。
 # 密码只从这个命令行参数来,仓库里不存(公开仓库 = 密码公开);它会同时传给 build 与 vm 两步 —— 
-# mkosi 的 vm 读的是上一次 build 的 history,只在 vm 上传会被忽略(AGENTS.md 坑 #30)。
+# mkosi 的 vm 读的是上一次 build 的 history,只在 vm 上传会被忽略(docs/traps.md 坑 #30)。
 sudo tools/build-container.sh -p <临时密码> vm     # = verify + --force build + vm
 
 # 宿主本身是 Debian 系(不用容器)时,等价的原始命令是这两条:
@@ -70,7 +70,7 @@ sudo mkosi --profile install --profile test --root-password=<临时密码> vm
 
 > **进虚拟机**:等 `keel login:`,输 `admin` / 你刚给的那个临时密码。
 > root 是**锁定**的(凭密码和密钥都进不去,`PermitRootLogin no`,决策 D21);要提权用 `sudo`。
-> (以前用 mkosi 的 `Autologin=yes`,因为镜像里缺 `/bin/login` 而变成死循环,见 `AGENTS.md` 坑 #26/#28;
+> (以前用 mkosi 的 `Autologin=yes`,因为镜像里缺 `/bin/login` 而变成死循环,见 `docs/traps.md` 坑 #26/#28;
 > VSock ssh 那条路也去掉了,见坑 #27。)
 
 虚拟机里就是一台完整的 keel:`esp` / `root-a` / `root-b` / `data` 四个分区都在,
@@ -124,12 +124,12 @@ sudo os-install /dev/nvme0n1
 
 > **live 镜像里必须有 `/usr/lib/keel/repart-install.d`**:那是 `os-install` 建表用的分区定义,
 > 由 `mkosi.postinst` 在构建时从仓库的 `repart/install/` 拷进去(并去掉 `CopyFiles=`,
-> 原因见 `AGENTS.md` 坑 #31)。早于这个改动的产物没有它,敲 `os-install` 会直接报
+> 原因见 `docs/traps.md` 坑 #31)。早于这个改动的产物没有它,敲 `os-install` 会直接报
 > 「找不到 repart 定义目录」—— 重新构建即可。
 >
 > live 镜像里还必须带上格式化工具:`dosfstools`(`mkfs.vfat`,repart 格式化 ESP 用)与
 > `e2fsprogs`(`mkfs.ext4`,repart 与 `os-install` 都用)—— 它们只在建表那一刻才被调用,
-> 少了不会在构建期报错(见 `AGENTS.md` 坑 #32)。
+> 少了不会在构建期报错(见 `docs/traps.md` 坑 #32)。
 >
 > 这条路径 **尚未在真机/虚拟机上走通过**:2026-09 第一次在 VM 里演练,先后卡在上面那个缺目录、
 > 以及镜像缺 `dosfstools` 两处(都已修),完整流程还需要再跑一遍(见 `AGENTS.md` §5 的待验证清单)。
@@ -153,7 +153,7 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 
 > 公钥文件放在仓库根目录而不是 `mkosi.extra/` 里:因为镜像里的 `/home` 是 `/data/home` 的
 > bind mount、骨架在首启用 `cp -a -n` 播种,往 `mkosi.extra/home/...` 放的东西不会到 `/data` 上
-> (见 `AGENTS.md` 坑 #2/#3)。
+> (见 `docs/traps.md` 坑 #2/#3)。
 
 **关于 root**:v1 里 root 是**完全锁定**的 —— `/etc/shadow` 里是 `!`、`PermitRootLogin no`、
 连 mkosi 塞进 `/usr/lib/credstore/` 的那份 root 密码 credential 也在构建时删掉了
@@ -190,12 +190,12 @@ admin 的账号与密码哈希都在**镜像的只读 `/etc`** 里,所以即使 
 
 > 同一次 `keel-mounts` 还会把 **ESP(`PARTNAME=esp`)以可写方式挂到 `/boot`** —— `os-status` 的
 > 「ESP 挂载」与 UKI 列表都靠它;没挂上的话 `os-update` 会在写分区之前直接拒绝、槽确认也会失效
-> (`AGENTS.md` 坑 #36、决策 D18;修法见 `docs/troubleshooting.md` §2.3)。
+> (`docs/traps.md` 坑 #36、决策 D18;修法见 `docs/troubleshooting.md` §2.3)。
 >
 > 另外,比 firstboot 更早的 `keel-mounts.service` 会把 `/etc/machine-id` 从镜像里的占位符
 > `uninitialized` 换成真正的 ID(幂等;首启复用 PID1 已经用的那个)。这不是可选项:
 > machine-id 为空时 networkd 的 DHCPv4、IPv6 稳定隐私地址、resolved 的 DNSSEC 全部失效
-> (`AGENTS.md` 坑 #29、`architecture.md` §4.3)。ID 落在 `/etc` overlay 的 upper 上 ⇒
+> (`docs/traps.md` 坑 #29、`architecture.md` §4.3)。ID 落在 `/etc` overlay 的 upper 上 ⇒
 > 在 `/data` 里、每台机器唯一、换槽与更新都不会丢。
 
 ### 预期看到什么

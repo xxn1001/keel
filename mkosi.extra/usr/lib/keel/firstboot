@@ -11,7 +11,7 @@ set -euo pipefail
 #
 # cp -a -n(no-clobber):只补缺失的,绝不覆盖已有内容。
 # 这同时是"手贱清空了 data"和"忘了重建 dbus machine-id 链接"的修复入口
-# (AGENTS.md 已知的坑 #3)。
+# (docs/traps.md 坑 #3)。
 # ---------------------------------------------------------------------------
 if [ -d /usr/share/keel/data-skeleton ]; then
     cp -a -n /usr/share/keel/data-skeleton/. /data/ || true
@@ -67,7 +67,7 @@ fi
 # GrowFileSystem= 只是打一个 GPT 标志位,而那个标志只被 systemd-gpt-auto-generator
 # 消费 —— 我们的 /data 是 keel-mounts 自己用 `mount` 挂的(不变量 2),
 # 根本不过 gpt-auto-generator。所以文件系统必须自己调 systemd-growfs 扩。
-# (AGENTS.md 已知的坑 #14;真机首启后请用 df -h /data 复核。)
+# (docs/traps.md 坑 #14;真机首启后请用 df -h /data 复核。)
 #
 # 两步都幂等:分区表符合定义时 repart 什么都不做;文件系统到顶时 systemd-growfs
 # 也不做任何事。所以每次启动跑一遍是安全的,这也是"把镜像 dd 到更大的盘之后"的自愈入口。

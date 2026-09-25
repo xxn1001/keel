@@ -28,7 +28,7 @@ usage() {
 
   --init-data   幂等修补 /data 骨架:把镜像里的骨架用 no-clobber 方式补进去,
                   不删除任何已有文件。骨架缺失、/var/lib/dbus/machine-id 链接
-                  丢失(mkosi.finalize 里显式重建过,见 AGENTS.md 坑 #3)都走这里。
+                  丢失(mkosi.finalize 里显式重建过,见 docs/traps.md 坑 #3)都走这里。
   --reset-etc     请求"下次启动清空 /etc 的可写层"。本命令**不清空**:只写标志文件
                   /data/overlayfs/.reset-etc-requested,由 keel-mounts 在挂载前
                   先把旧 upper 备份成 etc.bak-<时间戳>,再清空。

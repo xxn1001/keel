@@ -55,7 +55,7 @@ mkdir -p mkosi.cache mkosi.pkgcache mkosi.output
 #   ‣ Output path /work/mkosi.output/keel.raw exists already. (Use --force to rebuild.)
 # 然后**返回 0**,什么都不做。而版本号只写在镜像内部(文件名里没有版本号),所以少了 -f
 # 就会静默复用上一次的产物 —— 你会拿着一份"版本号是新的、内容是旧的"镜像去装机(真机上
-# 已经这么白测过一轮,见 AGENTS.md 坑 #23)。
+# 已经这么白测过一轮,见 docs/traps.md 坑 #23)。
 # -f 只重建输出,不动增量缓存(mkosi.cache/);要连缓存一起删是 -ff,我们不用。
 log "构建 install 镜像"
 mkosi --profile install --image-version "$VERSION" --force "${ROOTPW_ARGS[@]}" build

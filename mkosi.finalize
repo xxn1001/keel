@@ -1,7 +1,7 @@
 #!/bin/bash
 # keel 构建的最后一步:生成 /data 骨架,把 /var /root 换成符号链接,/home 与 /nix 留成真实目录
 #
-# 时机至关重要(AGENTS.md 已知的坑 #2):必须在所有会写 /var、/etc 的构建步骤
+# 时机至关重要(docs/traps.md 坑 #2):必须在所有会写 /var、/etc 的构建步骤
 # (装包、postinst、systemd-sysusers、systemd-tmpfiles、preset-all、depmod、
 # systemd-firstboot、systemd-hwdb)之后。mkosi 的执行顺序保证 finalize 是最后一步;
 # finalize 之后只剩"生成 UKI"和"用 systemd-repart 生成镜像",它们都不会写 /var。
@@ -44,7 +44,7 @@ fi
 #
 # 骨架 = 镜像 /var 的快照(剔除包管理器状态目录)+ 我们额外需要的目录和链接。
 # 为什么需要它:运行时 /var 是指向 /data/var 的符号链接,
-# 镜像里 /var 的内容在运行时**根本看不见**(AGENTS.md 坑 #3),
+# 镜像里 /var 的内容在运行时**根本看不见**(docs/traps.md 坑 #3),
 # 所以 /data 必须被预先填好,否则首启时 journald / dbus / nix 全会出问题。
 # ---------------------------------------------------------------------------
 install -d -m 0755 "$SKEL" "$SKEL/var"
@@ -62,7 +62,7 @@ install -d -m 0755 "$SKEL/var/log/journal"
 # **admin 的家目录**(决策 D21:root 是锁定的,不再接受任何登录)。
 # 为什么必须放在骨架里:镜像里的 /home 是 /data/home 的 bind mount(不变量 1),
 # 构建期往镜像的 /home/admin 放东西会在首启被骨架的 cp -a -n 盖掉/丢掉
-# (AGENTS.md 坑 #2/#3)。没有这一步,新装好的系统**进不去** ——
+# (docs/traps.md 坑 #2/#3)。没有这一步,新装好的系统**进不去** ——
 # admin 没密码 + 没公钥 = 只能抱着键盘看登录提示。
 install -d -m 0755 "$SKEL/home"
 install -d -m 0700 "$SKEL/home/root"          # /root 仍然指向这里(见下面第 2 节)
@@ -99,7 +99,7 @@ install -d -m 0755 "$SKEL/modules"
 install -d -m 0755 "$SKEL/ota" "$SKEL/keel"
 
 # dbus 的 machine-id 链接:Debian 是 dbus 包 postinst 建的,而 /var 是全新的,
-# 这个链接会消失 ⇒ 必须显式重建(AGENTS.md 坑 #3)
+# 这个链接会消失 ⇒ 必须显式重建(docs/traps.md 坑 #3)
 install -d -m 0755 "$SKEL/var/lib/dbus"
 ln -sfn /etc/machine-id "$SKEL/var/lib/dbus/machine-id"
 

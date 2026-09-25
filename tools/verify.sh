@@ -61,7 +61,7 @@ else
     #   ① 源码树里不能存在名为 mkosi.repart 的目录(mkosi 会把它当隐式默认值);
     #   ② 每个产物 profile 必须恰好设一个 RepartDirectories=,且那个目录存在、里面有 .conf。
     # 背景:mkosi 把"存在 mkosi.repart/"当默认值 + 集合型设置是追加语义 ⇒ 两者叠加会让
-    # 两套分区布局同时生效。真机上的表现是 repart 拒绝同名 split(AGENTS.md 坑 #20)。
+    # 两套分区布局同时生效。真机上的表现是 repart 拒绝同名 split(docs/traps.md 坑 #20)。
     if [ -e mkosi.repart ]; then
         no "源码树里存在 mkosi.repart/ —— 它会成为 RepartDirectories= 的隐式默认值,和 profile 里设的目录叠加(坑 #20);请把布局放到 repart/ 下的子目录"
     else
@@ -493,7 +493,7 @@ fi
 missing_pkgs=0
 for pkg in systemd-boot systemd-boot-efi systemd-boot-tools; do
     if grep -qE "^[[:space:]]*${pkg}[[:space:]]*$" mkosi.conf.d/20-packages.conf; then :; else
-        no "包清单缺 $pkg(Debian 把 systemd-boot 拆成了三个包,见 AGENTS.md 坑 #18)"
+        no "包清单缺 $pkg(Debian 把 systemd-boot 拆成了三个包,见 docs/traps.md 坑 #18)"
         missing_pkgs=1
     fi
 done

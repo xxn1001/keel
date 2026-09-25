@@ -3,7 +3,7 @@
 #
 # 注意:mkosi 的脚本类设置默认值是按源目录里的 mkosi.<名字> 文件解析的,
 # 而默认 initrd 镜像与主镜像共用同一个源目录,所以这里必须自己做防呆
-# (见 AGENTS.md 已知的坑 #1;mkosi.initrd.conf 里也清空了脚本设置)。
+# (见 docs/traps.md 坑 #1;mkosi.initrd.conf 里也清空了脚本设置)。
 set -euo pipefail
 
 R="${BUILDROOT:?BUILDROOT 未设置}"

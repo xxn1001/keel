@@ -10,7 +10,7 @@ set -euo pipefail
 # /data:必须在这里挂 —— **不能**交给 kernel cmdline 的 systemd.mount-extra
 #
 # 曾经的写法是 cmdline 里 systemd.mount-extra=PARTLABEL=data:/data:ext4:rw,noatime,
-# 真机(VM)实测会死锁,详见 AGENTS.md 坑 #24:
+# 真机(VM)实测会死锁,详见 docs/traps.md 坑 #24:
 #   * 该 cmdline 在主系统里生成 data.mount 单元,它 Requires/After
 #     dev-disk-by-partlabel-data.device —— 要等 udev 建出 by-partlabel 符号链接;
 #   * 主系统 udev 要等 systemd-sysusers,而 sysusers 需要**可写的 /etc**;

@@ -23,7 +23,7 @@ keel_die() { printf 'keel: 错误:%s\n' "$*" >&2; exit 1; }
 #
 # 内核在 /sys/class/block/*/uevent 里直接给出 GPT 分区名(PARTNAME=),这是分区名的
 # 权威来源;`lsblk` 的 PARTLABEL 列来自 udev 的数据库,刚写完分区表时可能还是空的
-# (AGENTS.md 坑 #33)。blkid 只作为兜底:它直接读文件系统超级块,同样不需要 udev。
+# (docs/traps.md 坑 #33)。blkid 只作为兜底:它直接读文件系统超级块,同样不需要 udev。
 #
 # 为什么放在 lib.sh:keel-mounts(挂 /data 与 ESP)和 os-install / os-rescue 都要用
 # 同一套查找逻辑 —— 一份实现,一个坑只踩一次。
@@ -111,7 +111,7 @@ KEEL_ESP_MOUNTED=no
 KEEL_UKI_DIR="${KEEL_ESP:-$KEEL_ESP_MOUNT}/EFI/Linux"
 
 # 当前槽:只认 kernel cmdline 里的 root=PARTLABEL=root-<a|b> 这一个 token。
-# 槽身份完全靠 PARTLABEL(AGENTS.md 已知的坑 #5),解析不出来就输出空。
+# 槽身份完全靠 PARTLABEL(docs/traps.md 坑 #5),解析不出来就输出空。
 keel_current_slot() {
     tr ' ' '\n' </proc/cmdline 2>/dev/null \
         | sed -n 's/^root=PARTLABEL=root-\([ab]\)$/\1/p' \
@@ -159,7 +159,7 @@ keel_state_set() {
 #
 # mkosi 会把 `--image-version` 写进 /usr/lib/os-release 的 `IMAGE_VERSION=`
 # (/etc/os-release 是指向它的符号链接)。而 `VERSION_ID` 在 Debian 基底上是发行版号(13)——
-# 拿它当 keel 版本有两个后果(2026-09 装机后实测,见 AGENTS.md 坑 #35):
+# 拿它当 keel 版本有两个后果(2026-09 装机后实测,见 docs/traps.md 坑 #35):
 #   * os-status 显示"系统版本: 13",pending / last_result 里的版本也全是 13;
 #   * os-update 靠版本号判断"要不要更新",两边恒等于 13 会让它**永远认为已经是最新**。
 # 所以先读 IMAGE_VERSION,读不到(理论上不会)才退回 VERSION_ID。

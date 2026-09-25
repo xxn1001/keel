@@ -1,7 +1,7 @@
 [Unit]
 Description=keel: mount /data, mount the /etc overlay, bind /home and /nix
 Documentation=file:/usr/share/doc/keel/architecture.md
-# 必须极早运行,并且排在所有会读写 /etc 的单元之前(AGENTS.md 已知的坑 #8):
+# 必须极早运行,并且排在所有会读写 /etc 的单元之前(docs/traps.md 坑 #8):
 # systemd-sysusers / tmpfiles / machine-id-commit 都要读 /etc,
 # 而机器专属的配置只存在于 /data 上的 overlay upper 里。
 DefaultDependencies=no

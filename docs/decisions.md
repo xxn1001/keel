@@ -33,7 +33,7 @@
   - `/home`:符号链接会让 `ProtectHome=` 这类沙箱设置失效(服务仍能经 `/data/home` 摸到用户数据);
   - `/nix`:`nix` 硬性拒绝符号链接的 store 路径 ——
     `error: the path '/nix' is a symlink; this is not allowed for the Nix store and its parent directories`
-    (装机后实测,见 `AGENTS.md` 坑 #34);而 store 位置搬不动(二进制与脚本把 `/nix/store/…`
+    (装机后实测,见 `docs/traps.md` 坑 #34);而 store 位置搬不动(二进制与脚本把 `/nix/store/…`
     写死在 ELF interpreter 与 RPATH 里),只能让 `/nix` 本身是真目录。
 - **关键约束**:符号链接无法参与挂载顺序约束 ⇒ `/data` 必须极早挂载(见 D4)。
 
@@ -45,7 +45,7 @@
 - **原决策(已推翻)**:写进 UKI 的 kernel cmdline:
   `systemd.mount-extra=PARTLABEL=data:/data:ext4:rw,noatime`。
   当时的理由是"`systemd-fstab-generator` 在主系统和 initrd 里都会解析它,initrd 里自动加 `/sysroot/` 前缀"。
-- **推翻原因(真机 VM 实测,`AGENTS.md` 坑 #24)**:这两条理由都不成立 ——
+- **推翻原因(真机 VM 实测,`docs/traps.md` 坑 #24)**:这两条理由都不成立 ——
   initrd 阶段根本没有生成 `/sysroot/data`(initrd 里连我们的文件都没有);
   主系统阶段它生成的 `data.mount` 要等 udev 建 `by-partlabel` 符号链接,而 udev 要等
   `systemd-sysusers`、sysusers 要可写的 `/etc`、可写的 `/etc` 又挂在 `/data` 上 ⇒ 环形依赖 ⇒
@@ -130,7 +130,7 @@
   "按 CPU 厂商分支"在这个项目里**不是真实的差异维度**。
 - **机器特有的部分**:IOMMU 参数用"对所有机器都无害的超集"(`amd_iommu=on intel_iommu=on iommu=pt`);
   `vfio-pci ids=` 这类放 `/etc/modprobe.d/`(经 `/etc` overlay 持久化)。理由:cmdline 烧在 UKI 里,
-  运行时改不了(后门见 `AGENTS.md` 已知的坑 #4)。
+  运行时改不了(后门见 `docs/traps.md` 坑 #4)。
 
 ## D14 GPU 驱动:不进 main,外置方案定为 v1.5
 
@@ -264,7 +264,7 @@
   mkosi 的 `--root-password=` 写在 **root** 的 shadow 条目里(并往 `/usr/lib/credstore/` 放
   `passwd.hashed-password.root`),所以最后一步把那个哈希**搬给 admin**、把 root 置成 `!`、
   再**删掉 credstore 里的 root credential**(不删的话 `systemd-firstboot.service` 每次启动
-  都可能把 root 又解开 —— 它就是靠 `ImportCredential` 拿那个名字的;见 AGENTS.md 坑 #39)。
+  都可能把 root 又解开 —— 它就是靠 `ImportCredential` 拿那个名字的;见 docs/traps.md 坑 #39)。
 - **为什么敢把 root 完全锁掉**:`admin` 的账号在**镜像的 `/etc/passwd`(只读 lower)**里,
   它的密码哈希也在 lower 的 `/etc/shadow` 里 ⇒ 即使 `/data` 坏了、`/home` 是空的、`/etc`
   overlay 都没挂上,控制台**照样能以 admin 登录**(只是没有家目录、会有告警)。

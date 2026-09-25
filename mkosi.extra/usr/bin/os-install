@@ -4,7 +4,7 @@
 # 见 docs/architecture.md §7(安装流程)、§3(磁盘布局);用户文档见 docs/install.md §2.2。
 #
 # !!! 重要:这条路径**没有在真机上验证过** !!!
-# 本仓库的开发容器没有 loop 设备、没有 /dev/kvm(AGENTS.md 坑 #11),所以下面每一步
+# 本仓库的开发容器没有 loop 设备、没有 /dev/kvm(docs/traps.md 坑 #11),所以下面每一步
 # 都只是按 systemd / util-linux 的文档语义写的。真机第一次跑之前:
 #   1. 先在 QEMU 里走一遍(docs/install.md §1:mkosi --profile install vm);
 #   2. 目标盘先备份 —— 本命令会**整盘擦除**;
@@ -316,7 +316,7 @@ trap - EXIT
 #
 # 这样 systemd-boot(含 fallback EFI/BOOT/BOOTX64.EFI)、loader/loader.conf 和 UKI
 # 一起过去。**不需要**改 UKI 里的 cmdline:它写的是 root=PARTLABEL=root-a,而目标
-# 盘的 A 槽标签同名(§3.3 / AGENTS.md 坑 #5)。
+# 盘的 A 槽标签同名(§3.3 / docs/traps.md 坑 #5)。
 # ---------------------------------------------------------------------------
 # live 环境里的 ESP 必须真的挂上(坑 #36):没挂就先挂 —— 失败在"复制不到 UKI"上,
 # 总好过装出一块"看着装好了、其实起不来"的盘

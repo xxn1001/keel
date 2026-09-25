@@ -41,7 +41,7 @@
 #     密码只从命令行来,不落盘、不进 git:这是个公开仓库,写在 profile 里的密码等于公开的。
 #     三种模式都收这个参数:`build` 时经 `KEEL_ROOT_PASSWORD` 转给 tools/build.sh,
 #     `vm` 时直接拼到 mkosi 命令行上(而且**必须同时拼进 build 与 vm 两次调用**,
-#     因为 `vm` 不解析配置、只读上一次 build 的 history,见 AGENTS.md 坑 #30)。
+#     因为 `vm` 不解析配置、只读上一次 build 的 history,见 docs/traps.md 坑 #30)。
 #
 #   换镜像(比如 Debian 25.3 的 mkosi 不认某个设置时):
 #   KEEL_BUILD_IMAGE=docker.io/library/archlinux:latest sudo tools/build-container.sh
@@ -150,7 +150,7 @@ vm)
     # $ROOTPW_Q 在两处都出现不是重复:mkosi 的 `vm` **不解析配置文件**,它读的是
     # `.mkosi-private/history/latest.json`(上一次 build 用的配置);命令行上与 history 不同的
     # Content 段设置只会打一行 `Ignoring --root-password from the CLI`,然后照 history 走
-    # ⇒ 只在 vm 那一步传密码等于没传,而且不报错。见 AGENTS.md 坑 #30。
+    # ⇒ 只在 vm 那一步传密码等于没传,而且不报错。见 docs/traps.md 坑 #30。
     PAYLOAD="tools/verify.sh \
         && mkosi --profile install --profile test $EXTRA_Q$ROOTPW_Q --force build \
         && mkosi --profile install --profile test $EXTRA_Q$ROOTPW_Q vm"
@@ -186,7 +186,7 @@ fi
 #
 # 为什么不用 mkosi.conf 里的 WorkspaceDirectory= 达到同样目的(曾经那么写,构建直接失败):
 # mkosi 不允许 workspace 位于任何 BuildSources 之内,而 BuildSources 的默认值就是配置目录本身。
-# 详见 mkosi.conf 里那段注释和 AGENTS.md 坑 #22。
+# 详见 mkosi.conf 里那段注释和 docs/traps.md 坑 #22。
 WS="$PWD/mkosi.workspace"
 mkdir -p "$WS" && chmod 1777 "$WS" || die "无法创建 $WS"
 

@@ -95,10 +95,10 @@
 > 分区标签是磁盘的事,两者不再同名是**刻意**的。
 
 `/home` 与 `/nix` 必须是**真挂载点**而不是符号链接:`/home` 关乎 `ProtectHome=` 的沙箱语义,
-`/nix` 则是 nix 自己硬性拒绝符号链接的 store 路径(决策 D3、`AGENTS.md` 坑 #34)。
+`/nix` 则是 nix 自己硬性拒绝符号链接的 store 路径(决策 D3、`docs/traps.md` 坑 #34)。
 
 **那两条符号链接在 `mkosi.finalize`(构建的最后一步)才创建** —— 否则包管理器、
-`systemd-sysusers`、`systemd-tmpfiles` 会顺着链接写到镜像树外面去(`AGENTS.md` 已知的坑 #2);
+`systemd-sysusers`、`systemd-tmpfiles` 会顺着链接写到镜像树外面去(`docs/traps.md` 坑 #2);
 `/home` 与 `/nix` 的空目录也在同一步建出来。
 
 ### 4.2 `/data` 骨架
@@ -157,7 +157,7 @@ workdir  = /data/overlayfs/etc/work
 > 已知残留:PID1 每次启动仍会另生成一个 transient ID(它读的是只读 lower),所以
 > **PID1 内存里的 ID ≠ `/etc/machine-id`**;真正读文件的功能(networkd/resolved/journald/tmpfiles)
 > 拿到的都是固化的那个。要彻底一致得把 `/etc` overlay 提到 initrd 里挂,或 cmdline 加
-> `systemd.machine_id=firmware`(见 `AGENTS.md` 坑 #29)。
+> `systemd.machine_id=firmware`(见 `docs/traps.md` 坑 #29)。
 
 ### 4.4 构建顺序上的硬约束
 
@@ -186,7 +186,7 @@ workdir  = /data/overlayfs/etc/work
 ### 4.6 `/data` 的磁盘预算与应急空间(决策 D23)
 
 `/data` 写满 = **`/etc` 也写不进去**(overlay 的 upper 在同一个文件系统上)⇒ machine-id 固化失败
-⇒ DHCP/IPv6/DNSSEC 一起坏(`AGENTS.md` 坑 #29 复活)。所以每个消费者都有显式预算:
+⇒ DHCP/IPv6/DNSSEC 一起坏(`docs/traps.md` 坑 #29 复活)。所以每个消费者都有显式预算:
 
 | 消费者 | 预算 | 谁执行 |
 |---|---|---|
@@ -221,7 +221,7 @@ systemd.gpt_auto=no
   ESP 压根没挂上,导致 `os-status` 看不到 UKI、`os-update` 写不进新 UKI、`bootctl set-preferred`
   切不了槽,而且每一步都"成功"。现在 ESP 和 `/data` 一样由 `keel-mounts` 扫 `PARTNAME=` 自己挂;
   gpt-auto 别的功能(根分区 rw 重挂/扩容、单独的 `/usr` `/home` `/srv` `/var` 分区)我们都不需要。
-- **刻意没有 `systemd.mount-extra=`**(2026-09 真机实测后删掉的,`AGENTS.md` 坑 #24):
+- **刻意没有 `systemd.mount-extra=`**(2026-09 真机实测后删掉的,`docs/traps.md` 坑 #24):
   那种写法会在主系统生成依赖 udev 符号链接的 `.mount` 单元,而主系统 udev 要等 `systemd-sysusers`,
   sysusers 要可写的 `/etc`,可写的 `/etc`(overlay)又在 `/data` 上 ⇒ 环形依赖 ⇒
   systemd 丢掉 `local-fs-pre.target`、udev 被推到 emergency 之后、挂载全部 90s 超时 ⇒ emergency mode。
@@ -229,7 +229,7 @@ systemd.gpt_auto=no
   ESP 交给 `systemd-gpt-auto-generator`(挂到 `/boot`;代码里用 `$KEEL_ESP` / `$KEEL_UKI_DIR`)。
   实测:`root=PARTLABEL=root-a` 在 initrd 里**有效** ✓;`systemd.mount-extra=` 在 initrd 里**不生效** ✗。
 - `amd_iommu=on` / `intel_iommu=on` / `iommu=pt`:对没有对应硬件的机器**无害**,
-  但为将来的 GPU 直通铺好路 —— 这正是"cmdline 机器无关超集"策略的示范(`AGENTS.md` 坑 #4)。
+  但为将来的 GPU 直通铺好路 —— 这正是"cmdline 机器无关超集"策略的示范(`docs/traps.md` 坑 #4)。
 - v1 **不加 `quiet`**:首次在真机上跑,能看见启动日志比"干净"重要。
 
 ### 5.2 引导器与命名
@@ -415,7 +415,7 @@ os-update gc               # 清理旧载荷(保留最近 2 个版本 + 当前)
 [Distribution]
 Distribution=debian
 Release=trixie
-Repositories=non-free-firmware        # 微码/固件必需(见 AGENTS.md 坑 #9)
+Repositories=non-free-firmware        # 微码/固件必需(见 docs/traps.md 坑 #9)
 
 [Content]
 Packages=
@@ -450,7 +450,7 @@ RemovePackages=
 ```
 keel/
 ├── AGENTS.md  README.md  .gitignore  schema-version
-├── docs/{architecture,decisions,install,update,troubleshooting,roadmap}.md
+├── docs/{architecture,decisions,install,update,troubleshooting,roadmap,traps}.md
 ├── mkosi.conf                      mkosi.conf.d/*.conf
 ├── mkosi.initrd.conf               ← 只影响默认 initrd(清空脚本类设置,见坑 #1)
 ├── mkosi.profiles/{install,slot-a,slot-b}.conf   产物形态
@@ -521,7 +521,7 @@ keel/
 
 | # | 假设 | 若不成立的退路 |
 |---|---|---|
-| 1 | ~~`root=PARTLABEL=root-a` 与 `systemd.mount-extra=PARTLABEL=volume:...` 在 initrd 里能被解析~~ **已实测(2026-09,VM)**:前者 ✓ 有效;后者 ✗ 在 initrd 里根本不生效,在主系统里会因 udev 依赖成环而死锁 ⇒ 已改设计(见 §5.1 与 `AGENTS.md` 坑 #24) | 不需要退路:改成了 `keel-mounts` 自己扫 `PARTNAME=` 挂载 |
+| 1 | ~~`root=PARTLABEL=root-a` 与 `systemd.mount-extra=PARTLABEL=volume:...` 在 initrd 里能被解析~~ **已实测(2026-09,VM)**:前者 ✓ 有效;后者 ✗ 在 initrd 里根本不生效,在主系统里会因 udev 依赖成环而死锁 ⇒ 已改设计(见 §5.1 与 `docs/traps.md` 坑 #24) | 不需要退路:改成了 `keel-mounts` 自己扫 `PARTNAME=` 挂载 |
 | 2 | `systemd-sysupdate` 的 `Type=partition` transfer 能按双槽布局匹配"当前未使用的那个分区" | **v1 已经绕开**:`os-update` 直接写盘;将来验证通过再换底层,门面接口不变 |
 | 3 | `/usr/lib/firmware/{amd,intel}-ucode` 被 mkosi 正确前置进 UKI | 手工用 `ukify --microcode` 或 `io.mkosi.microcode` 工件目录 |
 | 4 | 移除 `initramfs-tools` / `RemoveFiles=/boot/vmlinuz-*` 之后内核包安装不报错、mkosi 仍能找到 vmlinuz | 保留 `initramfs-tools`,只靠 `RemoveFiles` 清 /boot |

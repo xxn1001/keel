@@ -32,7 +32,7 @@
 |---|---|
 | 含义 | mkosi 不允许 workspace 位于任何 `BuildSources=` 之内,而 `BuildSources=` 的默认值**就是配置目录**(`/work`) |
 | 原因 | `mkosi.conf` 里设了 `WorkspaceDirectory=mkosi.workspace`(仓库内的路径)。现在已改成不设该设置,原因写在 `mkosi.conf` 的注释里 |
-| 修 | `mkosi.conf` 里**不要**设 `WorkspaceDirectory=`;容器场景由 `tools/build-container.sh` 把 `mkosi.workspace/` 绑到容器的 `/var/tmp`(`AGENTS.md` 坑 #22) |
+| 修 | `mkosi.conf` 里**不要**设 `WorkspaceDirectory=`;容器场景由 `tools/build-container.sh` 把 `mkosi.workspace/` 绑到容器的 `/var/tmp`(`docs/traps.md` 坑 #22) |
 | 注意 | 第一行不是错误:它是 `build` 那一步"产物已存在、直接跳过"的提示(坑 #23),三条来自两次 mkosi 调用 |
 
 ### 0.2 `Output path … exists already. (Use --force to rebuild.)` 之后什么都没发生
@@ -42,13 +42,13 @@
 | 含义 | mkosi 的 `build` 是"**没有才建**":产物已存在 → 打印这行 → **返回 0**,不构建 |
 | 后果 | 版本号只写在镜像内部,所以你会拿到"版本号是新的、内容是旧的"镜像,而且没有任何报错 |
 | 修 | 改了配置/换了 profile(例如加 `--root-password=`)之后必须 `mkosi … --force build`;`tools/build.sh` 与 `tools/build-container.sh` 已经带上 |
-| 怎么确认拿到的是新镜像 | `mkosi.output/keel.manifest` 里的时间戳,或进系统后 `os-status`(`AGENTS.md` 坑 #23) |
+| 怎么确认拿到的是新镜像 | `mkosi.output/keel.manifest` 里的时间戳,或进系统后 `os-status`(`docs/traps.md` 坑 #23) |
 
 ### 0.3 其它构建期报错
 
 | 报错 | 去哪 |
 |---|---|
-| `Default tools tree requested but it is out-of-date or has not been built yet` | `AGENTS.md` 坑 #19:先 `build` 再 `vm` |
+| `Default tools tree requested but it is out-of-date or has not been built yet` | `docs/traps.md` 坑 #19:先 `build` 再 `vm` |
 | `A cache directory must be configured in order to use --incremental` | 坑 #16:mkosi 25.x 必须显式配 `CacheDirectory=`(已配好) |
 | `systemd-stub not found at /usr/lib/systemd/boot/efi/linuxx64.efi.stub` | 坑 #18:缺 `systemd-boot-efi` |
 | `Failed to make loopback device …: Device or resource busy` | 坑 #17:容器里 repart 要 `--offline=yes` |
@@ -81,7 +81,7 @@ findmnt -o TARGET,SOURCE,FSTYPE,OPTIONS   # /data 到底挂上没有
 lsblk -o NAME,SIZE,TYPE,PARTLABEL,FSTYPE  # 分区标签对不对
 ```
 
-两个已经踩过、**已在 2026-09 修掉**的早期启动连环故障(供对照,见 `AGENTS.md` 坑 #24/#25):
+两个已经踩过、**已在 2026-09 修掉**的早期启动连环故障(供对照,见 `docs/traps.md` 坑 #24/#25):
 
 | 症状 | 原因 |
 |---|---|
@@ -197,9 +197,9 @@ sudo systemctl restart keel-mounts   # 只是想把挂载重做一遍
 
 | 现象 | 原因 | 修 |
 |---|---|---|
-| `找不到 repart 定义目录:/usr/lib/keel/repart-install.d(这个镜像不完整?)` | 这个产物里没装安装用的 repart 定义:`os-install` 要靠镜像内的 `/usr/lib/keel/repart-install.d` 在目标盘上建表,它由 `mkosi.postinst` 在构建时从 `repart/install/` 拷进去(`AGENTS.md` 坑 #31)。2026-09 之前的产物都没有这个目录 | 重新构建(`sudo tools/build-container.sh -p <临时密码>`)并重写 U 盘/虚拟盘 |
-| 建表阶段:`mkfs binary for vfat is not available.` | 镜像里缺 `dosfstools`(`mkfs.vfat`)—— repart 要在目标盘上把 ESP 格式化成 vfat,而构建时那次 repart 用的是 tools tree,所以构建全绿(`AGENTS.md` 坑 #32) | 重新构建(包清单已补 `dosfstools`) |
-| 建表成功后:`建表后找不到目标盘上的 root-a 分区` | 刚写完分区表时 `lsblk` 的 `PARTLABEL`(来自 udev 数据库)可能还是空的 —— 旧版 `find_part` 只查它,于是 repart 建好了分区却「一个都找不到」(`AGENTS.md` 坑 #33) | 新版已改成**先扫 sysfs 的 `PARTNAME`**、失败则重读分区表重试约 10 秒,并把 `lsblk` / `/proc/partitions` 现场打出来;重新构建后重试。若仍失败,把现场那几行发出来 |
+| `找不到 repart 定义目录:/usr/lib/keel/repart-install.d(这个镜像不完整?)` | 这个产物里没装安装用的 repart 定义:`os-install` 要靠镜像内的 `/usr/lib/keel/repart-install.d` 在目标盘上建表,它由 `mkosi.postinst` 在构建时从 `repart/install/` 拷进去(`docs/traps.md` 坑 #31)。2026-09 之前的产物都没有这个目录 | 重新构建(`sudo tools/build-container.sh -p <临时密码>`)并重写 U 盘/虚拟盘 |
+| 建表阶段:`mkfs binary for vfat is not available.` | 镜像里缺 `dosfstools`(`mkfs.vfat`)—— repart 要在目标盘上把 ESP 格式化成 vfat,而构建时那次 repart 用的是 tools tree,所以构建全绿(`docs/traps.md` 坑 #32) | 重新构建(包清单已补 `dosfstools`) |
+| 建表成功后:`建表后找不到目标盘上的 root-a 分区` | 刚写完分区表时 `lsblk` 的 `PARTLABEL`(来自 udev 数据库)可能还是空的 —— 旧版 `find_part` 只查它,于是 repart 建好了分区却「一个都找不到」(`docs/traps.md` 坑 #33) | 新版已改成**先扫 sysfs 的 `PARTNAME`**、失败则重读分区表重试约 10 秒,并把 `lsblk` / `/proc/partitions` 现场打出来;重新构建后重试。若仍失败,把现场那几行发出来 |
 | 建表成功但后面的步骤报错 | `os-install` 这条路径 **尚未在真机上验证过**(脚本头部的声明) | 把报错原文 + `lsblk -f` 现状贴出来,不要盲目重试 |
 
 > 注意:`os-install` 会**擦除整块目标盘**。在 VM 里演练时,目标盘要是另一块盘
@@ -212,7 +212,7 @@ sudo systemctl restart keel-mounts   # 只是想把挂载重做一遍
 所以 `/data` 一出问题,表现就是"到处都是空目录、机器像刚装好一样"。
 
 ```bash
-findmnt /data                          # 挂上了吗(由 keel-mounts 挂,见 AGENTS.md 坑 #24)
+findmnt /data                          # 挂上了吗(由 keel-mounts 挂,见 docs/traps.md 坑 #24)
 ls /data                               # var home nix overlayfs ota keel ...
 systemctl status keel-mounts.service     # 挂 /data + bind /home + 挂 /etc overlay
 systemctl status keel-firstboot.service  # 首启六件事:骨架 / 扩容 / NVRAM / swapfile / state / 应急空间
@@ -237,7 +237,7 @@ journalctl --disk-usage                  # journal 占了多少(上限由 journa
 |---|---|
 | `nix` 命令不存在 | 基底包是 `nix-bin` + `nix-setup-systemd`(决策 D7);`command -v nix` 都没有说明镜像不对 |
 | `/nix` 空 / 没挂上 | `findmnt /nix` 应该看到一个 bind 挂载(源 `/data/nix`);`ls -ld /nix` 必须是**目录**(不能是符号链接,坑 #34);再看 `findmnt /data` 与 `ls /data/nix`。`/data` 没挂 ⇒ 回到 §3 |
-| `error: the path '/nix' is a symlink; this is not allowed for the Nix store and its parent directories` | 这个系统装的是**旧镜像**:那时 `/nix` 还是指向 `/data/nix` 的符号链接。nix 硬性拒绝符号链接的 store 路径,改 store 位置也没用(二进制与 RPATH 里写死了 `/nix/store/…`)。新版已改成「真实目录 + bind mount」(`AGENTS.md` 坑 #34) | ① 正路:换到新槽(`os-update`)或重装 —— 新根文件系统里的 `/nix` 就是真目录;② 想马上用,按下面热修 |
+| `error: the path '/nix' is a symlink; this is not allowed for the Nix store and its parent directories` | 这个系统装的是**旧镜像**:那时 `/nix` 还是指向 `/data/nix` 的符号链接。nix 硬性拒绝符号链接的 store 路径,改 store 位置也没用(二进制与 RPATH 里写死了 `/nix/store/…`)。新版已改成「真实目录 + bind mount」(`docs/traps.md` 坑 #34) | ① 正路:换到新槽(`os-update`)或重装 —— 新根文件系统里的 `/nix` 就是真目录;② 想马上用,按下面热修 |
 | `nix-daemon` 不工作 | 它的单元带 `ConditionPathIsReadWrite=/nix/var/nix/daemon-socket`,所以 **`/data` 没挂好时它根本不会启动**:`systemctl status nix-daemon` 会写 condition 未满足被跳过,而不是失败。先把 `/data` 修好,再 `systemctl restart nix-daemon` |
 | `nix` 报数据库 schema 太新 | 回滚造成的:基底升级过 nix,旧槽的 nix 读不了新 DB(§13.2 R3)。见 `update.md` §5 —— 要么回到新槽用新版 nix,要么按 R3 处理,别在旧版上反复跑 nix 试图"修好"它 |
 | 换到另一个槽后 nix 里的包"消失" | 不应该发生:`/nix` 在 `/data` 上,两个槽共用同一个 store。真发生了说明 `/data` 挂载或符号链接有问题,回到 §3 |
