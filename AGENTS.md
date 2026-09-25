@@ -151,6 +151,53 @@
 
 判定准则:**构建期差异进仓库,运行期状态进 `/data`。**
 
+### 宿主适配:先看 `/etc/os-release`,**不要假设宿主是 NixOS**
+
+keel 最早是在一台 NixOS 机器上开发的,于是文档与脚本里沉淀了一些"NixOS 专属"的做法
+(最典型的是"脚本要 `bash tools/…` 显式跑",因为 NixOS 没有 `/bin/bash` —— 那条已经在
+坑 #54 里修掉了:shebang 统一成 `#!/usr/bin/env bash`,两边都能直接执行)。
+**接手时先自己判定,不要凭记忆**:
+
+```bash
+cat /etc/os-release        # 看 ID / ID_LIKE —— 判的是**构建宿主**,不是目标镜像
+                           # (keel 自己的 os-release 是 ID=keel,别把它当成宿主)
+```
+
+| 宿主 `ID`/`ID_LIKE` | 该用什么 | 说明 |
+|---|---|---|
+| `debian` `ubuntu` `fedora` `centos` `rhel` `arch` `cachyos` `manjaro` `opensuse` … | `tools/build.sh`(**原生路径**) | mkosi 认这些发行版自带的包管理器(apt/dnf/pacman/zypper);宿主只需 mkosi + bubblewrap |
+| `nixos` | `tools/build-container.sh`(**容器适配器**) | mkosi 不把 NixOS 当受支持的宿主(建不出 tools tree)⇒ 把构建放进 `debian:trixie` 容器 |
+| 其它/认不出 | 先试原生;若报 `Distribution … can't be detected` 就换适配器 | 适配器里也有 `KEEL_BUILD_IMAGE=` 可以换容器镜像 |
+
+脚本自己也会判:两个入口都用 `tools/lib-build-cli.sh` 里的 `keel_host_kind()`(读
+`/etc/os-release`),报错时直接告诉你"该走哪条路"。**别在文档里写死"用 nix-shell …"这类
+只对某一台机器成立的命令** —— 要写就写成"宿主是 X 时用 Y"。
+
+### 两条构建路径必须**对等**(CLI 只写一份)
+
+keel 有两条构建路径,它们是**同一个东西的两个入口**,不是两个项目:
+
+| 能力 | 原生(`tools/build.sh`) | 容器适配器(`tools/build-container.sh`) |
+|---|---|---|
+| 构建 install + A/B 载荷 → `dist/` | ✓(默认) | ✓(`build`,默认;内部就是调用 `build.sh`) |
+| 初始密码 `-p/--password` | ✓ | ✓(经 `KEEL_ROOT_PASSWORD` 送进容器) |
+| 变体/额外 profile `--profile <名字>` | ✓(可重复;也认 `KEEL_EXTRA_PROFILES`) | ✓(合并后经 `KEEL_EXTRA_PROFILES` 透传) |
+| `-- <mkosi 额外参数>` | ✓(build 与 vm **两次调用都带**,坑 #30) | ✓(同上) |
+| 构建完起一遍 QEMU | ✓(`--vm`) | ✓(`vm` 位置参数 或 `--vm`) |
+| OTA 演练 | ✓(`--drill`,与容器共用同一份编排) | ✓(`drill`) |
+| 进容器手敲 mkosi | ——(本来就在宿主机上,不需要) | ✓(`shell`,容器独有) |
+
+**规则(踩过的教训)**:2026-09 审计发现两条路已经漂移出四处 —— `build.sh` 根本不解析参数
+(`-p` 与 `--profile` 被**静默忽略**,敲了密码却得到没密码的产物)、容器没有 `--profile`、
+容器漏传 `KEEL_EXTRA_PROFILES`(那条路加不了变体)、`--` 与 `-h` 只有容器有。
+
+- **共用选项一律写在 [`tools/lib-build-cli.sh`](tools/lib-build-cli.sh) 里**,两个入口
+  `source` 它。新增一个选项 = 改那一个文件,两条路自动都有。
+- 确实只属于某一条路径的东西(容器引擎、`shell` 模式)留在各自脚本里,**并更新上面这张表**。
+- `tools/verify.sh` 有一组"两条路径对等"的断言(共用解析器、`build.sh -h` 能跑、`-p` 全链路、
+  profile 透传、演练共用编排、不许写死 `/work`、不许再出现「脚本必须用 bash 显式执行」这类过时话术)。
+  **改构建入口之后先跑它。**
+
 ### `machines/` 目录
 
 借鉴 NixOS 的 `hosts/<机器名>/` 惯例。**注意:main 里几乎没有真正需要按机器分支的东西** ——
@@ -180,14 +227,21 @@ grep -n "machine-id\|ESP\|repart\|overlay\|mkosi" docs/traps.md
 # 静态校验(不需要 root、不需要 loop 设备,能在这里跑)
 tools/verify.sh
 
-# 产物构建(建议 ToolsTree=default;宿主机只需要 mkosi + bubblewrap + 一个包管理器)
-tools/build.sh                       # 一次产出:安装镜像 + A/B 载荷 + manifest → dist/
-tools/build.sh --profile desktop     # 变体
+# ── 产物构建:先判宿主(cat /etc/os-release),再选一条路;两条路的选项完全一致 ──
+# 宿主是 Debian/Ubuntu/Fedora/Arch/CachyOS 等 mkosi 支持的发行版 → 原生路径
+sudo tools/build.sh                          # 一次产出:安装镜像 + A/B 载荷 + manifest → dist/
+sudo tools/build.sh -p <密码>                # 给 admin 设初始密码(root 始终锁定)
+sudo tools/build.sh --profile desktop        # 叠加变体 profile(可重复)
+sudo tools/build.sh --vm                     # 构建完直接在 QEMU 里起一遍
+sudo tools/build.sh --drill                  # 完整 OTA 演练(载荷+引导镜像+HTTP 源+VM 自检)
 
-# 宿主不是 mkosi 支持的发行版时(NixOS 等):把构建放进容器(见已知的坑 #15)
-sudo tools/build-container.sh               # 构建(产物里 admin 无密码,只能靠 authorized_keys 进)
-sudo tools/build-container.sh -p <密码> vm  # 构建并在容器里起 QEMU(控制台用 admin / 该密码登录;root 锁定)
-sudo tools/build-container.sh shell         # 进容器手敲 mkosi
+# 宿主是 NixOS 等 mkosi 不支持的发行版 → 容器适配器(选项同上,-p/--profile/--vm/--drill 都认)
+sudo tools/build-container.sh                # 构建
+sudo tools/build-container.sh -p <密码> vm   # 构建并在容器里起 QEMU
+sudo tools/build-container.sh --drill        # OTA 演练
+sudo tools/build-container.sh shell          # 进容器手敲 mkosi(容器独有)
+
+# 两条路的对照表、以及"改一条必须改另一条"的规则:见本文 §2。
 
 # 排错第一步:只看配置解析结果,不构建
 mkosi --profile install summary

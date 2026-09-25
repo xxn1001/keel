@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
-# keel OTA 演练:容器侧编排(由 tools/build-container.sh 的 drill 模式调用)
+# keel OTA 演练:编排脚本(容器路径与原生路径**共用同一份**)
 #
-# 这个脚本**在构建容器里以 root 运行**(cwd = /work = 仓库挂载点),它负责:
+#   容器路径:sudo tools/build-container.sh drill   (构建容器里以 root 运行,cwd = 仓库挂载点)
+#   原生路径:sudo tools/build.sh --drill          (FHS 宿主上直接跑;两条路走的是这个文件)
+#
+# 名字里的 "container" 是历史原因(它最早只在容器里跑过)。脚本内部不依赖"自己在容器里":
+# 只有一处前提 —— **HTTP 源必须和 qemu 在同一个网络命名空间**(guest 访问的 10.0.2.2 是
+# QEMU 用户态网络的网关)。容器路径下 qemu 在容器里,所以源也起在容器里;原生路径下
+# qemu 就在本机,源起在本机即可。两种情况都是"谁跑 qemu,谁起源",脚本用 cwd 定位仓库。
+#
+# 它负责:
 #   1. 静态校验
 #   2. tools/build.sh → 新版本载荷 dist/keel-<时间戳>/
 #   3. 用**显式更旧的版本号**构建引导镜像(否则 os-update check 会说"已经是最新")
@@ -18,6 +26,7 @@
 # 所以服务也必须在容器里;宿主机上起的服务它够不着。
 set -euo pipefail
 cd "$(dirname "$0")/.."
+REPO=$PWD   # 容器里是 /work,原生宿主上是仓库目录 —— 脚本内部一律用它定位
 
 DRILL_BOOT_VERSION=${KEEL_DRILL_BOOT_VERSION:-2000.01.01.0001}
 DRILL_PORT=${KEEL_DRILL_PORT:-8000}
@@ -50,7 +59,7 @@ ls -l mkosi.output/keel.raw | awk '{ print "   keel.raw = " $5 " 字节" }'
 step "5/7 起本地 HTTP 源(guest 会访问 http://10.0.2.2:$DRILL_PORT/good)"
 rm -rf /tmp/drill-serve
 mkdir -p /tmp/drill-serve
-ln -sfn "/work/$DRILL_PAYLOAD" /tmp/drill-serve/good
+ln -sfn "$REPO/$DRILL_PAYLOAD" /tmp/drill-serve/good
 ( cd /tmp/drill-serve && nohup python3 -m http.server "$DRILL_PORT" --bind 0.0.0.0 >/tmp/drill-http.log 2>&1 & )
 sleep 2
 # 用 python3 探测(容器里**没有 curl** —— 第一次就栽在这:mkosi 不依赖它)
@@ -90,13 +99,13 @@ command -v debugfs >/dev/null 2>&1 || {
 }
 rm -rf /tmp/drill-serve/bad
 mkdir -p /tmp/drill-serve/bad
-for f in /work/"$DRILL_PAYLOAD"/*; do
+for f in "$REPO/$DRILL_PAYLOAD"/*; do
     b=$(basename "$f")
     [ "$b" = "manifest" ] && continue
     [ "$b" = "slot-$BAD_SLOT.root.raw" ] && continue
     ln -sfn "$f" "/tmp/drill-serve/bad/$b"
 done
-cp --reflink=auto --sparse=always "/work/$DRILL_PAYLOAD/slot-$BAD_SLOT.root.raw" \
+cp --reflink=auto --sparse=always "$REPO/$DRILL_PAYLOAD/slot-$BAD_SLOT.root.raw" \
    "/tmp/drill-serve/bad/slot-$BAD_SLOT.root.raw"
 BAD_IMG=/tmp/drill-serve/bad/slot-$BAD_SLOT.root.raw
 if [ "$SABOTAGE" = initrd ]; then
@@ -132,31 +141,31 @@ fi
 echo "   已把 slot-$BAD_SLOT.root.raw 做成起不来的(破坏方式:$SABOTAGE,回读已确认)"
 # manifest:版本比好载荷再高一档(否则 stage 会说"不比当前新"),并把被改过的那个产物的
 # sha256 换成新值 —— 其余行为原样复制(其余产物是符号链接,内容没变)
-GOOD_VER=$(sed -n 's/^version=//p' "/work/$DRILL_PAYLOAD/manifest" | head -n1)
+GOOD_VER=$(sed -n 's/^version=//p' "$REPO/$DRILL_PAYLOAD/manifest" | head -n1)
 BAD_SHA=$(sha256sum "$BAD_IMG" | cut -d' ' -f1)
 sed -e "s/^version=.*/version=${GOOD_VER}.bad/" \
     -e "s|^sha256_slot-$BAD_SLOT.root.raw=.*|sha256_slot-$BAD_SLOT.root.raw=$BAD_SHA|" \
-    "/work/$DRILL_PAYLOAD/manifest" >/tmp/drill-serve/bad/manifest
+    "$REPO/$DRILL_PAYLOAD/manifest" >/tmp/drill-serve/bad/manifest
 echo "   坏载荷版本:${GOOD_VER}.bad(slot-$BAD_SLOT.root.raw 的 sha256 已更新)"
 
 # 再做一个"声明了 /data 迁移"的载荷:它的产物都是符号链接(内容没变),只是 manifest 里
 # `migrate=` 非空。v1 没有迁移执行器 ⇒ os-update fetch **必须拒绝**它(这一项也在演练里验)。
 rm -rf /tmp/drill-serve/mig
 mkdir -p /tmp/drill-serve/mig
-for f in /work/"$DRILL_PAYLOAD"/*; do
+for f in "$REPO/$DRILL_PAYLOAD"/*; do
     b=$(basename "$f")
     [ "$b" = "manifest" ] && continue
     ln -sfn "$f" "/tmp/drill-serve/mig/$b"
 done
 sed -e "s/^version=.*/version=${GOOD_VER}.mig/" \
     -e 's/^migrate=.*/migrate=mkdir:\/data\/keel\/migtest:0755/' \
-    "/work/$DRILL_PAYLOAD/manifest" >/tmp/drill-serve/mig/manifest
+    "$REPO/$DRILL_PAYLOAD/manifest" >/tmp/drill-serve/mig/manifest
 echo "   迁移载荷版本:${GOOD_VER}.mig(manifest 里 migrate=mkdir:/data/keel/migtest:0755)"
 
 # 额外的一次"回读确认":看门狗配置**必须真的进了 initrd**(否则坏槽冻结时没人复位,
 # 演练会卡死在黑屏 —— 坑 #50 的现场)。这里直接从 UKI 里抽 .initrd 出来查文件名。
 if command -v objcopy >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends binutils >/dev/null 2>&1; then
-    if objcopy -O binary --only-section=.initrd /work/mkosi.output/keel.efi /tmp/keel-initrd.bin 2>/dev/null &&
+    if objcopy -O binary --only-section=.initrd "$REPO/mkosi.output/keel.efi" /tmp/keel-initrd.bin 2>/dev/null &&
        [ -s /tmp/keel-initrd.bin ]; then
         if command -v zstd >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends zstd >/dev/null 2>&1; then :; fi
         if zstd -d -c /tmp/keel-initrd.bin >/tmp/keel-initrd.cpio 2>/dev/null ||

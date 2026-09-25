@@ -26,6 +26,7 @@
 #   sudo tools/build-container.sh                  # 只构建(verify + build.sh)
 #   sudo tools/build-container.sh vm               # 构建并在容器里起 QEMU(有 /dev/kvm 就自动传进去)
 #   sudo tools/build-container.sh -p <密码> vm     # 同上,并给镜像里的 admin 设这个初始密码
+#   sudo tools/build-container.sh --profile desktop# 叠加变体 profile(和 build.sh 一模一样)
 #   sudo tools/build-container.sh shell            # 进容器手敲 mkosi,便于排错
 #   sudo tools/build-container.sh vm -- --console=gui
 #                                                  # -- 之后的参数原样交给 mkosi
@@ -52,13 +53,11 @@
 #     --privileged 同时会把宿主机的 /dev 暴露进容器,于是 repart 看得见 loop 设备;
 #     mkosi 默认走 offline 模式不会碰它们(我们在 mkosi.conf 里也显式写了 RepartOffline=yes)。
 #   * NixOS 上若没有容器引擎:`nix-shell -p podman` 或开 virtualisation.podman。
-#   * **NixOS 上要用 `sudo bash tools/build-container.sh …` 调用**(别直接 `sudo tools/build-container.sh`):
-#     NixOS 没有 `/bin/bash`(只有 `/bin/sh`),而本仓库脚本的 shebang 是 `#!/bin/bash`
-#     ⇒ 内核会报 `bad interpreter: No such file or directory`,sudo 则报
-#     `unable to execute tools/build-container.sh: No such file or directory` ——
-#     看起来像"文件不存在",其实是解释器不存在。脚本内部会 `cd` 到仓库根目录,所以用 bash 显式跑没问题。
-#   * 这个脚本**没有在 NixOS 上实测过**(开发环境里没有容器引擎)。
-#     如果它在你的机器上出问题,把命令与报错贴出来即可。
+#   * 直接 `sudo tools/build-container.sh` 就行,不需要 `sudo bash …`:仓库脚本的 shebang
+#     统一是 `#!/usr/bin/env bash`(NixOS 没有 /bin/bash 这件事在 2026-09 修掉了,见坑 #54)。
+#   * **已在 NixOS 上实测**(2026-09:构建、libvirt 装机、OTA 演练都在 NixOS 宿主上跑过)。
+#   * 与原生路径 tools/build.sh 的选项**必须一致**:共用选项定义在 tools/lib-build-cli.sh,
+#     改一边等于改两边;能力差异只允许在 AGENTS.md 那张对照表里(容器独有:drill / shell)。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -66,47 +65,54 @@ log() { printf 'keel-container: %s\n' "$*" >&2; }
 die() { printf 'keel-container: 错误:%s\n' "$*" >&2; exit 1; }
 usage() {
     cat >&2 <<'EOF'
-用法:sudo tools/build-container.sh [build|vm|drill|shell] [-p <密码>] [-- <mkosi 的额外参数>]
+用法:sudo tools/build-container.sh [build|vm|drill|shell] [-p <密码>] [--profile <名字>]… [-- <mkosi 的额外参数>]
 
-  build            只构建(verify + tools/build.sh),默认动作
+  build            只构建(tools/build.sh 会先跑 verify),默认动作
   vm               构建并在容器里起 QEMU(有 /dev/kvm 就自动传进去)
   drill            **OTA 演练**:构建新版本载荷 + 引导镜像,起本地 HTTP 源,在 VM 里
                    自动跑 check → fetch → stage → 重启 → 确认 → rollback → 重启(见 docs/update.md §9)
-  shell            进容器手敲 mkosi,便于排错
+  shell            进容器手敲 mkosi,便于排错(容器独有:原生路径没有这个模式)
 
-  -p, --password <密码>   给镜像里的 admin 设初始密码;不加则 admin 与 root 都没有密码
+  共用选项(与 tools/build.sh 完全一致,定义在 tools/lib-build-cli.sh):
 EOF
+    keel_cli_usage_common
 }
 
-# 参数解析:模式一个位置参数,-p/--password 一个选项,`--` 之后原样交给 mkosi。
-# 刻意不用 getopt:$0 在宿主机与容器里都可能是不同路径,自己解析更好读、也更好报错。
+# 参数解析:共用选项(-p/--password/--profile/--vm/-h/--)走 tools/lib-build-cli.sh
+# (和原生路径同一份实现,免得两边漂移),本脚本只额外多一个"模式"位置参数。
+# shellcheck source=tools/lib-build-cli.sh
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib-build-cli.sh"
+
+# 共用选项(-p/--password、--profile、--vm、-h、--`)走 tools/lib-build-cli.sh ——
+# **和原生路径同一份实现**;本脚本只额外多一个"模式"位置参数(build|vm|drill|shell)。
+# shellcheck source=tools/lib-build-cli.sh
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib-build-cli.sh"
+
+keel_cli_parse "$@" || { usage; exit 2; }
+[ "$KEEL_HELP" = 1 ] && { usage; exit 0; }
+[ "$KEEL_PASSWORD_SET" = 1 ] && [ -z "$KEEL_PASSWORD" ] && { usage; die "-p/--password 后面是空的:要么给个密码,要么别加这个选项"; }
+
+# 位置参数 = 模式(最多一个);`--vm` 是共用选项,在这里等价于 `vm` 模式。
 MODE=build
-MODE_SET=0
-PASSWORD=""
-EXTRA_MKOSI=()
-while [ $# -gt 0 ]; do
-    case "$1" in
-        -p|--password)
-            [ $# -ge 2 ] || { usage; die "$1 后面要跟密码"; }
-            PASSWORD=$2; shift 2 ;;
-        --password=*)
-            PASSWORD=${1#*=}; shift ;;
-        --)
-            shift; EXTRA_MKOSI=("$@"); break ;;
-        -h|--help)
-            usage; exit 0 ;;
-        -*)
-            usage; die "不认识的选项:$1" ;;
-        *)
-            if [ "$MODE_SET" = 1 ]; then usage; die "只接受一个模式参数(已经有 '$MODE',又收到 '$1')"; fi
-            MODE=$1; MODE_SET=1; shift ;;
-    esac
-done
+if [ ${#KEEL_POSITIONAL[@]} -gt 1 ]; then
+    usage; die "只接受一个模式参数(收到:${KEEL_POSITIONAL[*]})"
+elif [ ${#KEEL_POSITIONAL[@]} -eq 1 ]; then
+    MODE=${KEEL_POSITIONAL[0]}
+fi
+[ "$KEEL_VM" = 1 ] && MODE=vm
+[ "$KEEL_DRILL" = 1 ] && MODE=drill
 
 case "$MODE" in
     build|vm|drill|shell) ;;
     *) usage; die "模式只能是 build / vm / drill / shell(收到 '$MODE')" ;;
 esac
+PASSWORD=$KEEL_PASSWORD
+EXTRA_MKOSI=(${KEEL_EXTRA_MKOSI[@]+"${KEEL_EXTRA_MKOSI[@]}"})
+# 额外 profile(变体):合并 --profile 与 KEEL_EXTRA_PROFILES,并按**环境变量**送进容器 ——
+# 容器里的 tools/build.sh 读的正是它(以前这一步漏了 ⇒ NixOS 那条路根本加不了 profile)。
+EXTRA_PROFILES=$(keel_cli_extra_profiles)
 
 ENGINE=""
 for e in podman docker; do
@@ -140,7 +146,7 @@ if [ ${#EXTRA_MKOSI[@]} -gt 0 ]; then
 fi
 
 case "$MODE" in
-build) PAYLOAD='tools/verify.sh && tools/build.sh' ;;
+build) PAYLOAD='tools/build.sh' ;;   # build.sh 内部会先跑 tools/verify.sh(别跑两遍)
 vm)
     # 必须先 build 再 vm,原因见 mkosi 源码里的那道守卫:
     #     if tools and not have_cache(tools):
@@ -158,9 +164,14 @@ vm)
     # `.mkosi-private/history/latest.json`(上一次 build 用的配置);命令行上与 history 不同的
     # Content 段设置只会打一行 `Ignoring --root-password from the CLI`,然后照 history 走
     # ⇒ 只在 vm 那一步传密码等于没传,而且不报错。见 docs/traps.md 坑 #30。
+    # 额外 profile(变体/演练)拆成 mkosi 的 --profile 参数:和原生路径 build.sh 一致。
+    EXTRA_PROFILE_Q=""
+    for _p in $EXTRA_PROFILES; do
+        EXTRA_PROFILE_Q+="--profile $(printf '%q' "$_p") "
+    done
     PAYLOAD="tools/verify.sh \
-        && mkosi --profile install --profile test $EXTRA_Q$ROOTPW_Q --force build \
-        && mkosi --profile install --profile test $EXTRA_Q$ROOTPW_Q vm"
+        && mkosi --profile install --profile test $EXTRA_PROFILE_Q$EXTRA_Q$ROOTPW_Q --force build \
+        && mkosi --profile install --profile test $EXTRA_PROFILE_Q$EXTRA_Q$ROOTPW_Q vm"
     ;;
 # 刻意**没有** ssh 模式。曾经加过 `mkosi ssh`(VSock),但:
 #   1. 控制台密码登录已经可用(`-p`,见 mkosi.profiles/test.conf),进虚拟机的需求已经满足;
@@ -208,10 +219,13 @@ ARGS=(run --rm -it --privileged -v "$PWD:/work" -v "$WS:/var/tmp" -w /work)
 # KEEL_ROOT_PASSWORD 里取(命令行参数不经过 build.sh ⇒ 只能用环境变量)。
 # `vm` 模式则用它拼 mkosi 命令行(见上面的 $ROOTPW_Q);两处都设上,`shell` 模式里手敲 mkosi 也能用。
 [ -n "$PASSWORD" ] && ARGS+=(-e "KEEL_ROOT_PASSWORD=$PASSWORD")
+# 额外 profile 也透传:容器里的 build 模式跑的是 tools/build.sh,它从 KEEL_EXTRA_PROFILES 取。
+# (2026-09 审计发现这里以前只传了密码 ⇒ NixOS 那条路上根本加不了 --profile / desktop / test。)
+[ -n "$EXTRA_PROFILES" ] && ARGS+=(-e "KEEL_EXTRA_PROFILES=$EXTRA_PROFILES")
 # 演练参数也传进去(容器里的 tools/ota-drill-container.sh 读它们);从宿主覆盖:
 #   KEEL_DRILL_PORT=9000 sudo tools/build-container.sh drill
 ARGS+=(-e "KEEL_DRILL_BOOT_VERSION=$DRILL_BOOT_VERSION" -e "KEEL_DRILL_PORT=$DRILL_PORT")
-log "引擎:$ENGINE   镜像:$IMAGE   模式:$MODE"
+log "引擎:$ENGINE   镜像:$IMAGE   模式:$MODE${EXTRA_PROFILES:+   额外 profile:$EXTRA_PROFILES}"
 [ "$(id -u)" = 0 ] || log "提示:没在用 root 跑。若报权限错误,请加 sudo(mkosi 的沙箱需要 CAP_SYS_ADMIN)"
 log "产物会落在宿主机的 mkosi.output/ 与 dist/(属主是 root)"
 
