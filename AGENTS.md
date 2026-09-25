@@ -26,7 +26,7 @@
 | 面向用户的命令 | `os-status`、`os-update`、`os-install`、`os-rescue` |
 | 项目内部单元 | `keel-*.service` / `/usr/lib/keel/` |
 | 持久状态目录 | `/data/keel/` |
-| 分区标签 | `esp`、`root-a`、`root-b`、`volume` |
+| 分区标签 | `esp`、`root-a`、`root-b`、`data` |
 | ESP 上的 UKI | `/efi/EFI/Linux/keel-a.efi`、`keel-b.efi`(带计数时 `keel-a+3.efi`) |
 
 ---
@@ -49,8 +49,8 @@
    `/data` 的符号链接,`/home` `/nix` 要 bind 上去;挂晚了早期服务(random-seed、journald、tmpfiles)
    就会往悬空链接/空目录上写。
    **实现方式(踩过坑 #24,2026-09 真机实测后改的)**:由 `keel-mounts.service`(在 `sysinit` 之前)
-   自己扫 `/sys/class/block/*/uevent` 里的 `PARTNAME=volume` 找到分区并 `mount`。
-   **不要**改回 kernel cmdline 的 `systemd.mount-extra=PARTLABEL=volume:/data:...`:
+   自己扫 `/sys/class/block/*/uevent` 里的 `PARTNAME=data` 找到分区并 `mount`。
+   **不要**改回 kernel cmdline 的 `systemd.mount-extra=PARTLABEL=data:/data:...`:
    那会在主系统里生成 `data.mount`,它要等 udev 建出 `/dev/disk/by-partlabel/*`;
    而 udev 要等 `systemd-sysusers`,sysusers 要可写的 `/etc`,可写的 `/etc` 又是挂在 `/data`
    上的 overlay ⇒ 环形依赖 ⇒ systemd 丢掉 `local-fs-pre.target`、udev 被推到 emergency 之后、
@@ -216,7 +216,7 @@
     `GrowFileSystem=` 只是打一个 GPT 标志位,而那个标志只被 `systemd-gpt-auto-generator` 消费 ——
     我们的 `/data` 是自己用 `mount` 挂的(不变量 2),**根本不过 gpt-auto-generator**。
     ⇒ 扩容必须两步:`systemd-repart` 扩分区 + `systemd-growfs /data` 扩文件系统
-    (两处都已实现:首启的 `keel-firstboot` 与 `os-rescue --grow-volume`)。
+    (两处都已实现:首启的 `keel-firstboot` 与 `os-rescue --grow-data`)。
     另外 `systemd-growfs` 对 ext4 会调 `resize2fs`,所以 `e2fsprogs` **必须**在包清单里。
     首次真机启动后请用 `df -h /data` 复核这一点。
 
@@ -353,7 +353,7 @@
     ```
     keel-mounts(Before=sysusers,需要可写的 /etc,而 /etc overlay 的 upper 在 /data)
         → RequiresMountsFor=/data → data.mount
-        → Requires/After dev-disk-by-partlabel-volume.device(要 udev 建符号链接)
+        → Requires/After dev-disk-by-partlabel-data.device(要 udev 建符号链接)
         → systemd-udevd(After=systemd-sysusers)
         → systemd-sysusers(要写 /etc)
         → 回到 keel-mounts  ✗ 环
@@ -362,7 +362,7 @@
     `[ SKIP ] Ordering cycle found, skipping local-fs-pre.target`),于是 udev 被推迟到
     **emergency 之后**才启动,所有 `by-partlabel` 挂载等满 90 秒超时:
     ```
-    [ TIME ] Timed out waiting for device dev-disk-by-partlabel-volume.device - /dev/disk/by-partlabel/volume.
+    [ TIME ] Timed out waiting for device dev-disk-by-partlabel-data.device - /dev/disk/by-partlabel/data.
     [DEPEND] Dependency failed for data.mount - /data.
     [DEPEND] Dependency failed for local-fs.target - Local File Systems.
     [DEPEND] Dependency failed for keel-mounts.service …
@@ -528,11 +528,11 @@
     repart 的 `CopyFiles=` 源在既没有 `--root=` 也没有 `--copy-source=` 时解析到
     **宿主机的真实 /** —— mkosi 构建时传了 `--root=<镜像树>`,所以构建时 `CopyFiles=/`
     指的是"镜像里的 /";运行时(没有 `--root=`)它会把 `/proc` `/sys` `/run` `/data`
-    一起卷进来,而 `os-install` 本来就会自己 dd 根分区、mkfs volume、复制 ESP,
+    一起卷进来,而 `os-install` 本来就会自己 dd 根分区、mkfs data 分区、复制 ESP,
     根本不需要 repart 代劳。
     分区名/类型/尺寸仍是**同一份来源**(只删 CopyFiles),所以两张表必然一致:
     `tools/verify.sh` 会把两份定义各 `systemd-repart --dry-run` 一次,逐个字段对比名字/
-    尺寸/volume 类型,并断言运行时那份里没有残留的 `CopyFiles=`。
+    尺寸/类型,并断言运行时那份里没有残留的 `CopyFiles=`。
     **教训**:凡是"构建脚本产出的文件还会在运行时被消费一遍"的东西,都要多问一句
     "里面的路径和默认值在运行时还成立吗"。
 
@@ -543,7 +543,7 @@
     mkfs binary for vfat is not available.
     keel: 错误:systemd-repart 建表失败。…
     ```
-    注意**分区表本身是对的**(日志上方那张 `esp 1G / root-a 6G / root-b 6G / volume 剩余` 的表
+    注意**分区表本身是对的**(日志上方那张 `esp 1G / root-a 6G / root-b 6G / data 剩余` 的表
     与设计一致),失败的只是"把 ESP 格式化成 vfat"这一步 —— `mkfs.vfat` 在 Debian 里属于
     **dosfstools**,而我们只装了提供 `mkfs.ext4`/`resize2fs` 的 e2fsprogs。
     ⇒ 包清单里补 `dosfstools`;`tools/verify.sh` 现在成对断言 `dosfstools` + `e2fsprogs`。
@@ -657,7 +657,7 @@
     # 紧接着自检的 /etc 可写性探针也失败:
     selftest: WRITE_FAIL(/etc 写不进去,keel-mounts 挂的 overlay 有问题)
     ```
-    原因:14 GiB 的安装镜像里 `esp 1G + root-a 6G + root-b 6G`,留给 `volume` 的只剩 1 GiB,
+    原因:14 GiB 的安装镜像里 `esp 1G + root-a 6G + root-b 6G`,留给 `data` 的只剩 1 GiB,
     而 `keel-firstboot` 的扩容在 live 环境里没得扩(镜像自己没剩余空间)⇒ `/data` 一直 1 GiB。
     swapfile 默认 `min(内存, 8G)`(VM 里 1.9G)直接写下去,dd 写到一半 ENOSPC,`set -e` 让单元失败,
     **半截文件留在盘上把 /data 占满** —— 而 `/etc` overlay 的 upper 就在同一个文件系统上
@@ -667,23 +667,28 @@
     ⇒ 现在的 `/usr/lib/keel/swapfile`:
     1. 创建前用 `df -P -B1 /data` 取可用空间,**最多用一半**;请求值超过上限就压到上限并记日志;
     2. 可用空间连 256 MiB 都不到就**正常退出**(只记一笔),不让单元变红 ——
-       1 GiB 的 live volume 本来就不该有 swap,装到真机、volume 扩到整盘后会自动建;
+       1 GiB 的 live data 分区本来就不该有 swap,装到真机、data 分区扩到整盘后会自动建;
     3. 先写 `$SWAP.new`、`mkswap` 成功后才 `mv` 成正式文件;任何一步失败都 `rm -f` 半截文件;
        已存在的文件若没有 swap 签名(上次失败的遗留)先删掉重建。
     `tools/verify.sh` 有断言。**教训**:① 只读根 + overlay 的系统里 **`/data` 写满 = `/etc` 也写不进去**,
     任何"一次性写一大块"的脚本(swapfile、下载、日志)都必须先问可用空间;
     ② "创建大文件"要"先写临时文件、成功再改名",否则失败会留下垃圾并且**每次启动都继续坏下去**。
 
-38. **持久分区的挂载点从 `/Volume` 改名成 `/data`(2026-09);GPT 标签**故意**仍然是 `volume`。**
-    改名本身是机械的(镜像里的挂载点、符号链接目标、`/data/keel/state`、单元里的
-    `ConditionPathIsMountPoint=`、文档与断言一起改),但**分区标签不能跟着改**:
-    标签写在已经做好的分区表里,装机后不会再改 —— 改成 `data` 之后
-    (a) 老机器上根本找不到这个分区,(b) **另一个槽里的旧镜像也找不到它**
-    (旧镜像扫的是 `PARTNAME=volume`)⇒ 回滚时直接起不来(违反不变量 6 的"只增不破")。
-    所以现在:挂载点叫 `/data`、`lsblk` 里 PARTLABEL 还是 `volume`,而 `keel_part_dev volume`
-    这个查找键也就跟着叫 volume —— **别再"顺手把标签也改了"**。
-    分区内的目录结构(`keel/ var/ overlayfs/ home/ nix/`)一个都没动,所以换槽/改名不丢状态;
-    早期文档与旧日志里的 `/Volume` 指的都是 `/data`(决策 D17)。
+38. **持久分区从 `/Volume` 改名成 `/data`(2026-09):挂载点、GPT 标签、骨架目录、救援子命令一起改。**
+    * 挂载点:`/Volume` → `/data`(所有路径、符号链接目标、`/data/keel/state`、单元里的
+      `ConditionPathIsMountPoint=`、断言、文档一起改);
+    * **GPT 标签 / 文件系统标签**:`volume` → `data` —— 分区名就是 repart 定义文件名去掉数字前缀,
+      所以 `repart/install/30-volume.conf` 改名成 `30-data.conf`,`Label=volume` → `Label=data`;
+      查找键随之变成 `keel_part_dev data`,`os-install` 的 `mkfs.ext4 -L data`、
+      `os-rescue` 的 `/dev/disk/by-partlabel/data` 一起改;
+    * 骨架目录:`/usr/share/keel/volume-skeleton` → `data-skeleton`(纯构建期路径);
+    * 救援子命令:`os-rescue --init-volume` / `--grow-volume` → `--init-data` / `--grow-data`。
+    **为什么这次敢动标签**:标签写在已经做好的分区表里,装完就不会再变;老机器、以及**另一个槽里的
+    旧镜像**都按标签找这个分区(坑 #24 那套 `PARTNAME=` 扫描),标签一改它们就找不到 ⇒ 回滚直接
+    起不来(违反不变量 6 的"只增不破")。2026-09 做这件事时所有装机都还只是虚拟机实验,所以一次改干净;
+    **v1(真机装过机)之后再想改标签,必须按"只增不破"设计**(比如同时认新旧两个名字,或提供迁移步骤)。
+    **教训**:分区标签是**磁盘上的事实**,挂载点/目录名/子命令名是**镜像里的事实** ——
+    改后者随时可以,改前者要先问"外面有没有已经按旧名字做好的盘"。
 
 ---
 
@@ -734,18 +739,18 @@ sudo tools/burn.sh /dev/nvme0n1
 
 1. ~~`root=PARTLABEL=` 与 `systemd.mount-extra=PARTLABEL=...` 在 initrd 里的解析~~
    **已实测(2026-09,VM)**:`root=PARTLABEL=` 在 initrd 里有效 ✓;
-   `systemd.mount-extra=PARTLABEL=volume:/data:…` 在 initrd 里**不会被挂载** ✗,
+   `systemd.mount-extra=PARTLABEL=data:/data:…` 在 initrd 里**不会被挂载** ✗,
    在主系统里会挂但依赖 udev ⇒ 造成启动死锁。结论已回写到不变量 2 与坑 #24。
 2. `systemd-sysupdate` 的 `Type=partition` transfer 对双槽布局的匹配语义(验证通过后换掉 v1 的直接写盘)。
 3. `/usr/lib/modules/<kver>` 挂 overlay 后 `depmod` + 模块加载的实际行为(为"第三方内核模块外置"做准备)。
 4. ~~**`os-install` 的完整流程**(在 VM 里对第二块盘演练)~~
-   **已实测走通(2026-09,VM)**:repart 建表 → dd 根分区 → mkfs+铺 volume 骨架 → 复制 ESP →
+   **已实测走通(2026-09,VM)**:repart 建表 → dd 根分区 → mkfs+铺 data 骨架 → 复制 ESP →
    写 pending → **目标盘首启成功**。途中修掉坑 #31(镜像里没有 `/usr/lib/keel/repart-install.d`)、
    #32(镜像里没有 `dosfstools`,repart 格式化 ESP 失败)、#33(建表后 `find_part` 查 `lsblk` 的
    PARTLABEL 扑空,已改成先扫 sysfs + 重试)。
 5. **装机后 nix 真的能用**(`nix-shell -p vim` 等)—— 第一次跑就撞上坑 #34(`/nix` 是符号链接),
    已改成「真实目录 + bind mount」。**待复验**:新镜像里 `/nix` 是真目录、bind 生效、
-   `nix-shell -p …` 能装能跑;以及 `df -h /data` 确认首启把 volume 扩到了整盘(不变量 14)。
+   `nix-shell -p …` 能装能跑;以及 `df -h /data` 确认首启把 data 分区扩到了整盘(不变量 14)。
 6. ~~**ESP 在装机后的系统里没挂上**~~ **已修(2026-09,坑 #36 / 决策 D18)**:
    `keel-mounts` 自己扫 `PARTNAME=esp` 以 rw 挂到 `/boot`,cmdline 加 `systemd.gpt_auto=no`,
    `lib.sh` 只认真实挂载点(`KEEL_ESP_MOUNTED`),没挂上时 os-status / os-update / keel-confirm
@@ -766,7 +771,7 @@ sudo tools/burn.sh /dev/nvme0n1
    networkd 日志 `enp0s1: DHCPv4 address 10.0.2.15/24, gateway 10.0.2.2 acquired from 10.0.2.2`,
    **全程没有 ENOPKG**,连跑 10 轮(200 秒)状态稳定。复验入口就是 test profile 里的
    `mkosi.extra-test/`(`keel-selftest.service` 把现场打到控制台)。
-   同轮 VM 顺手抓到坑 #37(live 镜像 volume 只有 1 GiB + swapfile 写满 ⇒ `/etc` 也写不进去),已修;
+   同轮 VM 顺手抓到坑 #37(live 镜像 data 分区只有 1 GiB + swapfile 写满 ⇒ `/etc` 也写不进去),已修;
    **第三轮 VM 复验**:`请求的 swap 是 1906 MiB,但 /data 只有 943 MiB 可用 ⇒ 按 471 MiB 创建`
    → `已启用 swap` → `Finished keel-swapfile.service`,`/etc` 写探针 `WRITE_OK`,
    失败单元只剩 6 个 `systemd-pcrlock-*`(VM 没 TPM,预期)。

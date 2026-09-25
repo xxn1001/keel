@@ -162,10 +162,10 @@ if ! have systemd-repart || ! have sfdisk; then
 else
     tree=$(tmpd)
     mkdir -p "$tree/boot/EFI/Linux" "$tree/efi" "$tree/etc" \
-             "$tree/usr/share/keel/volume-skeleton/keel" \
-             "$tree/usr/share/keel/volume-skeleton/var/lib/dbus"
+             "$tree/usr/share/keel/data-skeleton/keel" \
+             "$tree/usr/share/keel/data-skeleton/var/lib/dbus"
     : >"$tree/boot/EFI/Linux/keel-a.efi"
-    echo 1 >"$tree/usr/share/keel/volume-skeleton/keel/schema-version"
+    echo 1 >"$tree/usr/share/keel/data-skeleton/keel/schema-version"
 
     for d in repart/install repart/slot-a repart/slot-b; do
         img="$tree/out.raw"; rm -f "$img"
@@ -185,19 +185,19 @@ else
         sizes=$(sfdisk --dump "$img" 2>/dev/null | sed -n 's/.*size= *\([0-9]*\),.*/\1/p' | tr '\n' ' ')
         case "$d" in
         repart/install)
-            [ "$names" = "esp root-a root-b volume " ] \
-                && ok "安装镜像分区名 = esp root-a root-b volume" \
+            [ "$names" = "esp root-a root-b data " ] \
+                && ok "安装镜像分区名 = esp root-a root-b data" \
                 || no "安装镜像分区名不对:[$names]"
             # 每个分区的大小(MiB)
             set -- $sizes
             [ "$(( $1 * 512 / 1048576 ))" = 1024 ] && ok "esp = 1 GiB" || no "esp 不是 1 GiB(第 1 个分区 $(( $1 * 512 / 1048576 )) MiB)"
             [ "$(( $2 * 512 / 1048576 ))" = 6144 ] && ok "root-a = 6 GiB" || no "root-a 不是 6 GiB($(( $2 * 512 / 1048576 )) MiB)"
             [ "$(( $3 * 512 / 1048576 ))" = 6144 ] && ok "root-b = 6 GiB" || no "root-b 不是 6 GiB($(( $3 * 512 / 1048576 )) MiB)"
-            # volume 必须是项目私有类型,否则首启扩容会误配到 root-b
-            voltype=$(sfdisk --dump "$img" 2>/dev/null | grep 'name="volume"' | sed -n 's/.*type=\([0-9A-Fa-f-]*\).*/\1/p')
+            # data 分区必须是项目私有类型,否则首启扩容会误配到 root-b
+            voltype=$(sfdisk --dump "$img" 2>/dev/null | grep 'name="data"' | sed -n 's/.*type=\([0-9A-Fa-f-]*\).*/\1/p')
             [ "$voltype" = "D605065B-64F9-4A07-A0B8-70963175C6E6" ] \
-                && ok "volume 类型 = 项目私有 UUID" \
-                || no "volume 类型不是私有 UUID(实际 $voltype)"
+                && ok "data 分区类型 = 项目私有 UUID" \
+                || no "data 分区类型不是私有 UUID(实际 $voltype)"
             sizes_install="$sizes"
             ;;
         repart/slot-a)
@@ -212,7 +212,7 @@ else
     # os-install 在目标机上跑的是**镜像里那份**定义(mkosi.postinst 装进
     # /usr/lib/keel/repart-install.d),它是 repart/install 去掉 CopyFiles= 的版本。
     # 这里按同样的方式生成一份并真跑一遍:既证明它本身是合法定义,也证明分区表
-    # 与构建时那份逐字节一致(名字/尺寸/volume 类型)。
+    # 与构建时那份逐字节一致(名字/尺寸/类型)。
     rt="$tree/repart-runtime"
     mkdir -p "$rt"
     for f in repart/install/*.conf; do
@@ -228,12 +228,12 @@ else
             "$rtimg" >"$tree/rt.log" 2>&1; then
         rnames=$(sfdisk --dump "$rtimg" 2>/dev/null | sed -n 's/.*name="\([^"]*\)".*/\1/p' | tr '\n' ' ')
         rsizes=$(sfdisk --dump "$rtimg" 2>/dev/null | sed -n 's/.*size= *\([0-9]*\),.*/\1/p' | tr '\n' ' ')
-        rtype=$(sfdisk --dump "$rtimg" 2>/dev/null | grep 'name="volume"' | sed -n 's/.*type=\([0-9A-Fa-f-]*\).*/\1/p')
-        if [ "$rnames" = "esp root-a root-b volume " ] && [ "$rsizes" = "$sizes_install" ] \
+        rtype=$(sfdisk --dump "$rtimg" 2>/dev/null | grep 'name="data"' | sed -n 's/.*type=\([0-9A-Fa-f-]*\).*/\1/p')
+        if [ "$rnames" = "esp root-a root-b data " ] && [ "$rsizes" = "$sizes_install" ] \
            && [ "$rtype" = "D605065B-64F9-4A07-A0B8-70963175C6E6" ]; then
-            ok "运行时定义产出的分区表与构建时一致(名字/尺寸/volume 类型)"
+            ok "运行时定义产出的分区表与构建时一致(名字/尺寸/类型)"
         else
-            no "运行时定义与构建时的分区表不一致:[$rnames][$rsizes][$rtype] vs [esp root-a root-b volume ][$sizes_install]"
+            no "运行时定义与构建时的分区表不一致:[$rnames][$rsizes][$rtype] vs [esp root-a root-b data ][$sizes_install]"
         fi
     else
         no "运行时 repart 定义 dry-run 失败(os-install 在目标机上会跑的就是它)"
@@ -290,13 +290,13 @@ fi
 # ---------------------------------------------------------------------------
 head1 "6. 一致性断言(改一处忘一处的经典位置)"
 # ---------------------------------------------------------------------------
-uuid_repart=$(sed -n 's/^Type=\(.*\)$/\1/p' repart/install/30-volume.conf | head -1)
-uuid_grow=$(sed -n 's/^Type=\(.*\)$/\1/p' mkosi.extra/usr/lib/keel/repart.d/40-volume-grow.conf | head -1)
+uuid_repart=$(sed -n 's/^Type=\(.*\)$/\1/p' repart/install/30-data.conf | head -1)
+uuid_grow=$(sed -n 's/^Type=\(.*\)$/\1/p' mkosi.extra/usr/lib/keel/repart.d/40-data-grow.conf | head -1)
 [ -n "$uuid_repart" ] && [ "$uuid_repart" = "$uuid_grow" ] \
-    && ok "volume 类型 UUID 在安装镜像与扩容定义里一致" \
-    || no "volume 类型 UUID 不一致:安装=[$uuid_repart] 扩容=[$uuid_grow]"
+    && ok "类型 UUID 在安装镜像与扩容定义里一致" \
+    || no "类型 UUID 不一致:安装=[$uuid_repart] 扩容=[$uuid_grow]"
 
-skel_repart=$(grep -o 'CopyFiles=[^:]*' repart/install/30-volume.conf | head -1 | cut -d= -f2)
+skel_repart=$(grep -o 'CopyFiles=[^:]*' repart/install/30-data.conf | head -1 | cut -d= -f2)
 if grep -q "$skel_repart" mkosi.finalize; then
     ok "骨架路径 $skel_repart 在 finalize 里也出现"
 else
@@ -313,8 +313,8 @@ else
 fi
 
 if grep -q 'PARTNAME=\$want' mkosi.extra/usr/lib/keel/lib.sh \
-   && grep -q 'keel_part_dev volume' mkosi.extra/usr/lib/keel/mounts; then
-    ok "lib.sh 用 sysfs 的 PARTNAME 找分区(不依赖 udev),mounts 调它挂 volume"
+   && grep -q 'keel_part_dev data' mkosi.extra/usr/lib/keel/mounts; then
+    ok "lib.sh 用 sysfs 的 PARTNAME 找分区(不依赖 udev),mounts 调它挂 data 分区"
 else
     no "找不到「按 PARTNAME 扫 sysfs」的查找逻辑(lib.sh 的 keel_part_dev + mounts 里的调用)—— /data 就挂不上了"
 fi
@@ -446,7 +446,7 @@ else
     no "build-container.sh 的 -p 没接到 tools/build.sh(KEEL_ROOT_PASSWORD)"
 fi
 
-# os-install 的 find_part:live 盘与目标盘**分区同名**(都是 root-a / esp / volume),
+# os-install 的 find_part:live 盘与目标盘**分区同名**(都是 root-a / esp / data),
 # 所以必须按"父设备等于目标盘"筛;而且刚写完分区表时 udev 可能还没把 PARTLABEL 填上
 # (2026-09 真机踩过:repart 建好了四个分区,这里一个都找不到,坑 #33)⇒ 先扫 sysfs。
 # 这段逻辑纯文本可测:造一棵假 sysfs 树(含另一块盘上的同名分区)真跑一遍。
@@ -455,7 +455,7 @@ if have sed && have readlink; then
     mkdir -p "$ft/sys/class/block" "$ft/sys/devices/block/vda/vda1" \
              "$ft/sys/devices/block/vda/vda2" "$ft/sys/devices/block/vdb/vdb1"
     printf 'PARTNAME=root-a\n' >"$ft/sys/devices/block/vda/vda1/uevent"
-    printf 'PARTNAME=volume\n' >"$ft/sys/devices/block/vda/vda2/uevent"
+    printf 'PARTNAME=data\n' >"$ft/sys/devices/block/vda/vda2/uevent"
     printf 'PARTNAME=root-a\n' >"$ft/sys/devices/block/vdb/vdb1/uevent"
     ln -s ../../devices/block/vda      "$ft/sys/class/block/vda"
     ln -s ../../devices/block/vda/vda1 "$ft/sys/class/block/vda1"
@@ -471,12 +471,12 @@ if have sed && have readlink; then
             | sed "s|/sys/class/block|$ft/sys/class/block|g; s|sleep 1|:|"
     } >"$ft/fn.sh"
     got_a=$(bash -c '. '"$ft"'/fn.sh; find_part root-a' 2>/dev/null)
-    got_v=$(bash -c '. '"$ft"'/fn.sh; find_part volume' 2>/dev/null)
+    got_v=$(bash -c '. '"$ft"'/fn.sh; find_part data' 2>/dev/null)
     got_x=$(bash -c '. '"$ft"'/fn.sh; find_part esp' 2>/dev/null)
     if [ "$got_a" = "/dev/vda1" ] && [ "$got_v" = "/dev/vda2" ] && [ -z "$got_x" ]; then
         ok "find_part 按父设备筛分区(假 sysfs:vda 命中、vdb 上的同名分区被忽略、查不到时输出为空)"
     else
-        no "find_part 逻辑不对:root-a=[$got_a] volume=[$got_v] esp=[$got_x](期望 /dev/vda1 /dev/vda2 空)"
+        no "find_part 逻辑不对:root-a=[$got_a] data=[$got_v] esp=[$got_x](期望 /dev/vda1 /dev/vda2 空)"
     fi
 fi
 
@@ -639,7 +639,7 @@ done
 ok "preset 覆盖了四个 keel 单元"
 
 # swapfile:必须按 /data 的可用空间给自己设上限,而且不能留下半截文件。
-# 教训(2026-09,VM 实测):live 镜像的 volume 只有 1 GiB,而默认大小按内存算(1.9G)
+# 教训(2026-09,VM 实测):live 镜像的 data 分区只有 1 GiB,而默认大小按内存算(1.9G)
 # ⇒ dd 写到 ENOSPC,半个 swapfile 把 /data 填满 ⇒ /etc overlay 的 upper 再也写不进去。
 if grep -q 'df -P -B1 /data' mkosi.extra/usr/lib/keel/swapfile \
    && grep -q 'SWAP_NEW' mkosi.extra/usr/lib/keel/swapfile \

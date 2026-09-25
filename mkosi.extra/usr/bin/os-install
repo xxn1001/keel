@@ -19,10 +19,10 @@ set -euo pipefail
 # shellcheck disable=SC1091  # 注释与 source 行之间不能插别的东西
 . /usr/lib/keel/lib.sh
 
-readonly SKELETON="/usr/share/keel/volume-skeleton"
+readonly SKELETON="/usr/share/keel/data-skeleton"
 readonly REPART_DEFS="/usr/lib/keel/repart-install.d"
 readonly LIVE_CONFIG="/data/keel/config"
-readonly VOLUME_LABEL="volume"
+readonly DATA_LABEL="data"
 
 usage() {
     cat <<'EOF'
@@ -32,11 +32,11 @@ usage() {
   --yes          跳过交互确认(无人值守用;请自己确保设备名没写错)
 
 做的事(architecture.md §7.1 B):
-  1. systemd-repart 在目标盘建表(esp / root-a / root-b / volume)
+  1. systemd-repart 在目标盘建表(esp / root-a / root-b / data)
   2. 当前运行的根文件系统 dd 到目标 root-a
-  3. mkfs.ext4 目标 volume,铺上镜像里的 /data 骨架 + 当前 config
+  3. mkfs.ext4 目标 data 分区,铺上镜像里的 /data 骨架 + 当前 config
   4. 当前 live ESP 的内容整体复制到目标 ESP(引导器 + loader.conf + UKI)
-  5. 打印后续步骤(插到目标机 → UEFI 启动 → 首启自动补骨架/扩 volume/建 NVRAM 项)
+  5. 打印后续步骤(插到目标机 → UEFI 启动 → 首启自动补骨架/扩 data 分区/建 NVRAM 项)
 EOF
 }
 
@@ -61,7 +61,7 @@ confirm() {
 
 # 找目标盘上 PARTLABEL=<名字> 的分区路径。
 # 不能直接用 /dev/disk/by-partlabel:live 与目标盘的分区**标签同名**(都是 root-a /
-# esp / volume),by-partlabel 只会指向其中一个(通常是 live 那个)。所以必须按
+# esp / data),by-partlabel 只会指向其中一个(通常是 live 那个)。所以必须按
 # "父设备等于目标盘"来筛。
 #
 # 两条查找路径,先 sysfs 再 lsblk(2026-09 真机踩过):
@@ -207,7 +207,7 @@ fi
 keel_log "确认完成,开始安装(目标盘 ${TARGET})"
 
 # ---------------------------------------------------------------------------
-# 1) 建表:esp / root-a / root-b / volume
+# 1) 建表:esp / root-a / root-b / data
 #
 # --empty=force 是故意的:目标盘上原有的分区表和文件系统全部作废(用户已经确认过)。
 # ---------------------------------------------------------------------------
@@ -222,12 +222,12 @@ sync
 blockdev --rereadpt "$TARGET" 2>/dev/null || true
 udevadm settle --timeout=10 2>/dev/null || true
 part_root_a="$(find_part root-a)"
-part_volume="$(find_part volume)"
+part_data="$(find_part data)"
 part_esp="$(find_part esp)"
 [ -n "$part_root_a" ] || keel_die "建表后找不到目标盘上的 root-a 分区(检查 ${REPART_DEFS} 里的分区名;现场见上面的 lsblk 输出)"
-[ -n "$part_volume" ] || keel_die "建表后找不到目标盘上的 volume 分区(现场见上面的 lsblk 输出)"
+[ -n "$part_data" ] || keel_die "建表后找不到目标盘上的 data 分区(现场见上面的 lsblk 输出)"
 [ -n "$part_esp" ] || keel_die "建表后找不到目标盘上的 esp 分区(现场见上面的 lsblk 输出)"
-keel_log "目标分区:root-a=${part_root_a} volume=${part_volume} esp=${part_esp}"
+keel_log "目标分区:root-a=${part_root_a} data=${part_data} esp=${part_esp}"
 
 # ---------------------------------------------------------------------------
 # 2) 把当前运行系统的根写进目标 root-a
@@ -258,31 +258,31 @@ sync
 keel_log "root-a 写入完成"
 
 # ---------------------------------------------------------------------------
-# 3) volume:mkfs + 骨架 + config
+# 3) data 分区:mkfs + 骨架 + config
 #
-# repart 的定义里 volume 已经是 ext4(Format=ext4),这里再 mkfs 一次是为了拿到
+# repart 的定义里 data 分区已经是 ext4(Format=ext4),这里再 mkfs 一次是为了拿到
 # 确定的标签与全新文件系统 —— 骨架必须从零铺,不能有上次安装的残留。
 # ---------------------------------------------------------------------------
-keel_log "格式化 ${part_volume}(ext4,label=${VOLUME_LABEL})"
-mkfs.ext4 -q -L "$VOLUME_LABEL" -F "$part_volume" || keel_die "mkfs.ext4 ${part_volume} 失败"
+keel_log "格式化 ${part_data}(ext4,label=${DATA_LABEL})"
+mkfs.ext4 -q -L "$DATA_LABEL" -F "$part_data" || keel_die "mkfs.ext4 ${part_data} 失败"
 
-VOL_MNT="$(mktemp -d /tmp/keel-install.XXXXXX)"
+DATA_MNT="$(mktemp -d /tmp/keel-install.XXXXXX)"
 ESP_MNT="$(mktemp -d /tmp/keel-install.XXXXXX)"
 # 一个 trap 管两个挂载点。刻意不装两个 trap:第二次 trap 会**覆盖**第一次,
 # 中途失败就会留下挂着的临时挂载点。
 # shellcheck disable=SC2064
-trap "umount -R '$VOL_MNT' 2>/dev/null || true; umount -R '$ESP_MNT' 2>/dev/null || true; rm -rf '$VOL_MNT' '$ESP_MNT'" EXIT
+trap "umount -R '$DATA_MNT' 2>/dev/null || true; umount -R '$ESP_MNT' 2>/dev/null || true; rm -rf '$DATA_MNT' '$ESP_MNT'" EXIT
 
-mount -t ext4 "$part_volume" "$VOL_MNT" || keel_die "挂载 ${part_volume} 失败"
+mount -t ext4 "$part_data" "$DATA_MNT" || keel_die "挂载 ${part_data} 失败"
 if [ -d "$SKELETON" ]; then
-    cp -a "$SKELETON/." "$VOL_MNT/" || keel_die "铺 /data 骨架失败"
-    keel_log "骨架已铺入目标 volume(${SKELETON})"
+    cp -a "$SKELETON/." "$DATA_MNT/" || keel_die "铺 /data 骨架失败"
+    keel_log "骨架已铺入目标 data 分区(${SKELETON})"
 else
-    keel_log "警告:镜像里没有 ${SKELETON},目标 volume 只有空目录;首启会尝试自愈(os-rescue --init-volume)"
+    keel_log "警告:镜像里没有 ${SKELETON},目标 data 分区只有空目录;首启会尝试自愈(os-rescue --init-data)"
 fi
 if [ -f "$LIVE_CONFIG" ]; then
-    install -d -m 0755 "$VOL_MNT/keel"
-    cp -a "$LIVE_CONFIG" "$VOL_MNT/keel/config" || keel_die "复制 ${LIVE_CONFIG} 失败"
+    install -d -m 0755 "$DATA_MNT/keel"
+    cp -a "$LIVE_CONFIG" "$DATA_MNT/keel/config" || keel_die "复制 ${LIVE_CONFIG} 失败"
     keel_log "已把当前 /data/keel/config 带到目标(首启就有可用的更新源)"
 fi
 
@@ -293,7 +293,7 @@ fi
 # 目标盘的 state 文件是新建的,由本脚本直接写(keel_state_set 只能写 live 的那份)。
 # TODO(待验证):keel-confirm 对"pending 存在但没有 running_slot 历史"的处理。
 # ---------------------------------------------------------------------------
-if [ -d "$VOL_MNT/keel" ]; then
+if [ -d "$DATA_MNT/keel" ]; then
     if ! {
         echo "pending_slot=a"
         echo "pending_version=${CURRENT_VERSION}"
@@ -301,14 +301,14 @@ if [ -d "$VOL_MNT/keel" ]; then
         echo "last_result="
         echo "last_result_version="
         echo "last_result_time="
-    } >"$VOL_MNT/keel/state"; then
+    } >"$DATA_MNT/keel/state"; then
         keel_log "警告:写目标 /data/keel/state 失败(首启的成功判定会退化为'无 pending')"
     fi
 fi
 sync
-keel_log "volume 初始化完成,卸载 ${VOL_MNT}"
-umount "$VOL_MNT" || keel_die "卸载 ${VOL_MNT} 失败"
-rm -rf "$VOL_MNT"
+keel_log "data 分区初始化完成,卸载 ${DATA_MNT}"
+umount "$DATA_MNT" || keel_die "卸载 ${DATA_MNT} 失败"
+rm -rf "$DATA_MNT"
 trap - EXIT
 
 # ---------------------------------------------------------------------------
@@ -381,7 +381,7 @@ cat <<EOF
   1. 把目标盘装进目标机,固件里确认是 **UEFI 模式**(关掉 CSM/Legacy);
   2. 首次启动会自动完成(keel-firstboot.service,幂等):
      - 修补 /data 骨架(顺带重建 dbus 的 machine-id 链接)
-     - 把 volume 扩到整盘剩余空间
+     - 把 data 分区扩到整盘剩余空间
      - 跑 bootctl install 建立本机 NVRAM 启动项(装机镜像里不可能带)
      - 按 /data/keel/config 的 SWAPFILE_SIZE 创建并启用 swapfile
   3. 起来后 os-status 确认:当前槽、/data 容量、schema-version 都正常;

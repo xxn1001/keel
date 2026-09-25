@@ -8,7 +8,7 @@
 set -euo pipefail
 
 R="${BUILDROOT:?BUILDROOT 未设置}"
-SKEL="$R/usr/share/keel/volume-skeleton"
+SKEL="$R/usr/share/keel/data-skeleton"
 log() { echo "keel-finalize: $*" >&2; }
 
 # ---------------------------------------------------------------------------

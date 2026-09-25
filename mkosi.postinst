@@ -71,7 +71,7 @@ install -d -m 0755 "$R/efi" "$R/boot"
 # **删掉 CopyFiles=**。原因:repart 的 CopyFiles 源在既没有 --root=、也没有
 # --copy-source= 时解析到**宿主机的真实 /** —— mkosi 构建时会传镜像树,运行时不会。
 # 于是运行时跑这份定义会去拷 /proc /sys /run /data …(而 os-install 本来就自己
-# dd 根分区、mkfs volume、复制 ESP 内容,这些 CopyFiles 在运行时既没用又有害)。
+# dd 根分区、mkfs data 分区、复制 ESP 内容,这些 CopyFiles 在运行时既没用又有害)。
 # 分区名/类型/尺寸全部保留 ⇒ 建出来的分区表与构建时完全一致
 # (tools/verify.sh 会把两份定义各 dry-run 一次做对比)。
 # ---------------------------------------------------------------------------

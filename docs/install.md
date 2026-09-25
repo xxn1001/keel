@@ -72,7 +72,7 @@ sudo mkosi --profile install --profile test --root-password=<临时密码> vm
 > (以前用 mkosi 的 `Autologin=yes`,因为镜像里缺 `/bin/login` 而变成死循环,见 `AGENTS.md` 坑 #26/#28;
 > VSock ssh 那条路也去掉了,见坑 #27。)
 
-虚拟机里就是一台完整的 keel:`esp` / `root-a` / `root-b` / `volume` 四个分区都在,
+虚拟机里就是一台完整的 keel:`esp` / `root-a` / `root-b` / `data` 四个分区都在,
 可以在里面练 `os-update`、`os-rescue`、槽切换,不用等真机。
 
 | 想做什么 | 怎么做 |
@@ -99,7 +99,7 @@ lsblk -o NAME,SIZE,MODEL             # 先确认设备名,认错盘不可逆
 sudo tools/burn.sh /dev/nvme0n1      # 包装 mkosi burn:按目标盘修正 GPT + 写入 + 回读校验
 ```
 
-`tools/burn.sh` 只做两件事:写入 `keel.raw`;把 `volume` 分区扩到目标盘剩余空间(§3.1)——
+`tools/burn.sh` 只做两件事:写入 `keel.raw`;把 `data` 分区扩到目标盘剩余空间(§3.1)——
 适合目标盘能拆下来、能接到构建机上的场景。
 
 ### 2.2 路径 B:U 盘当 live,自己装自己
@@ -119,7 +119,7 @@ sudo os-install /dev/nvme0n1
 
 `os-install` 做的事(§7.1 B):用 repart 在目标盘建表 → 把**当前运行的根**写进目标 `root-a` →
 挂目标 ESP 并把 live ESP 的内容整体拷过去(引导器 + UKI + `loader.conf`)→
-格式化 `volume` 并用镜像里的骨架初始化。
+格式化 `data` 分区并用镜像里的骨架初始化。
 
 > **live 镜像里必须有 `/usr/lib/keel/repart-install.d`**:那是 `os-install` 建表用的分区定义,
 > 由 `mkosi.postinst` 在构建时从仓库的 `repart/install/` 拷进去(并去掉 `CopyFiles=`,
@@ -159,7 +159,7 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 |---|---|---|
 | 固件 | **UEFI 模式启动**,关掉 CSM/Legacy | v1 只有 systemd-boot;槽切换与 boot counting 依赖 EFI 变量(§2) |
 | 目标盘 | **会被完全擦除** | 盘上原有数据、其他系统全部消失 |
-| 盘容量 | 至少放得下 `esp` 1 GiB + `root-a` 6 GiB + `root-b` 6 GiB + 可用的 `volume` | 布局常量见 §3.1/§3.2 |
+| 盘容量 | 至少放得下 `esp` 1 GiB + `root-a` 6 GiB + `root-b` 6 GiB + 可用的 `data` | 布局常量见 §3.1/§3.2 |
 | Secure Boot | v1 关闭 | v1 不做 Secure Boot;关着也保住了引导菜单里 `e` 改 cmdline 的调试通道(§13.1 #5) |
 | 先跑虚拟机 | 按 §1 在 `mkosi vm` 里过一遍 | 真机首次启动失败,只能靠 U 盘 live 救 |
 
@@ -169,8 +169,8 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 
 | # | 动作 | 说明 |
 |---|---|---|
-| 1 | 校验/修复 `/data` 骨架 | 缺失就按镜像里的骨架重建 —— "手贱清空 volume"的自愈入口 |
-| 2 | **两步**扩容:`systemd-repart --dry-run=no` 扩 `volume` **分区**,再 `systemd-growfs /data` 扩**文件系统** | repart 只扩分区、从不碰已存在分区的文件系统(`GrowFileSystem=` 只是个 GPT 标志位,只被 gpt-auto-generator 消费,而我们不走那条路)。**首启后请用 `df -h /data` 复核** |
+| 1 | 校验/修复 `/data` 骨架 | 缺失就按镜像里的骨架重建 —— "手贱清空 data"的自愈入口 |
+| 2 | **两步**扩容:`systemd-repart --dry-run=no` 扩 `data` **分区**,再 `systemd-growfs /data` 扩**文件系统** | repart 只扩分区、从不碰已存在分区的文件系统(`GrowFileSystem=` 只是个 GPT 标志位,只被 gpt-auto-generator 消费,而我们不走那条路)。**首启后请用 `df -h /data` 复核** |
 | 3 | `bootctl install` 建立本机 NVRAM 启动项 | 装机镜像里不可能带;已有则跳过 |
 | 4 | 创建并启用 swapfile(`/data/keel/swapfile`) | 不做休眠(决策 D9) |
 | 5 | 记录 `/data/keel/state` 与 `schema-version` | 之后 `os-status` 从这里读 |

@@ -85,7 +85,7 @@ lsblk -o NAME,SIZE,TYPE,PARTLABEL,FSTYPE  # 分区标签对不对
 
 | 症状 | 原因 |
 |---|---|
-| `Timed out waiting for device dev-disk-by-partlabel-volume.device` → `data.mount` / `efi.mount` 依赖失败 → `local-fs.target` 失败 | cmdline 的 `systemd.mount-extra=PARTLABEL=…` 需要 udev 建符号链接,而 udev 又要等可写的 `/etc`,`/etc` overlay 又要等 `/data` ⇒ 环形依赖。日志里会有一行 `[ SKIP ] Ordering cycle found, skipping local-fs-pre.target` |
+| `Timed out waiting for device dev-disk-by-partlabel-data.device` → `data.mount` 依赖失败 → `local-fs.target` 失败 | cmdline 的 `systemd.mount-extra=PARTLABEL=…` 需要 udev 建符号链接,而 udev 又要等可写的 `/etc`,`/etc` overlay 又要等 `/data` ⇒ 环形依赖。日志里会有一行 `[ SKIP ] Ordering cycle found, skipping local-fs-pre.target` |
 | `systemd-random-seed.service` / `systemd-timesyncd.service` 失败 | 它们是往 `/var`(→ `/data`)写的,而 `/data` 那时还没挂上 |
 
 现在 `/data` 由 `keel-mounts.service` 自己挂(不依赖 udev),ESP 由 gpt-auto 按需挂载。
@@ -176,7 +176,7 @@ sudo systemctl restart keel-mounts   # 只是想把挂载重做一遍
 | `systemctl status keel-mounts --no-pager` | 没有失败;日志里有「已把 ESP(PARTNAME=esp)挂到 /boot」 |
 
 > 旧文档/旧日志里的 `/Volume` 就是现在的 `/data`(2026-09 改名,决策 D17);
-> 分区标签仍是 `volume`,所以 `lsblk` 里看到的还是 `volume`。
+> 分区标签就是 `data`,所以 `lsblk` 里 `PARTLABEL` 也是 `data`。
 
 ### 2.4 装机时 `os-install` 报错
 
@@ -192,7 +192,7 @@ sudo systemctl restart keel-mounts   # 只是想把挂载重做一遍
 
 ## 3. `/data` 相关
 
-`/data` 由 `keel-mounts.service` 在启动早期挂载(不变量 2:扫 `/sys` 的 `PARTNAME=volume`,
+`/data` 由 `keel-mounts.service` 在启动早期挂载(不变量 2:扫 `/sys` 的 `PARTNAME=data`,
 不依赖 udev)。`/var`、`/root` 是指向它的符号链接,`/home`、`/nix` 由它 bind 上来。
 所以 `/data` 一出问题,表现就是"到处都是空目录、机器像刚装好一样"。
 
@@ -201,16 +201,16 @@ findmnt /data                          # 挂上了吗(由 keel-mounts 挂,见 AG
 ls /data                               # var home nix overlayfs ota keel ...
 systemctl status keel-mounts.service     # 挂 /data + bind /home + 挂 /etc overlay
 systemctl status keel-firstboot.service  # 首启五件事:骨架 / 扩容 / NVRAM / swapfile / state
-lsblk -o NAME,SIZE,TYPE,PARTLABEL,FSTYPE,LABEL   # PARTLABEL=volume 的分区在不在
+lsblk -o NAME,SIZE,TYPE,PARTLABEL,FSTYPE,LABEL   # PARTLABEL=data 的分区在不在
 du -xh -d1 /data | sort -h             # 空间去哪了
 journalctl --disk-usage                  # journal 占了多少
 ```
 
 | 症状 | 处理 |
 |---|---|
-| 骨架不见了(目录缺失、`/var/log` 空) | `sudo os-rescue --init-volume`(幂等重建/修复骨架,§9) |
+| 骨架不见了(目录缺失、`/var/log` 空) | `sudo os-rescue --init-data`(幂等重建/修复骨架,§9) |
 | `/etc` 被改坏、回滚后行为异常 | `sudo os-rescue --reset-etc`:清空 overlay upper,下次启动从镜像重新播种。**先备份**:它会丢掉 ssh 主机密钥、machine-id、账号、网络配置 —— 把要留的东西复制到 `/data/home/<user>/` 下(那不在 upper 里) |
-| 装机后 `/data` 还是很小 | 正常应由首启的 `keel-firstboot` 自动扩盘(§7.2 ②);没扩成就用手动入口 `sudo os-rescue --grow-volume`,再 `lsblk` 确认 |
+| 装机后 `/data` 还是很小 | 正常应由首启的 `keel-firstboot` 自动扩盘(§7.2 ②);没扩成就用手动入口 `sudo os-rescue --grow-data`,再 `lsblk` 确认 |
 | `/data` 满了 | 先清 `/data/ota/`(用 `os-update gc`,§8),再清 journal(`journalctl --vacuum-size=`) |
 
 ## 4. nix 相关
@@ -286,7 +286,7 @@ journalctl -b -u keel-confirm.service -u keel-firstboot.service -p warning
 os-status                     # 当前槽/版本/内核、/data 用量、schema、pending、上次结果
 journalctl -b -p warning      # 本次启动的告警以上日志
 bootctl status                # ESP、固件、引导条目、当前与下次启动的条目
-lsblk -f                      # 分区标签 esp/root-a/root-b/volume、文件系统、挂载点
+lsblk -f                      # 分区标签 esp/root-a/root-b/data、文件系统、挂载点
 ```
 
 | 附加项 | 用途 |

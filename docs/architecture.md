@@ -49,9 +49,9 @@
 | 1 | `esp` | `esp` | vfat | 1 GiB | `/efi`(ro) | systemd-boot + `EFI/Linux/keel-a.efi` |
 | 2 | `root-a` | `root-x86-64` | ext4 | **6 GiB** | `/`(ro) | 系统树 + 符号链接 |
 | 3 | `root-b` | `linux-generic` | ext4 | **6 GiB** | — | 空槽,首次更新写入 |
-| 4 | `volume` | `linux-generic` | ext4 | 剩余全部 | `/data`(rw) | 全部可写状态 |
+| 4 | `data` | 项目私有 UUID | ext4 | 剩余全部 | `/data`(rw) | 全部可写状态 |
 
-镜像总大小 ≈ 14 GiB + volume 最小尺寸;`mkosi burn` / `os-install` 会按目标盘容量修正 GPT 并把
+镜像总大小 ≈ 14 GiB + data 分区最小尺寸;`mkosi burn` / `os-install` 会按目标盘容量修正 GPT 并把
 `volume` 扩到整盘。
 
 ### 3.2 为什么是 6 GiB / 为什么 B 槽在镜像里就存在
@@ -81,7 +81,7 @@
 ### 4.1 符号链接与挂载点
 
 ```
-/data  =  volume 分区的挂载点(启动早期由 keel-mounts 挂,ext4,rw)
+/data  =  data 分区的挂载点(启动早期由 keel-mounts 挂,ext4,rw)
 /var   -> /data/var           (符号链接)
 /root  -> /data/home/root     (符号链接)
 /home  =  真实空目录,启动早期 bind mount 到 /data/home
@@ -104,8 +104,8 @@
 ### 4.2 `/data` 骨架
 
 骨架在构建期由 `mkosi.finalize` 从镜像的 `/var` 快照生成(剔除包管理器状态目录),
-再由 repart 的 `CopyFiles=/usr/share/keel/volume-skeleton:/` 写进 volume 分区;
-同一份骨架留在镜像里供 `os-rescue --init-volume` 做自愈。
+再由 repart 的 `CopyFiles=/usr/share/keel/data-skeleton:/` 写进 data 分区;
+同一份骨架留在镜像里供 `os-rescue --init-data` 做自愈。
 
 ```
 /data/
@@ -166,7 +166,7 @@ workdir  = /data/overlayfs/etc/work
      → RemovePackages/RemoveFiles
      → mkosi.finalize:①快照 /var 生成骨架 ②把 /var /root 换成符号链接、给 /home 与 /nix 建空目录
      → 生成 UKI
-     → systemd-repart 生成最终镜像(此时骨架才被写进 volume 分区)
+     → systemd-repart 生成最终镜像(此时骨架才被写进 data 分区)
 ```
 
 ---
@@ -192,7 +192,7 @@ systemd.gpt_auto=no
   那种写法会在主系统生成依赖 udev 符号链接的 `.mount` 单元,而主系统 udev 要等 `systemd-sysusers`,
   sysusers 要可写的 `/etc`,可写的 `/etc`(overlay)又在 `/data` 上 ⇒ 环形依赖 ⇒
   systemd 丢掉 `local-fs-pre.target`、udev 被推到 emergency 之后、挂载全部 90s 超时 ⇒ emergency mode。
-  ⇒ `/data` 由 `keel-mounts.service` 自己挂(扫 `/sys` 的 `PARTNAME=volume`,不依赖 udev);
+  ⇒ `/data` 由 `keel-mounts.service` 自己挂(扫 `/sys` 的 `PARTNAME=data`,不依赖 udev);
   ESP 交给 `systemd-gpt-auto-generator`(挂到 `/boot`;代码里用 `$KEEL_ESP` / `$KEEL_UKI_DIR`)。
   实测:`root=PARTLABEL=root-a` 在 initrd 里**有效** ✓;`systemd.mount-extra=` 在 initrd 里**不生效** ✗。
 - `amd_iommu=on` / `intel_iommu=on` / `iommu=pt`:对没有对应硬件的机器**无害**,
@@ -288,7 +288,7 @@ sudo os-install /dev/nvme0n1
 `os-install` 做的事:用 repart 在目标盘建表 → 把当前运行的根写进目标 `root-a` →
 挂目标 ESP 并把 live ESP 的内容整体拷过去(引导器 + UKI + `loader.conf` 一起过去;
 UKI 的 cmdline 写的是 `root=PARTLABEL=root-a`,标签一致所以不需要改)→
-格式化 `volume` 并用镜像里的骨架初始化。
+格式化 `data` 分区并用镜像里的骨架初始化。
 U 盘本身也是一套完整系统,顺便当救援盘。
 **这条路径没有在真机上验证过**,脚本头部有显著标注(§13.2 R8)。
 
@@ -296,8 +296,8 @@ U 盘本身也是一套完整系统,顺便当救援盘。
 
 ### 7.2 首次启动自动完成(`keel-firstboot.service`,幂等)
 
-1. 校验/修复 `/data` 骨架(缺失就按镜像里的骨架重建 —— 这是"手贱清空 volume"的自愈入口);
-2. **两步**扩 `volume`:先用 `systemd-repart --dry-run=no` 扩**分区**(定义在
+1. 校验/修复 `/data` 骨架(缺失就按镜像里的骨架重建 —— 这是"手贱清空 data"的自愈入口);
+2. **两步**扩 `data` 分区:先用 `systemd-repart --dry-run=no` 扩**分区**(定义在
    `/usr/lib/keel/repart.d/`),再用 `systemd-growfs /data` 扩**文件系统** ——
    repart 从不改动已存在分区的文件系统,`GrowFileSystem=` 只是给
    `systemd-gpt-auto-generator` 看的 GPT 标志位(我们不走那条路,见 §13.1);
@@ -339,10 +339,10 @@ os-update gc               # 清理旧载荷(保留最近 2 个版本 + 当前)
 | | `rollback` | 等价于 `switch <另一个槽>`,并清掉 pending、把上次结果记成 failed |
 | | `gc` | 清理 `/data/ota/` 里过期的载荷(保留 pending 版本 + 最近 2 个) |
 | `os-install` | `<device> [--yes]` | 从 live 环境装到目标盘(§7.1 B)。**未在真机验证过** |
-| `os-rescue` | `--init-volume` | 把骨架里缺失的目录/链接补回 `/data`(幂等,不删已有内容) |
+| `os-rescue` | `--init-data` | 把骨架里缺失的目录/链接补回 `/data`(幂等,不删已有内容) |
 | | `--reset-etc` | 请求恢复出厂 `/etc`:下次启动时清空 overlay upper(旧内容先整体备份成 `etc.bak-<时间戳>`) |
 | | `--mark-bad` | 把当前槽标记为 bad(`systemd-bless-boot bad`) |
-| | `--grow-volume` | 手动把 `volume` 扩到整盘 |
+| | `--grow-data` | 手动把 `data` 分区扩到整盘 |
 | | `--repair-boot` | 重装引导器并重建 NVRAM 启动项 |
 
 `os-update` 是**门面**:对外的子命令与状态语义是稳定的,底层怎么把载荷写进另一个槽是可以替换的
@@ -410,12 +410,12 @@ keel/
 ├── mkosi.initrd.conf               ← 只影响默认 initrd(清空脚本类设置,见坑 #1)
 ├── mkosi.profiles/{install,slot-a,slot-b}.conf   产物形态
 ├── mkosi.profiles/test.conf       可叠加:仅虚拟机测试用(root 自动登录)
-├── repart/install/                   ← 安装镜像布局(esp + root-a + root-b + volume)
+├── repart/install/                   ← 安装镜像布局(esp + root-a + root-b + data)
 ├── repart/slot-{a,b}/        ← 载荷布局(esp + 目标槽 root)
 ├── mkosi.extra/                    ← 进镜像的所有文件:
 │   ├── usr/bin/os-{status,update,rescue,install}  用户命令
 │   ├── usr/lib/keel/{lib.sh,mounts,firstboot,confirm,swapfile}
-│   ├── usr/lib/keel/repart.d/40-volume-grow.conf  首启扩容定义
+│   ├── usr/lib/keel/repart.d/40-data-grow.conf  首启扩容定义
 │   ├── usr/lib/systemd/system/keel-*.service      四个单元
 │   ├── usr/lib/systemd/system-preset/00-keel.preset
 │   ├── etc/systemd/network/20-wired.network
@@ -449,7 +449,7 @@ keel/
 
 **已经在本地验证掉的**(用本机的 mkosi 27 与 systemd 261 实测):
 
-- ✅ repart 布局真跑通过:分区名精确为 `esp` / `root-a` / `root-b` / `volume`,
+- ✅ repart 布局真跑通过:分区名精确为 `esp` / `root-a` / `root-b` / `data`,
   尺寸 1 GiB / 6 GiB / 6 GiB / 其余全部;`Label=` 同时决定 GPT 分区名与文件系统标签;
   `CopyFiles=` 能把内容写进 vfat 与 ext4。
 - ✅ 三个 profile 的 `KernelCommandLine` 是**追加**语义,各自恰好一个 `root=PARTLABEL=root-<槽>`
@@ -461,7 +461,7 @@ keel/
 - ⚠️ **`GrowFileSystem=yes` 不会扩文件系统**(核对 systemd 源码与手册后确认):
   repart 只扩分区,`context_mkfs()` 对已存在的分区直接跳过;那个设置只打一个 GPT 标志位,
   而标志只被 `systemd-gpt-auto-generator` 消费 —— 我们的 `/data` 是 cmdline 显式挂载的,
-  不过 gpt-auto-generator。⇒ 首启与 `os-rescue --grow-volume` 里都补了
+  不过 gpt-auto-generator。⇒ 首启与 `os-rescue --grow-data` 里都补了
   `systemd-growfs /data`,并把 `e2fsprogs`(resize2fs)显式加进包清单。
   **真机首启后请用 `df -h /data` 复核。**
 - ⚠️ 发现并已修掉:`Profiles=` 默认值会让两个产物 profile 同时被解析(见上一节)。

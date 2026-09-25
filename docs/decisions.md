@@ -40,10 +40,10 @@
 ## D4 `/data` 的挂载时机
 
 - **决策(2026-09 修订)**:由 `keel-mounts.service`(initrd 之后、`sysinit` 之前)自己扫
-  `/sys/class/block/*/uevent` 的 `PARTNAME=volume` 找到分区并挂载,`blkid -t LABEL=volume` 兜底。
+  `/sys/class/block/*/uevent` 的 `PARTNAME=data` 找到分区并挂载,`blkid -t LABEL=data` 兜底。
   不经过 udev、不生成 `.mount` 单元。
 - **原决策(已推翻)**:写进 UKI 的 kernel cmdline:
-  `systemd.mount-extra=PARTLABEL=volume:/data:ext4:rw,noatime`。
+  `systemd.mount-extra=PARTLABEL=data:/data:ext4:rw,noatime`。
   当时的理由是"`systemd-fstab-generator` 在主系统和 initrd 里都会解析它,initrd 里自动加 `/sysroot/` 前缀"。
 - **推翻原因(真机 VM 实测,`AGENTS.md` 坑 #24)**:这两条理由都不成立 ——
   initrd 阶段根本没有生成 `/sysroot/data`(initrd 里连我们的文件都没有);
@@ -163,17 +163,19 @@
   `DHCP=yes` 交回 networkd,
   dhcpcd 已从镜像里彻底移除(它同时也会喂 DNS 给 resolved,现在这一步由 networkd 直接做)。
 
-## D17 持久分区的挂载点叫 `/data`
+## D17 持久分区统一叫 `data`
 
-- **决策**:`volume` 分区挂到 **`/data`**(2026-09 从 `/Volume` 改名);
-  **GPT 分区标签仍然是 `volume`**,不跟着改。
-- **理由**:挂载点是给人看的,`/data` 更直白(也少一次"Volume 是什么"的解释)。
-  标签不跟着改是**兼容性硬约束**:标签写在已经做好的分区表里,装机后不会再改 ——
-  改成 `data` 之后,(a) 老机器上根本找不到这个分区,(b) 另一个槽里的旧镜像也找不到它
-  (旧镜像扫的是 `PARTNAME=volume`)⇒ 回滚时直接起不来。挂载点名字属于镜像,分区标签属于磁盘。
-- **代价/边界**:镜像里不再有 `/Volume`;早期文档与旧日志里的 `/Volume` 指的都是 `/data`。
-  分区内的目录结构(`keel/`、`var/`、`overlayfs/`、`home/`、`nix/`)一个都没动,
-  所以**换槽/改名不丢任何状态**(同一个分区,只是挂到了新路径)。
+- **决策**:`data` 分区(2026-09 从 `volume` 改名)挂到 **`/data`**;GPT 标签、文件系统标签、
+  骨架目录(`/usr/share/keel/data-skeleton`)、救援子命令(`os-rescue --init-data` /
+  `--grow-data`)一起统一成 `data`。
+- **理由**:挂载点、标签、目录、子命令各叫一个名字是最容易出错的状态(改一处漏一处);
+  统一之后"看到 data 就是同一件事"。`/data` 也比 `/Volume` 直白,少一次"Volume 是什么"的解释。
+- **为什么这次敢动标签**:标签写在已经做好的分区表里,装机之后就不会再变 —— 老机器、以及
+  **另一个槽里的旧镜像**都按标签找分区,标签一改它们就找不到,回滚直接起不来(不变量 6 的
+  "只增不破")。2026-09 时所有装机都只是虚拟机实验(没有物理机),所以一次性改干净;
+  **v1(真机装过机)之后再动标签,必须按"只增不破"设计迁移**。
+- **边界**:分区内的目录结构(`keel/ var/ overlayfs/ home/ nix/`)一个都没动 ⇒ 换槽/改名不丢状态;
+  早期文档与旧日志里的 `/Volume` / `volume` 指的都是现在这套名字。
 
 ## D18 ESP 由我们自己挂,`systemd-gpt-auto-generator` 退场
 

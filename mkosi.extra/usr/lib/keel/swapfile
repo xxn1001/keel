@@ -40,7 +40,7 @@ wanted_size_bytes() {
 }
 
 # /data 上真正可用的字节数(swapfile 与 /etc overlay 的 upper、journal 抢同一块盘)
-volume_avail_bytes() {
+data_avail_bytes() {
     local v
     v=$(df -P -B1 /data 2>/dev/null | awk 'NR==2 {print $4}') || v=""
     case "$v" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$v" ;; esac
@@ -60,14 +60,14 @@ start)
     # 半个 swapfile 把 /data 填满 ⇒ **/etc overlay 的 upper 再也写不进去**
     # (连往 /etc 里新建一个文件都 ENOSPC)⇒ 首启的机器专属配置、SSH 主机密钥
     # 全都写不下去。所以在创建之前就按可用空间把大小压下来。
-    # 另外:空间不够**不是**错误(1 GiB 的 live volume 本来就不该有 swap),
+    # 另外:空间不够**不是**错误(1 GiB 的 live data 分区本来就不该有 swap),
     # 但单元失败会让人以为系统坏了 —— 所以走"记一笔、正常退出"。
     # -----------------------------------------------------------------------
-    avail=$(volume_avail_bytes)
+    avail=$(data_avail_bytes)
     cap=$(( avail / 2 ))
     if [ "$cap" -lt "$MIN_SWAP" ]; then
         keel_log "/data 可用空间只有 $(( avail / 1048576 )) MiB,放不下最小的 swap($(( MIN_SWAP / 1048576 )) MiB)"
-        keel_log "      ⇒ 本次不创建 swap(这不是故障;装到真机、volume 扩到整盘后会自动建)"
+        keel_log "      ⇒ 本次不创建 swap(这不是故障;装到真机、data 分区扩到整盘后会自动建)"
         exit 0
     fi
     if [ "$sz" -gt "$cap" ]; then
