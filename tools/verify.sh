@@ -679,6 +679,32 @@ else
     no "os-rescue --grow-data 没有 resize2fs 兜底(坑 #42)"
 fi
 
+# OTA 演练(mkosi.extra-test/):必须只在 test profile,且被 test preset 启用
+if [ -x mkosi.extra-test/usr/lib/keel/ota-drill ] &&
+   [ -f mkosi.extra-test/usr/lib/systemd/system/keel-ota-drill.service ]; then
+    ok "OTA 演练脚本与单元在 mkosi.extra-test/ 里(只有 test profile 会挂进镜像)"
+else
+    no "OTA 演练文件缺失或 ota-drill 不可执行"
+fi
+if grep -q '^enable keel-ota-drill.service'       mkosi.extra-test/usr/lib/systemd/system-preset/01-keel-test.preset; then
+    ok "test preset 启用了 keel-ota-drill.service"
+else
+    no "test preset 没启用 keel-ota-drill"
+fi
+if grep -rq 'keel-ota-drill' mkosi.postinst mkosi.finalize mkosi.extra 2>/dev/null; then
+    no "正式镜像的构建脚本/目录里出现了 keel-ota-drill(它必须只活在 test profile)"
+else
+    ok "正式产物完全不含 OTA 演练"
+fi
+if grep -q 'drill)' tools/build-container.sh &&
+   grep -q 'DRILL_BOOT_VERSION' tools/build-container.sh &&
+   grep -q 'truncate -s 40G' tools/build-container.sh &&
+   grep -q 'python3 -m http.server' tools/build-container.sh; then
+    ok "drill 模式:引导镜像版本旧于载荷 + truncate 40G + 容器内起 HTTP 源"
+else
+    no "tools/build-container.sh 的 drill 模式不完整"
+fi
+
 head1 "7. 账号模型(决策 D21:admin 是唯一交互账号,root 锁定)"
 # ---------------------------------------------------------------------------
 if grep -qE '^[[:space:]]*sudo$' mkosi.conf.d/20-packages.conf; then

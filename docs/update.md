@@ -153,3 +153,31 @@ SWAPFILE_SIZE=            # 可留空:默认 min(内存, 8G) 且不小于 1G
 | 5 | 上传整个目录 | 放到 `/data/keel/config` 指向的更新源;版本号由 `mkosi.version` + 构建时 `-B` 自动 bump(§6) |
 | 6 | 在真机演练 | 至少一次 `check → fetch → stage --reboot`;**有 schema 变更时必须加一次回滚演练**(§4) |
 | 7 | 回写文档 | 踩到的坑进 `AGENTS.md`;新决策进 `decisions.md`;命令或单元的行为变化同步到本文档 |
+
+## 9. 怎么复验更新与回滚(VM 演练)
+
+```bash
+sudo tools/build-container.sh -p <临时密码> drill
+```
+
+一条命令做完这件事(细节见 `tools/build-container.sh` 的 `drill` 模式与
+`mkosi.extra-test/usr/lib/keel/ota-drill`):
+
+1. `tools/build.sh` 构建**新版本载荷** → `dist/keel-<版本>/`;
+2. 用显式**较旧**的版本号(`2000.01.01.0001`)构建引导镜像 —— 这样
+   `os-update check` 才会认为"有新版本";镜像里的 test profile 带一个**自驱动状态机**
+   (`keel-ota-drill.service`,状态在 `/data/keel/ota-drill.state`,跨重启);
+3. 把安装镜像 `truncate -s 40G`(载荷 4 个产物约 13 GiB,而 live 镜像的 `/data` 只有 1 GiB;
+   首启会把 `data` 扩到整盘 ⇒ 27 GiB);
+4. 在容器里起 HTTP 源(guest 走 QEMU 用户态网络访问 `http://10.0.2.2:8000/good`);
+5. 起 VM,状态机自己跑:
+
+| 阶段 | 做什么 | 期望证据 |
+|---|---|---|
+| p0 | 等源 → `check` → `fetch` → `stage` → 重启 | `/data/ota/<新版本>/` 里 4 个产物 + sha256 全对;ESP 上出现 `keel-b+3.efi`;`state` 里有 pending |
+| p1 | 已在新槽:记录证据 → `rollback` → 重启 | 当前槽 b、版本 = 载荷版本;ESP 上条目已 bless 成 `keel-b.efi`;`keel-confirm` 日志显示"更新成功"、`last_result=success`、pending 已清 |
+| p2 | 已回旧槽:记录证据 | 当前槽 a、版本回到引导镜像那个(2000.01.01.0001) |
+
+证据全在控制台(宿主终端的 `mkosi vm` 输出)与 guest 的 `/data/keel/ota-drill.log` 里。
+**还没做的**:破坏性回滚演练(让新槽连着三次到不了 `boot-complete`,看引导器自动退回旧槽)——
+见 `docs/roadmap.md`。

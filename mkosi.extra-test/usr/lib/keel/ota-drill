@@ -1,0 +1,135 @@
+#!/bin/bash
+# keel OTA 演练 v1(test profile 专用):自驱动状态机,跨重启
+#
+# ── 为什么是"自驱动状态机" ──────────────────────────────────────────
+# 验证是在容器里跑 `mkosi vm`,而容器**连不进 guest**(mkosi 的 VSock ssh 在容器里是坏的,
+# docs/traps.md 坑 #27),宿主机也只能看控制台。所以让 guest 自己按阶段往下走、
+# 把每一步的证据喊到控制台 —— 这是唯一能自动化的路径。
+#
+# ── 状态机(状态文件在 /data 上,重启不丢)────────────────────────────
+#   p0  配好更新源 → os-update check/fetch/stage → 重启(进新槽)
+#   p1  已在新槽:记录"更新成功"的证据 → os-update rollback → 重启(回旧槽)
+#   p2  已回到旧槽:记录证据 → done
+#
+# 触发条件:更新源可达(宿主在 10.0.2.2:8000 起了 HTTP 服务,见 tools/build-container.sh 的
+# drill 模式)。不可达就**跳过并退出 0** —— 普通 VM 自检跑起来不该多一个红色单元。
+#
+# 期望结果(v1 要验证的完整链路):
+#   * fetch 把 4 个产物下到 /data/ota/<新版本>/ 并逐个校验 sha256;
+#   * stage 把新根写进**另一个槽**、把 UKI 写成 keel-<槽>+3.efi、设 preferred、写 pending;
+#   * 重启后 systemd-boot 按计数启动新槽,systemd-bless-boot 把它改名成正式名字(keel-b.efi),
+#     keel-confirm 在 boot-complete 后记 last_result=success 并清 pending;
+#   * os-update rollback 把 preferred 指回旧槽(并把 last_result 记成 failed —— 那是
+#     "用户主动回滚"的语义:认为当前这版不行);
+#   * 再重启回到旧槽,版本回到引导镜像那个版本。
+set -uo pipefail
+# shellcheck source=/usr/lib/keel/lib.sh
+# shellcheck disable=SC1091
+. /usr/lib/keel/lib.sh
+
+STATE=/data/keel/ota-drill.state
+DRILL_LOG=/data/keel/ota-drill.log
+SRC="${KEEL_DRILL_SRC:-http://10.0.2.2:8000/good}"
+
+step="$(cat "$STATE" 2>/dev/null || true)"
+[ -n "$step" ] || step=p0
+
+# 控制台 + journal 双写(unit 里配了 journal+console);再在 /data 上留一份完整记录
+mkdir -p "$(dirname "$DRILL_LOG")" 2>/dev/null || true
+exec > >(tee -a "$DRILL_LOG") 2>&1
+
+log() { printf 'keel-ota-drill[%s]: %s\n' "$step" "$*"; }
+
+set_source() {
+    local url=$1
+    if [ ! -e "$KEEL_CONFIG" ]; then
+        printf '# keel 运行时配置(由 OTA 演练写入)\nUPDATE_SOURCE=%s\n' "$url" >"$KEEL_CONFIG"
+        return 0
+    fi
+    if grep -q '^[[:space:]]*UPDATE_SOURCE=' "$KEEL_CONFIG"; then
+        sed -i "s|^[[:space:]]*UPDATE_SOURCE=.*|UPDATE_SOURCE=$url|" "$KEEL_CONFIG"
+    else
+        printf '\nUPDATE_SOURCE=%s\n' "$url" >>"$KEEL_CONFIG"
+    fi
+}
+
+snapshot() {
+    log "========== 快照:$1 =========="
+    log "当前槽=$(keel_current_slot 2>/dev/null) 版本=$(keel_version 2>/dev/null) 内核=$(uname -r)"
+    log "--- os-status ---"
+    os-status 2>&1 | sed 's/^/  /'
+    log "--- ESP 上的条目(${KEEL_UKI_DIR:-<ESP 没挂上>})---"
+    # shellcheck disable=SC2012  # 目录里只有我们自己造的固定名字
+    ls -l "${KEEL_UKI_DIR:-/nonexistent}" 2>&1 | sed 's/^/  /'
+    log "--- bootctl list ---"
+    bootctl list --no-pager 2>&1 | sed 's/^/  /'
+    log "--- /data/keel/state ---"
+    cat "$KEEL_STATE" 2>&1 | sed 's/^/  /'
+    log "--- keel-confirm 本次启动的日志(它是"读到 pending 才动"的那个单元)---"
+    journalctl -b -u keel-confirm --no-pager 2>&1 | tail -n10 | sed 's/^/  /'
+    log "--- systemd-bless-boot(计数启动时它才存在)---"
+    systemctl is-enabled systemd-bless-boot.service 2>&1 | sed 's/^/  /'
+}
+
+case "$step" in
+p0)
+    log "阶段 p0:等更新源 → check → fetch → stage → 重启"
+    reachable=0
+    for _ in $(seq 1 40); do
+        if curl -fsS --max-time 5 -o /dev/null "$SRC/manifest" 2>/dev/null; then
+            reachable=1
+            break
+        fi
+        sleep 3
+    done
+    if [ "$reachable" != 1 ]; then
+        log "更新源 $SRC 不可达 ⇒ 跳过本次 OTA 演练(宿主没起 HTTP 服务时这是预期行为)"
+        exit 0
+    fi
+    log "更新源可达:$SRC"
+    log "当前版本(引导镜像):$(keel_version)  —— 载荷版本应该比它新"
+    set_source "$SRC"
+    snapshot "更新前"
+    log "========== os-update check =========="
+    os-update check 2>&1 | sed 's/^/  /'
+    log "========== os-update fetch =========="
+    os-update fetch 2>&1 | sed 's/^/  /'
+    log "========== os-update stage =========="
+    os-update stage 2>&1 | sed 's/^/  /'
+    snapshot "stage 之后(重启前)"
+    printf 'p1\n' >"$STATE"
+    sync
+    log "3 秒后重启,进入新槽……"
+    sleep 3
+    systemctl reboot
+    ;;
+p1)
+    log "阶段 p1:应该跑在**新槽**上"
+    snapshot "更新后第一次启动"
+    if [ "$(keel_current_slot 2>/dev/null)" = b ] &&
+       [ "$(keel_state_get last_result 2>/dev/null)" = success ]; then
+        log "判定:**更新成功** —— 当前槽 b、last_result=success(条目应已被 bless 成 keel-b.efi)"
+    else
+        log "判定:**与预期不符** —— 对照上面的快照看槽位/版本/上次结果/ESP 条目名"
+    fi
+    log "========== os-update rollback(手动回滚到旧槽)=========="
+    os-update rollback 2>&1 | sed 's/^/  /'
+    snapshot "rollback 之后(重启前)"
+    printf 'p2\n' >"$STATE"
+    sync
+    log "3 秒后重启,回到旧槽……"
+    sleep 3
+    systemctl reboot
+    ;;
+p2)
+    log "阶段 p2:应该已经**回到旧槽**"
+    snapshot "回滚之后第一次启动"
+    log "判定:当前槽=$(keel_current_slot 2>/dev/null),版本=$(keel_version 2>/dev/null),last_result=$(keel_state_get last_result 2>/dev/null)"
+    log "版本应回到引导镜像那个版本(比载荷旧)⇒ 说明 A→B→A 的槽切换真的走通了"
+    printf 'done\n' >"$STATE"
+    log "演练结束 —— 全部证据在上面;完整记录也在 $DRILL_LOG"
+    ;;
+*)
+    log "演练已完成(state=$step)。想重跑:rm -f $STATE && systemctl restart keel-ota-drill"
+    ;;
+esac

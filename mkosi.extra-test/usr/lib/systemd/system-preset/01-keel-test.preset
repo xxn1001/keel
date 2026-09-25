@@ -5,3 +5,5 @@
 # 必须写成 preset 而不是手工放一个 *.wants/ 符号链接:构建时 mkosi 会跑
 # `systemctl preset-all`,没有匹配规则的单元会被判为禁用并清掉 enable 链接。
 enable keel-selftest.service
+# OTA 演练:状态机跨重启,更新源不可达时自己跳过(见 tools/build-container.sh 的 drill 模式)
+enable keel-ota-drill.service

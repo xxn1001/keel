@@ -66,10 +66,12 @@ log() { printf 'keel-container: %s\n' "$*" >&2; }
 die() { printf 'keel-container: 错误:%s\n' "$*" >&2; exit 1; }
 usage() {
     cat >&2 <<'EOF'
-用法:sudo tools/build-container.sh [build|vm|shell] [-p <密码>] [-- <mkosi 的额外参数>]
+用法:sudo tools/build-container.sh [build|vm|drill|shell] [-p <密码>] [-- <mkosi 的额外参数>]
 
   build            只构建(verify + tools/build.sh),默认动作
   vm               构建并在容器里起 QEMU(有 /dev/kvm 就自动传进去)
+  drill            **OTA 演练**:构建新版本载荷 + 引导镜像,起本地 HTTP 源,在 VM 里
+                   自动跑 check → fetch → stage → 重启 → 确认 → rollback → 重启(见 docs/update.md §9)
   shell            进容器手敲 mkosi,便于排错
 
   -p, --password <密码>   给镜像里的 admin 设初始密码;不加则 admin 与 root 都没有密码
@@ -102,8 +104,8 @@ while [ $# -gt 0 ]; do
 done
 
 case "$MODE" in
-    build|vm|shell) ;;
-    *) usage; die "模式只能是 build / vm / shell(收到 '$MODE')" ;;
+    build|vm|drill|shell) ;;
+    *) usage; die "模式只能是 build / vm / drill / shell(收到 '$MODE')" ;;
 esac
 
 ENGINE=""
@@ -113,6 +115,11 @@ done
 [ -n "$ENGINE" ] || die "找不到 podman 或 docker。NixOS 上可以:nix-shell -p podman;或把 virtualisation.podman.enable 打开"
 
 IMAGE=${KEEL_BUILD_IMAGE:-docker.io/library/debian:trixie}
+
+# OTA 演练(drill 模式)用:引导镜像的版本必须**旧于**载荷版本,所以写死一个远古时间戳;
+# 端口是 guest 从 10.0.2.2 访问的那个(容器内起 HTTP 服务)。
+DRILL_BOOT_VERSION=${KEEL_DRILL_BOOT_VERSION:-2000.01.01.0001}
+DRILL_PORT=${KEEL_DRILL_PORT:-8000}
 
 # root 初始密码只从命令行来(不落盘、不进 git)。回显密码是**不安全**的,所以日志里只说有没有设。
 #
@@ -160,6 +167,32 @@ vm)
 #   2. mkosi 25.3 的 run_ssh 会去 flock $XDG_RUNTIME_DIR/mkosi/machine,而容器里的
 #      /run/mkosi 不存在 ⇒ FileNotFoundError: '/run/mkosi/machine'(实测)。
 # 真机上的 SSH 是另一回事(sshd + 公钥,见 docs/install.md §2.5),不受这里影响。
+drill)
+    # OTA 演练(见 docs/update.md §9、mkosi.extra-test/usr/lib/keel/ota-drill)。
+    # 三步各自的理由:
+    #
+    # ① 引导镜像的版本**必须比载荷旧**:`os-update check` 靠版本号判断"有没有新版本"
+    #    (mkosi.version 是"打印当前时间戳"的脚本,所以载荷那个版本天然比 $DRILL_BOOT_VERSION 新)。
+    # ② 安装镜像要 `truncate -s 40G`:载荷是 4 个产物(两个 6 GiB 根镜像 + 两个 163 MB UKI),
+    #    而 live 镜像自带的 /data 只有 1 GiB —— 首启会把 data 扩到整盘 ⇒ 27 GiB(不变量 14)。
+    # ③ HTTP 服务必须**和 qemu 在同一个网络命名空间**(也就是容器里)起:guest 访问 10.0.2.2 时,
+    #    SLIRP 连的是 qemu 进程自己的 loopback,宿主上的服务它够不着。
+    #    然后 `ln -s` 成 good/ —— v2 的破坏性演练会再加一个 bad/。
+    PAYLOAD="tools/verify.sh \
+        && tools/build.sh \
+        && DRILL_PAYLOAD=\$(ls -1d dist/keel-* 2>/dev/null | sort -V | tail -n1) \
+        && [ -n \"\$DRILL_PAYLOAD\" ] \
+        && echo \"== 载荷:\$DRILL_PAYLOAD ==\" \
+        && mkosi --profile install --profile test --image-version=$DRILL_BOOT_VERSION $EXTRA_Q$ROOTPW_Q --force build \
+        && truncate -s 40G mkosi.output/keel.raw \
+        && rm -rf /tmp/drill-serve && mkdir -p /tmp/drill-serve \
+        && ln -sfn \"/work/\$DRILL_PAYLOAD\" /tmp/drill-serve/good \
+        && ( cd /tmp/drill-serve && nohup python3 -m http.server $DRILL_PORT --bind 0.0.0.0 >/tmp/drill-http.log 2>&1 & ) \
+        && sleep 2 \
+        && curl -fsS -o /dev/null \"http://127.0.0.1:$DRILL_PORT/good/manifest\" \
+        && echo \"== 本地源就绪:guest 将访问 http://10.0.2.2:$DRILL_PORT/good ==\" \
+        && mkosi --profile install --profile test $ROOTPW_Q vm"
+    ;;
 shell) PAYLOAD='exec bash' ;;
 esac
 

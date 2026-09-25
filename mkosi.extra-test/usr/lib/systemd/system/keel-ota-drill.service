@@ -1,0 +1,22 @@
+[Unit]
+Description=keel: OTA 演练(自驱动状态机:check/fetch/stage → 重启 → 确认 → 回滚,仅 test profile)
+Documentation=file:/usr/share/doc/keel/update.md
+# 等网络起来(要去宿主 10.0.2.2 取载荷),并且等 keel-confirm 跑完
+# —— p1 要读它写下的 last_result / pending。
+Wants=network-online.target
+After=network-online.target keel-mounts.service keel-confirm.service
+
+[Service]
+Type=oneshot
+# 演练会跨重启:同一份状态文件(/data/keel/ota-drill.state)决定这次该走哪一阶段。
+RemainAfterExit=yes
+# 控制台 + journal 双写:宿主机的 `mkosi vm` 终端能看到,guest 的 journal / /data 日志里也留一份
+StandardOutput=journal+console
+StandardError=journal+console
+# fetch 要下 4 个产物(约 13 GiB,宿主 HTTP 实测 ~330 MiB/s ⇒ 约 1 分钟),
+# 但别卡住系统的其它部分;给足额度,真慢也不至于被判失败。
+TimeoutStartSec=2400
+ExecStart=/usr/lib/keel/ota-drill
+
+[Install]
+WantedBy=multi-user.target
