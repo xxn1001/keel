@@ -163,6 +163,33 @@
   `DHCP=yes` 交回 networkd,
   dhcpcd 已从镜像里彻底移除(它同时也会喂 DNS 给 resolved,现在这一步由 networkd 直接做)。
 
+## D19 machine-id:PID1 内存里的 ID 与 `/etc/machine-id` 不一致 —— **接受**(方案 C)
+
+- **现状**(坑 #29 的残留):`/etc/machine-id` 是我们固化的、稳定唯一的值(networkd、
+  resolved、journald、tmpfiles 都读它);而 PID1 每次都读到只读 lower 里那句
+  `uninitialized`,于是每次启动另生成一个 transient ID 放进 `/run/machine-id` ——
+  所以 **PID1 内存里的 ID ≠ `/etc/machine-id`**,只有 `%m` 展开这类极少数场景会看到差别。
+- **决策(2026-09,由项目所有者拍板)**:**暂不处理**,把这条当作已知的、不影响功能的残留记录在案。
+- **考虑过并否决的方案**:
+  - **A. 把 `/etc` overlay 提到 initrd 里挂**(根治):PID1 一上来就读到持久化的 ID,不一致
+    连同"PID1 早期写 /etc 被盖掉"这一整类问题一起消失。**代价**:initrd 出错 = 起不来,
+    那阶段没有持久日志;要确认 `mount`/`findmnt`/`blkid` 在 initrd 的包集里;失败要有优雅回退;
+    `reset-etc` 与 overlay 的挂载逻辑会在两处重复;并且推翻坑 #24 里"initrd 不帮我们挂"的结论,
+    得整体重排"早期启动谁挂什么"。**结论**:值得做,但要单独排一轮,不和别的改动混在一起。
+  - **B. cmdline 加 `systemd.machine_id=firmware`**(一行):PID1 改用 SMBIOS/DMI 的 product UUID,
+    与固化的值天然一致。**代价**:依赖固件 UUID 唯一且稳定 —— 有些主板给全 0/全 F 或一批机器
+    共用的默认值,那样多台机器会共用同一个 machine-id(DUID 撞车、DNSSEC 密钥共用);
+    UUID 读不到时静默退回随机,又回到今天的状态;换主板/刷固件即换 ID;而且是烧进两个槽 UKI 的
+    cmdline(承重墙),以后容易被忘掉。
+  - **D. 安装/更新时把 machine-id 写进目标槽的根文件系统**:PID1 从根就读到有效 ID。
+    **代价**:根镜像不再与构建产物逐字节一致(每个槽多一份机器专属字节)⇒ 将来的 dm-verity /
+    镜像签名校验直接废掉,而"完整 UKI + 可校验根"是本项目的长期方向;还给两条安全关键的写盘
+    路径各加一步挂载+写入。
+- **什么情况下重新考虑**:① 真要做 TPM 密封 / Secure Boot / verity 那一档(那时 A 或 B 必须选一个);
+  ② 出现任何真正读 PID1 内存 ID 的功能需求;③ 顺手做早期启动重排时,把 A 一起做掉。
+- **注意**:`keel-mounts` 里那段"固化 machine-id"是**必须保留**的 —— 它才是让 DHCP/IPv6/DNSSEC
+  能工作的那一环;D19 说的只是"不再追求 PID1 与文件完全一致"。
+
 ## D17 持久分区统一叫 `data`
 
 - **决策**:`data` 分区(2026-09 从 `volume` 改名)挂到 **`/data`**;GPT 标签、文件系统标签、
