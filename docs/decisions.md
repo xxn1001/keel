@@ -386,3 +386,32 @@
   目标是服务器(无人值守、尽量避免手工重装),所以"自己退回上一个好版本"优先于"停下来等人"。
 - **不覆盖**:initrd 阶段的冻结(`Switch root target contains no usable init.`)——
   那时根里的单元根本还没机会跑,已记 `docs/roadmap.md` 3.0。
+
+## D27 控制台日志级别 + 启动早期顺序(sysctl / journald / journal-flush 排在 keel-mounts 之后)
+
+- **背景(2026-09,项目所有者实测)**:图形控制台(SPICE/物理屏)上日志时不时刷一屏,
+  典型是每次登录/sudo 打出 6~7 行 `audit: type=1100 …` 外加
+  `kauditd_printk_skb: N callbacks suppressed`;而串口/`mkosi vm` 那条控制台上看不到这么多。
+- **决策**:
+  1. **不用 cmdline 的 `quiet`**(UKI 里的 cmdline 是烧死的,坑 #4 —— 想看回全过程就得重新构建),
+     改用 `/etc/sysctl.d/10-keel-console.conf` 里的 `kernel.printk = 4 4 1 7`:
+     **控制台只印 warning 及以上**,info/notice(含 audit 记录)只进 dmesg 与 journal。
+     systemd 自己往 `/dev/console` 写的启动进度(`[  OK  ] …`)不受影响 —— 它不是 printk。
+     临时看全部:`sudo sysctl -w kernel.printk="7 4 1 7"`(不用重启)。
+  2. `keel-mounts.service` 追加三个 `Before=`:**systemd-sysctl / systemd-journald /
+     systemd-journal-flush**。
+- **理由(第 2 条是被第 1 条顺带挖出来的真问题)**:`/etc` 是 overlay、`/var` 指向 `/data`,
+  而这三个单元都**在 `/data` 挂上之前**就跑了(实测 journald 1.7s、journal-flush 3.0s、
+  keel-mounts 4.4s),后果是:
+  * 用户写进 `/etc`(overlay upper)的 sysctl drop-in **启动时不生效**;
+  * journald 因为 `/var/log/journal` 还不存在而只用易失的 `/run/log/journal`,**且不会自己回头**
+    (重启 journald 也没用 —— 实测),`systemd-journal-flush` 又早在 `/data` 之前"成功"结束了
+    ⇒ **日志从来没落过盘,重启一次上一次启动的日志就没了**。实测:在 `/data` 就绪后手工
+    `journalctl --flush`,journald 立刻切成 `System Journal (/var/log/journal/…,max 256M)`
+    并把已有日志搬过去 ⇒ 顺序就是全部原因。
+- **验证**:`sysctl -w kernel.printk=4` 后登录 3 次 → 控制台 audit 增量 **0**,而 dmesg/journal 里
+  同一次登录的 **119 条** audit 记录一条不少(2026-09,libvirt 装好的系统)。顺序修复的端到端
+  效果(重启后 `journalctl --list-boots` 能看到上一个启动)要等**下一次构建**才能验 ——
+  这一点明确写在 `docs/roadmap.md` 的 v1 收尾清单里,不许当成已验证。
+- **代价**:控制台上不再有内核的 info 级进度;要看就 `dmesg`、`journalctl -k` 或临时调回 7。
+  `/data` 写满时的警告(warning)仍然会出现在控制台上 —— 那正是我们要保留的部分。

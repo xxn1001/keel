@@ -1119,3 +1119,32 @@
     **发行版/上游把它放在哪**(systemd 的内部工具是最常见的例外);
     ② 报错信息要**替用户走完下一步**(这条命令为什么没意义、那该用什么),否则等于把
     "实现细节"丢给用户翻译。
+
+61. **日志根本没落盘:journald 与 journal-flush 都跑在 `keel-mounts` 之前(2026-09,查"控制台日志太吵"时顺带挖出)。**
+    起因很小 —— 项目所有者说图形控制台(SPICE)上时不时刷一屏 `audit: type=1100 …`
+    (`kauditd_printk_skb: N callbacks suppressed`),串口上没这么多。查下去发现两件事:
+    ① 控制台吵,是因为**内核 console_loglevel 是出厂的 7** 而我们的 cmdline 里刻意没有 `quiet`
+       (想让串口还能看到启动进度)⇒ 所有 info/notice 都上控制台,包括每条 PAM 认证的 audit 记录。
+       ⇒ 修法:`/etc/sysctl.d/10-keel-console.conf` 里 `kernel.printk = 4 4 1 7`。
+       实测(装好的系统):`printk=4` 时登录 3 次,控制台 audit 增量 **0**,而 dmesg/journal 里
+       同一次登录的 **119 条** audit 记录一条不少;systemd 的 `[ OK ]` 启动进度照旧(它不是 printk)。
+    ② 顺手核对 `Storage=persistent` 有没有生效,发现 **`/data/var/log/journal/` 是空的**、
+       `journalctl --list-boots` 只有当前这一次启动 —— **日志从来没落过盘**。
+       实测时间线:journald 在 **1.7s** 启动、`systemd-journal-flush` 在 **3.0s** "成功"结束,
+       而 `keel-mounts`(挂 `/data` + `/etc` overlay)在 **4.4s** 才完成 ⇒
+       * journald 启动时 `/var/log/journal` 还不存在 ⇒ 只用易失的 `/run/log/journal`;
+       * journal-flush 想搬的时候同样没有目标目录 ⇒ 它什么也没搬、什么也没报;
+       * **journald 不会自己回头**:重启它、删掉 `/run/log/journal` 都没用(实测);
+         只有在 `/data` 就绪后执行一次 `journalctl --flush`,它才切成
+         `System Journal (/var/log/journal/…,max 256M)` 并把已有日志搬过去。
+       ⇒ 修法:`keel-mounts.service` 追加 `Before=systemd-sysctl.service systemd-journald.service
+       systemd-journal-flush.service`(同类问题里 sysctl 那条也一样:用户写进 overlay upper 的
+       drop-in 在启动时根本不生效)。
+    **教训**:① 不变量的第 2 条("`/data` 必须在用户空间刚起来时就挂好")**不是只针对符号链接与
+    bind mount** —— 凡是"启动早期读 `/etc` / 写 `/var`"的单元都是它的下游,新增这类单元时要
+    主动把它排到 `keel-mounts` 之后(现在这份名单:sysusers、tmpfiles、machine-id-commit、
+    random-seed、sysctl、journald、journal-flush);
+    ② "配置写了"和"配置生效了"是两件事:`Storage=persistent` 写在配置里已经很久了,
+    而 `journalctl --list-boots` 只有一行才是事实 —— **日志这类"沉默的失败"要用它的消费端去验**
+    (能不能看到上一个启动?那份日志到底在哪个目录?);
+    ③ 又一次是"用户报的小毛病"牵出真问题(A/B 起不来那次也是)——小毛病值得顺着查到底。

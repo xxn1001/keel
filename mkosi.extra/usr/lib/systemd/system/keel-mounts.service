@@ -19,6 +19,24 @@ Before=sysinit.target shutdown.target
 Before=systemd-sysusers.service
 Before=systemd-tmpfiles-setup.service
 Before=systemd-machine-id-commit.service
+# 还有三个"启动早期读 /etc 或写 /var"的单元也必须排在本单元之后(2026-09 在装好的
+# 系统上实测出来的,坑 #61):
+#
+#   * systemd-sysctl:它读 /etc/sysctl.d/*.conf —— 机器专属的 drop-in 只在 overlay
+#     upper 里,而它实测在 1.7s 就跑了(/etc overlay 4.4s 才挂上)⇒ 用户加进去的
+#     sysctl 配置**根本不会生效**(手动 `sysctl --system` 才生效)。
+#   * systemd-journald:它启动时若 /var/log/journal 还不存在,就只用**易失**的
+#     /run/log/journal,而且之后不会自己回头(重启它都没用 —— 实测确认)。
+#   * systemd-journal-flush:它的职责正是"把运行时日志搬进 /var/log/journal 并切过去"
+#     (`journalctl --flush`),而它实测在 3.0s 就"成功"结束了 —— 那时 /data 还没挂上,
+#     于是什么也没搬、也什么都没报。结果:**日志从来没落过盘,重启一次上一次启动的
+#     日志就没了**(对一台要为崩溃做尸检的服务器来说不可接受)。
+#     实测:在 /data 就绪后手工执行一次 `journalctl --flush`,journald 立刻切成
+#     "System Journal (/var/log/journal/…,max 256M)" 并把已有日志搬了过去 ⇒
+#     顺序就是全部原因。
+Before=systemd-sysctl.service
+Before=systemd-journald.service
+Before=systemd-journal-flush.service
 Conflicts=shutdown.target
 
 [Service]

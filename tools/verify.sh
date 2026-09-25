@@ -774,6 +774,25 @@ else
     no "keel-confirm 缺少条目名兜底(坑 #44)"
 fi
 
+# 控制台日志级别(决策 D27 / 坑 #61):内核 console_loglevel 出厂是 7 ⇒ 图形/串口控制台
+# 会被 audit(PAM 认证)记录时不时刷一屏;我们用 sysctl 降到 4(dmesg/journal 一条不少,
+# systemd 自己的 [ OK ] 启动进度照旧)。
+if grep -qE '^kernel\.printk = 4 4 1 7$' mkosi.extra/etc/sysctl.d/10-keel-console.conf 2>/dev/null; then
+    ok "sysctl drop-in 把内核控制台日志级别降到 4(不刷 audit,又不按掉启动进度,坑 #61)"
+else
+    no "缺少 mkosi.extra/etc/sysctl.d/10-keel-console.conf 或里面的 kernel.printk 不对(坑 #61)"
+fi
+# 启动早期顺序(sysctl / journald / journal-flush 都必须排在 keel-mounts 之后)
+KM=mkosi.extra/usr/lib/systemd/system/keel-mounts.service
+miss=""
+for u in systemd-sysctl.service systemd-journald.service systemd-journal-flush.service; do
+    grep -q "^Before=$u$" "$KM" || miss="$miss $u"
+done
+if [ -z "$miss" ]; then
+    ok "keel-mounts 排在这三个单元之前:sysctl / journald / journal-flush(否则用户 drop-in 不生效、日志不落盘,坑 #61)"
+else
+    no "keel-mounts 缺 Before 顺序:$miss ⇒ /etc overlay 还没挂上它们就跑了(坑 #61)"
+fi
 # 自动回滚的前提:panic 会自动重启(决策 D24 / 坑 #46)
 if grep -qE '^[[:space:]]*panic=-1$' mkosi.conf.d/30-content.conf; then
     ok "cmdline 里有 panic=-1(内核 panic ⇒ 立即重启 ⇒ 候选槽那次失败之后能自动回退)"

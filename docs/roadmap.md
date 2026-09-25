@@ -27,6 +27,16 @@
 | 2.7 | **`os-install` 的两个 TODO** | ① 根文件系统实际占用超过目标分区尺寸时的截断检查;② `keel-confirm` 的 pending/running_slot 边界 |
 | 2.8 | **`/data` schema 迁移执行器**(v1 明确不做) | v1 的行为是:带 `migrate=` 的载荷被 `fetch` **拒绝**(坑 #48),布局冻结在 schema 1。要做的时候:① 定义 manifest 的迁移语法(只增不破的 mkdir/权限/文件);② 想清楚 `schema`(载荷要求的布局版本)与 `schema_min`(载荷还能读的最低版本)的区别 —— 现在 `fetch` 那句 `schema > 本机 ⇒ 拒绝` 与"由旧系统迁移"的语义是**互相矛盾**的,得先理顺;③ 在 VM 里按 §4 演练(含**回滚**到旧版本后旧系统仍能读 /data);④ 第一次真实迁移前不要动布局 |
 
+## 2.95 v1 打包前必须复核的两件事(代码已改,效果待构建验证)
+
+| # | 事项 | 怎么验 |
+|---|---|---|
+| V1-a | `kernel.printk = 4 4 1 7` 与 `keel-mounts` 的三个 `Before=` 都在**构建产物**里 | 构建后在假镜像树/`debugfs` 里回读文件;真机或 VM 首启后 `cat /proc/sys/kernel/printk` 应为 `4 4 1 7` |
+| V1-b | **日志落盘**(顺序修复的真正目的) | 重启一次,`journalctl --list-boots` 必须能看到**上一个启动**;`ls /var/log/journal/*/` 里有 `.journal`;`journalctl -b -1` 能读上一次的日志 |
+
+> 这两条不许写成"已验证":2026-09 只验到了**机制**(手工 `sysctl -w` / `journalctl --flush`
+> 能立刻达到预期效果),端到端的"启动顺序生效"要等下一次构建 + 首启。
+
 ## 3. 顺手要还的技术债
 
 | # | 事项 | 说明 |

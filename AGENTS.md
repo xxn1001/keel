@@ -65,6 +65,11 @@
    它挂 ESP 做得静默且不可靠(装机后的系统上实测压根没挂上,见坑 #36)。
    代码里一律用 `$KEEL_ESP` / `$KEEL_UKI_DIR`,并且**先看 `$KEEL_ESP_MOUNTED`**:
    没挂上时 `KEEL_ESP` 是空的,谁都不许把它当成真路径去读写(坑 #36 的教训就是"每步都成功")。
+   **这条不变量的下游不止符号链接**:凡是"启动早期读 `/etc` / 写 `/var`"的单元都得排在
+   `keel-mounts` 之后。目前的名单写在 `keel-mounts.service` 的 `Before=` 里:
+   systemd-sysusers、systemd-tmpfiles-setup、systemd-machine-id-commit、systemd-random-seed、
+   **systemd-sysctl、systemd-journald、systemd-journal-flush**(后三个是 2026-09 补的:
+   不排的话用户 drop-in 不生效、**日志根本不落盘** —— 坑 #61)。新增这类单元时记得一起加。
 
 3. **每个槽一个完整 UKI,内核与根文件系统永远配对。**
    切换槽 = 换整个 UKI(内核 + initrd + `root=` + 微码都在里面)。绝不允许"新内核 + 旧根"的组合 ——

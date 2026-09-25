@@ -66,7 +66,8 @@ mode_fix_files=(
     "$R/usr/lib/systemd/system-preset/00-keel.preset"
 )
 for f in "$R"/usr/lib/systemd/system/keel-*.service "$R"/usr/lib/systemd/system/keel-*.timer \
-         "$R"/etc/systemd/network/*.network "$R"/usr/lib/keel/repart.d/*.conf; do
+         "$R"/etc/systemd/network/*.network "$R"/usr/lib/keel/repart.d/*.conf \
+         "$R"/etc/sysctl.d/*.conf; do
     [ -e "$f" ] || continue
     mode_fix_files+=("$f")
 done
