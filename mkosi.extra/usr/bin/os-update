@@ -356,7 +356,8 @@ cmd_stage() {
     echo "  即将写入非活动槽,正在运行的系统不受影响:"
     echo "    根分区镜像 → ${dev}(槽 ${target},整个分区会被覆盖)"
     echo "    内核镜像   → ${KEEL_UKI_DIR}/keel-${target}+${TRIES}.efi"
-    echo "  写完后下次启动会用槽 ${target};启动失败会自动回退(连续 ${TRIES} 次)。"
+    echo "  写完后下次启动会用槽 ${target};那次启动没到 boot-complete 就自动回退到当前槽"
+    echo "  (候选条目只有一次机会:systemd 257 没有 set-preferred,用 set-oneshot —— 坑 #43)。"
     echo "  ************************************************************"
 
     keel_log "写根分区(可能耗时几分钟;这里没有输出不是卡死)"
