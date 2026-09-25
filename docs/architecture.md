@@ -332,8 +332,8 @@ U 盘本身也是一套完整系统,顺便当救援盘。
 1. 校验/修复 `/data` 骨架(缺失就按镜像里的骨架重建 —— 这是"手贱清空 data"的自愈入口);
 2. **两步**扩 `data` 分区与文件系统:先用 `systemd-repart --dry-run=no` 扩**分区**(定义在
    `/usr/lib/keel/repart.d/`),再扩**文件系统**:先试 `systemd-growfs /data`,
-   失败就退回 `resize2fs`(坑 #42:growfs 要求挂载点背后有 systemd 的 `.mount` 单元,
-   而我们的 `/data` 是自己 `mount(8)` 挂的)——
+   失败就退回 `resize2fs`(坑 #42:Debian 的 systemd 包**不带** `systemd-growfs` 这个二进制,
+   旧写法把 `command not found` 吞掉了)——
    repart 从不改动已存在分区的文件系统,`GrowFileSystem=` 只是给
    `systemd-gpt-auto-generator` 看的 GPT 标志位(我们不走那条路,见 §13.1);
 3. `bootctl install` 建立本机 NVRAM 启动项(已有则跳过);

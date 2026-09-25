@@ -176,25 +176,23 @@ do_grow_data() {
         keel_die "systemd-repart 失败。常见原因:目标盘上还有别的分区占着后面的空间、或定义里的类型 UUID 对不上现有 data 分区。"
     sync
 
-    # 第二步:把文件系统顶满分到的新空间(需要 resize2fs,e2fsprogs 提供)。
-    # **先试 systemd-growfs,失败就退回 resize2fs**(坑 #42):systemd-growfs 要求挂载点
-    # 背后有 systemd 的 .mount 单元,而 /data 是 keel-mounts 自己 mount(8) 挂的
-    # (不变量 2)⇒ 它在这里会失败,2026-09 用 40G 假盘复现过"分区扩了、文件系统没扩"。
-    # ext4 的 resize2fs 支持在线扩容(挂载状态下直接扩),已经到顶时返回 0。
+    # 第二步:把文件系统顶满分到的新空间(ext4 在线扩容,resize2fs;e2fsprogs 提供)。
+    # 为什么不用 systemd-growfs 当唯一手段(坑 #42,实测):Debian 的 systemd 包**不带**
+    # 这个二进制,旧写法拿到的其实是 "command not found",还被 `>/dev/null 2>&1` 吞了。
+    # 有就试一下(通用工具,按文件系统类型分派),没有就直接 resize2fs;已经到顶时它返回 0。
     data_dev="$(readlink -f "$DATA_PART")"
-    if command -v systemd-growfs >/dev/null 2>&1 || [ -x /usr/lib/systemd/systemd-growfs ]; then
-        if gf_out=$(systemd-growfs /data 2>&1); then
-            keel_log "文件系统已扩到分区大小(systemd-growfs)"
-        else
-            keel_log "systemd-growfs 失败($gf_out),改用 resize2fs(坑 #42)"
+    if command -v systemd-growfs >/dev/null 2>&1; then
+        if ! gf_out=$(systemd-growfs /data 2>&1); then
+            keel_log "systemd-growfs 失败($gf_out),改用 resize2fs"
         fi
     fi
     if ! rs_out=$(resize2fs "$data_dev" 2>&1); then
         keel_die "resize2fs $data_dev 失败:$rs_out(e2fsprogs 装了吗?/data 是 ext4 吗?)"
     fi
-    keel_log "文件系统已扩到分区大小:$(printf '%s' "$rs_out" | tr '\n' ' ')"
+    keel_log "resize2fs:$(printf '%s' "$rs_out" | tr '\n' ' ')"
     echo "现在的大小:分区 $(blockdev --getsize64 "$data_dev" 2>/dev/null) 字节 / 文件系统 $(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $2}') 字节"
-    keel_log "完成。用 lsblk 和 df -h /data 确认新的大小"
+    echo "(文件系统比分区小 1~2% 是 ext4 元数据/保留块的正常开销,不是没扩到位)"
+
 }
 
 # ---------------------------------------------------------------------------

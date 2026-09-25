@@ -664,12 +664,13 @@ fi
 
 # /data 的文件系统扩容:必须有 resize2fs 兜底(坑 #42:systemd-growfs 对"自己 mount(8)
 # 挂的"挂载点会失败,2026-09 用 40G 假盘复现过"分区扩到 27G、文件系统还是 974M")。
-if grep -q 'resize2fs "$vol"' mkosi.extra/usr/lib/keel/firstboot &&
-   grep -q 'systemd-growfs /data 失败' mkosi.extra/usr/lib/keel/firstboot &&
-   grep -q "改用 resize2fs" mkosi.extra/usr/lib/keel/firstboot; then
-    ok "keel-firstboot:先试 systemd-growfs、把错误打出来、失败退回 resize2fs(坑 #42)"
+if grep -q 'command -v systemd-growfs' mkosi.extra/usr/lib/keel/firstboot &&
+   grep -q 'resize2fs "$vol"' mkosi.extra/usr/lib/keel/firstboot &&
+   grep -q 'systemd 包不带它' mkosi.extra/usr/lib/keel/firstboot &&
+   grep -q 'part_bytes / 20' mkosi.extra/usr/lib/keel/firstboot; then
+    ok "keel-firstboot:growfs 有则试、resize2fs 必跑、按 5% 容差判断是否扩到位(坑 #42)"
 else
-    no "keel-firstboot 缺 resize2fs 兜底(或把 growfs 的错误吞掉了)—— 分区扩了文件系统不会扩"
+    no "keel-firstboot 的扩容逻辑不完整(缺 resize2fs / 缺 growfs 存在性判断 / 缺 5% 容差)"
 fi
 if grep -q 'resize2fs "$data_dev"' mkosi.extra/usr/bin/os-rescue &&
    grep -q '现在的大小:分区' mkosi.extra/usr/bin/os-rescue; then

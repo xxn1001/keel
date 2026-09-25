@@ -645,16 +645,24 @@
     ```
     而 `df -h /data` 仍然是 **974 MiB** ⇒ 文件系统根本没扩。也就是说
     **repart 那一步是对的**(分区长到了 27G),失败的是 `systemd-growfs /data`。
-    原因:`systemd-growfs` 要求挂载点背后有一个 **systemd 的 `.mount` 单元**
-    (它就是 `systemd-growfs@.service` 背后的那个工具,gpt-auto-generator 生成的是
-    `systemd-growfs@<dev>.service`);而我们的 `/data` 是 `keel-mounts` 自己用
-    `mount(8)` 挂的(不变量 2)⇒ 它找不到对应的单元,直接失败。原来的写法又把输出
-    `>/dev/null 2>&1` 吞掉,只留下一句"没能扩容" —— **看不出原因的失败**。
+    原因(把错误打出来之后一眼就看到了,**和一开始的推断不一样**):
+    ```
+    keel: systemd-growfs /data 失败:/usr/lib/keel/firstboot: line 92: systemd-growfs: command not found
+    keel: 改用 resize2fs 直接扩 /data(ext4 在线扩容;坑 #42)
+    keel: resize2fs 成功:… The filesystem on /dev/vdb4 is now 7077627 (4k) blocks long.
+    keel: data 尺寸:分区 28989960192 字节 / 文件系统 28495839232 字节
+    ```
+    也就是:**Debian 的 systemd 包根本不带 `systemd-growfs` 这个二进制**(我们也没显式装它),
+    旧写法把 `command not found` 和别的失败一起被 `>/dev/null 2>&1` 吞掉了。
+    (一开始我按 systemd 的文档猜是"它要求挂载点背后有 `.mount` 单元" —— 那条也可能是真的,
+    但**不是这里的实际原因**;这就是为什么要把工具的输出原样留下来。)
     ⇒ 修法(`keel-firstboot` 与 `os-rescue --grow-data` 都改):
-    1. 先试 `systemd-growfs /data`,**把它的错误原样打进日志**;
-    2. 失败就退回 `resize2fs <data 设备>`(ext4 支持在线扩容,挂载状态下直接扩;
-       已经到顶时它返回 0);
-    3. 每次把"分区字节数 / 文件系统字节数"都打出来,两者不一致就明说"没扩到位"。
+    1. `command -v systemd-growfs` 有就先试它,并**把它的错误原样打进日志**;
+    2. 然后**总是**跑 `resize2fs <data 设备>`(ext4 在线扩容,挂载状态下直接扩;
+       已经到顶时返回 0)—— 它才是真正干活的那一步,`e2fsprogs` 本来就在包清单里;
+    3. 每次把"分区字节数 / 文件系统字节数"都打出来;**但不要要求两者相等** ——
+       ext4 的元数据/保留块让 `df` 看到的 Size 天然比设备小 1~2%(实测 471 MiB / 27 GiB),
+       所以只在"小于 5% 以上"时才告警(第一版按相等写,自己误报了一次)。
     **教训**:① 一个"看一眼就知道结果"的动作(扩了多少)必须把**数字**打出来,
     别只打"成功/失败";② 吞掉工具的输出(`>/dev/null 2>&1`)等于扔掉唯一的线索 ——
     live 镜像里那句"没能扩容"曾经被当成"实验环境的预期噪音"蒙混过关,直到有人把盘放大

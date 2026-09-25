@@ -62,7 +62,7 @@ echo "  /etc/locale.conf = $(tr '\n' ' ' </etc/locale.conf 2>&1)"
 echo "  hostnamectl --static = $(hostnamectl --static 2>&1)"
 echo "--- pcrlock(决策 D20:应当全部 masked,不再是 failed)"
 systemctl is-enabled systemd-pcrlock-file-system.service systemd-pcrlock.socket 2>&1 | sed 's/^/  /'
-echo "  /etc/systemd/system 下的 pcrlock mask 链接数 = $(ls /etc/systemd/system/ 2>/dev/null | grep -c pcrlock)"
+echo "  /etc/systemd/system 下的 pcrlock mask 链接数 = $(find /etc/systemd/system -maxdepth 1 -name 'systemd-pcrlock*' 2>/dev/null | wc -l)"
 echo "--- 磁盘与分区尺寸(验「dd 到更大的盘 → 首启把 data 扩到整盘」,不变量 14)"
 lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS 2>&1 | sed 's/^/  /'
 data_dev="$(keel_part_dev data 2>/dev/null || true)"

@@ -83,28 +83,35 @@ if [ -n "$vol" ] && [ -b "$vol" ]; then
     fi
     # 分区弄好之后再把文件系统顶满。
     #
-    # 为什么**不用** systemd-growfs 当唯一手段(2026-09,用 40G 假盘复现,坑 #42):
-    # 它要求挂载点背后有一个 **systemd .mount 单元**,而我们的 /data 是 keel-mounts
-    # 自己用 mount(8) 挂的(不变量 2)⇒ 它直接失败,而原来的写法把输出 `>/dev/null 2>&1`
-    # 吞掉了 ⇒ 现象是"分区扩到 27G 了、文件系统还是 974M",日志里只有一句看不出原因的
-    # "没能扩容"。现在:先试它、**把它的错误原样打出来**,失败就退回 resize2fs
-    # (ext4 的在线扩容,mounted 状态下也能扩;已经到顶时它返回 0)。
-    if ! gf_out=$(systemd-growfs /data 2>&1); then
-        keel_log "systemd-growfs /data 失败:$gf_out"
-        keel_log "改用 resize2fs 直接扩 /data(ext4 在线扩容;坑 #42)"
-        if rs_out=$(resize2fs "$vol" 2>&1); then
-            keel_log "resize2fs 成功:$(printf '%s' "$rs_out" | tr '\n' ' ')"
-        else
-            keel_log "错误:resize2fs 也失败了:$rs_out(手动入口:os-rescue --grow-data)"
+    # **实测出来的坑 #42(2026-09)**:旧写法是
+    #     if ! systemd-growfs /data >/dev/null 2>&1; then keel_log "…没能扩容…"; fi
+    # 而 Debian 的 systemd 包**根本不带 systemd-growfs 这个二进制**(我们也没显式装它)
+    # ⇒ 每次拿到的都是 "command not found",被 `>/dev/null 2>&1` 吞掉之后日志里只剩
+    # 一句看不出原因的"没能扩容"。把 15G 镜像 truncate 到 40G 之后复现:
+    # **分区扩到了 27G,文件系统还是 974M**,而那句"没能扩容"一直被我当成实验环境的预期噪音。
+    # 现在:显式检查有没有 systemd-growfs(有就先试它,并把它的错误原样打出来),
+    # 然后**总是**跑 resize2fs —— ext4 的在线扩容,mounted 状态下也能扩,已经到顶时返回 0。
+    if command -v systemd-growfs >/dev/null 2>&1; then
+        if ! gf_out=$(systemd-growfs /data 2>&1); then
+            keel_log "systemd-growfs /data 失败:$gf_out ⇒ 改用 resize2fs"
         fi
+    else
+        keel_log "镜像里没有 systemd-growfs(坑 #42:Debian 的 systemd 包不带它)⇒ 直接用 resize2fs"
     fi
-    # 每次都把"分区多大 / 文件系统多大"记下来 —— 这两个数字不一致就是坑 #42 复发
+    if ! rs_out=$(resize2fs "$vol" 2>&1); then
+        keel_log "错误:resize2fs $vol 失败:$rs_out(手动入口:os-rescue --grow-data)"
+    else
+        keel_log "resize2fs:$(printf '%s' "$rs_out" | tr '\n' ' ')"
+    fi
+    # 把两个尺寸都记下来。注意**不能**要求它们相等:ext4 的元数据/保留块让
+    # `df` 看到的 Size 天然比设备小 1~2%(2026-09 实测 471 MiB / 27 GiB ≈ 1.7%),
+    # 所以只在"文件系统比分区小 5% 以上"时才认为真没扩到位。
     part_bytes=$(blockdev --getsize64 "$vol" 2>/dev/null) || part_bytes=""
     fs_bytes=$(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $2}') || fs_bytes=""
     keel_log "data 尺寸:分区 ${part_bytes:-未知} 字节 / 文件系统 ${fs_bytes:-未知} 字节"
     if [ -n "$part_bytes" ] && [ -n "$fs_bytes" ] &&
-       [ "$part_bytes" -gt "$fs_bytes" ] 2>/dev/null; then
-        keel_log "警告:data 分区比文件系统大 $(( (part_bytes - fs_bytes) / 1048576 )) MiB —— 文件系统没扩到位(坑 #42)"
+       [ "$fs_bytes" -lt $(( part_bytes - part_bytes / 20 )) ] 2>/dev/null; then
+        keel_log "警告:文件系统比分区小 5% 以上(${fs_bytes} vs ${part_bytes})—— 没扩到位(坑 #42),手动入口 os-rescue --grow-data"
     fi
 fi
 
