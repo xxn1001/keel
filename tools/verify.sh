@@ -759,8 +759,9 @@ else
 fi
 if grep -q 'debugfs' tools/ota-drill-container.sh &&
    grep -q 'slot-\$BAD_SLOT.root.raw' tools/ota-drill-container.sh &&
-   grep -q '回读确认真的删掉了' tools/ota-drill-container.sh; then
-    ok "演练会做一个起不来的坏载荷(debugfs 删 PID1 + 回读确认 + 重算 sha256)"
+   grep -q 'File not found' tools/ota-drill-container.sh &&
+   grep -q '不要.*只看 debugfs 的退出码' tools/ota-drill-container.sh; then
+    ok "演练会做一个起不来的坏载荷(debugfs 删 PID1 + **按输出文本**回读确认 + 重算 sha256)"
 else
     no "drill 模式缺少坏载荷的准备(破坏性回滚验不了)"
 fi

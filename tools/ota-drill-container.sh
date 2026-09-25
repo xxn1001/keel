@@ -92,13 +92,17 @@ cp --reflink=auto --sparse=always "/work/$DRILL_PAYLOAD/slot-$BAD_SLOT.root.raw"
    "/tmp/drill-serve/bad/slot-$BAD_SLOT.root.raw"
 BAD_IMG=/tmp/drill-serve/bad/slot-$BAD_SLOT.root.raw
 for target in /usr/lib/systemd/systemd /usr/bin/dash /usr/bin/bash; do
-    debugfs -w -R "rm $target" "$BAD_IMG" >/dev/null 2>&1 ||
-        debugfs -w -R "unlink $target" "$BAD_IMG" >/dev/null 2>&1 || true
+    # 注意:**不要**只看 debugfs 的退出码 —— 它干什么都返回 0(坑 #47 实测)
+    debugfs -w -R "rm $target" "$BAD_IMG" >/dev/null 2>&1 || true
 done
-# 回读确认真的删掉了 —— 只信"退出码 0"的老毛病在坑 #29/#36/#42 里已经吃过三次
+# 回读确认真的删掉了:判据只能是**输出文本**(`File not found by ext2_lookup`),
+# 因为 `debugfs -R "stat …"` 对不存在的路径同样返回 0(实测)。
 for target in /usr/lib/systemd/systemd /usr/bin/dash /usr/bin/bash; do
-    if debugfs -R "stat $target" "$BAD_IMG" >/dev/null 2>&1; then
-        echo "   错误:坏载荷里 $target 还在 ⇒ 那个槽不会 panic,演练没有意义" >&2
+    if debugfs -R "stat $target" "$BAD_IMG" 2>&1 | grep -q 'File not found'; then
+        echo "   已确认删掉:$target"
+    else
+        echo "   错误:坏载荷里 $target 还在(或 debugfs 读不出来)⇒ 那个槽不会 panic,演练没有意义" >&2
+        debugfs -R "stat $target" "$BAD_IMG" 2>&1 | tail -2 >&2
         exit 1
     fi
 done
