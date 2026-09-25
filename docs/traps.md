@@ -630,3 +630,32 @@
     systemd 里 `boot-complete.target` / `first-boot-complete.target` 这类**被动目标**不会自己出现,
     它们只被特定的 generator/单元按条件拉进事务 —— 条件不成立时,你的单元就**静默不执行**
     (和坑 #36 的"每步都成功"、坑 #29 的"退出码 0"是同一个形状:**没跑 ≠ 跑成功了**)。
+
+42. **`systemd-growfs` 对"自己 `mount(8)` 挂的"挂载点会失败 —— 现象是"分区扩了、文件系统没扩"(2026-09,用 40G 假盘复现)。**
+    现象(把 15 GB 的安装镜像 `truncate -s 40G` 之后再启动,首启本该把 `data` 扩到整盘):
+    ```
+    NAME   SIZE TYPE FSTYPE MOUNTPOINTS
+    vdb     40G disk
+    ├─vdb1   1G part vfat   /boot
+    ├─vdb2   6G part ext4   /
+    ├─vdb3   6G part ext4
+    └─vdb4  27G part ext4   /nix /home /data     ← 分区**扩到了** 27G
+    data 分区 = /dev/vdb4,大小 = 28989960192 字节
+    firstboot: keel: 注意:data 文件系统没能扩容(镜像/实验环境里通常因为已经没有剩余空间)
+    ```
+    而 `df -h /data` 仍然是 **974 MiB** ⇒ 文件系统根本没扩。也就是说
+    **repart 那一步是对的**(分区长到了 27G),失败的是 `systemd-growfs /data`。
+    原因:`systemd-growfs` 要求挂载点背后有一个 **systemd 的 `.mount` 单元**
+    (它就是 `systemd-growfs@.service` 背后的那个工具,gpt-auto-generator 生成的是
+    `systemd-growfs@<dev>.service`);而我们的 `/data` 是 `keel-mounts` 自己用
+    `mount(8)` 挂的(不变量 2)⇒ 它找不到对应的单元,直接失败。原来的写法又把输出
+    `>/dev/null 2>&1` 吞掉,只留下一句"没能扩容" —— **看不出原因的失败**。
+    ⇒ 修法(`keel-firstboot` 与 `os-rescue --grow-data` 都改):
+    1. 先试 `systemd-growfs /data`,**把它的错误原样打进日志**;
+    2. 失败就退回 `resize2fs <data 设备>`(ext4 支持在线扩容,挂载状态下直接扩;
+       已经到顶时它返回 0);
+    3. 每次把"分区字节数 / 文件系统字节数"都打出来,两者不一致就明说"没扩到位"。
+    **教训**:① 一个"看一眼就知道结果"的动作(扩了多少)必须把**数字**打出来,
+    别只打"成功/失败";② 吞掉工具的输出(`>/dev/null 2>&1`)等于扔掉唯一的线索 ——
+    live 镜像里那句"没能扩容"曾经被当成"实验环境的预期噪音"蒙混过关,直到有人把盘放大
+    才暴露出来(这正是"退出码 0 / 日志说成功 ≠ 事情做成了"的又一个变体,见坑 #29/#36)。

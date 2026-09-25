@@ -178,7 +178,7 @@ admin 的账号与密码哈希都在**镜像的只读 `/etc`** 里,所以即使 
 | # | 动作 | 说明 |
 |---|---|---|
 | 1 | 校验/修复 `/data` 骨架 | 缺失就按镜像里的骨架重建 —— "手贱清空 data"的自愈入口 |
-| 2 | **两步**扩容:`systemd-repart --dry-run=no` 扩 `data` **分区**,再 `systemd-growfs /data` 扩**文件系统** | repart 只扩分区、从不碰已存在分区的文件系统(`GrowFileSystem=` 只是个 GPT 标志位,只被 gpt-auto-generator 消费,而我们不走那条路)。**首启后请用 `df -h /data` 复核** |
+| 2 | **两步**扩容:`systemd-repart --dry-run=no` 扩 `data` **分区**,再扩**文件系统**(先试 `systemd-growfs /data`,失败退回 `resize2fs`) | repart 只扩分区、从不碰已存在分区的文件系统(`GrowFileSystem=` 只是个 GPT 标志位,只被 gpt-auto-generator 消费,而我们不走那条路)。**首启后请用 `df -h /data` 复核**;`keel-firstboot` 会把"分区字节 / 文件系统字节"两个数字打进日志(坑 #42) |
 | 3 | `bootctl install` 建立本机 NVRAM 启动项 | 装机镜像里不可能带;已有则跳过 |
 | 4 | 创建并启用 swapfile(`/data/keel/swapfile`) | 不做休眠(决策 D9) |
 | 5 | 记录 `/data/keel/state` 与 `schema-version` | 之后 `os-status` 从这里读 |

@@ -662,6 +662,22 @@ else
     no "keel-confirm 少了 multi-user.target 那条 WantedBy ⇒ 回滚后不会记录失败/清理坏条目(坑 #41)"
 fi
 
+# /data 的文件系统扩容:必须有 resize2fs 兜底(坑 #42:systemd-growfs 对"自己 mount(8)
+# 挂的"挂载点会失败,2026-09 用 40G 假盘复现过"分区扩到 27G、文件系统还是 974M")。
+if grep -q 'resize2fs "$vol"' mkosi.extra/usr/lib/keel/firstboot &&
+   grep -q 'systemd-growfs /data 失败' mkosi.extra/usr/lib/keel/firstboot &&
+   grep -q "改用 resize2fs" mkosi.extra/usr/lib/keel/firstboot; then
+    ok "keel-firstboot:先试 systemd-growfs、把错误打出来、失败退回 resize2fs(坑 #42)"
+else
+    no "keel-firstboot 缺 resize2fs 兜底(或把 growfs 的错误吞掉了)—— 分区扩了文件系统不会扩"
+fi
+if grep -q 'resize2fs "$data_dev"' mkosi.extra/usr/bin/os-rescue &&
+   grep -q '现在的大小:分区' mkosi.extra/usr/bin/os-rescue; then
+    ok "os-rescue --grow-data 同样有 resize2fs 兜底,并打印分区/文件系统两个尺寸"
+else
+    no "os-rescue --grow-data 没有 resize2fs 兜底(坑 #42)"
+fi
+
 head1 "7. 账号模型(决策 D21:admin 是唯一交互账号,root 锁定)"
 # ---------------------------------------------------------------------------
 if grep -qE '^[[:space:]]*sudo$' mkosi.conf.d/20-packages.conf; then

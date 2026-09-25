@@ -125,9 +125,11 @@ do_reset_etc() {
 #   systemd-growfs@.service —— 而我们的 data 分区是自己挂的(从前是 cmdline 的
 #   systemd.mount-extra=PARTLABEL=data),不经过 gpt-auto-generator
 #   (repart.d(5):这三个 flag "only affect automatic partition mounting")。
-#   ⇒ 所以这一步只保证**分区**变大;若实测 df 没变,需要在挂载好的 /data 上
-#   跑 systemd-growfs /data(它会按文件系统类型调 resize2fs)。
-#   在真机确认之前不要假设文件系统也一起变大了。
+#   ⇒ 所以这一步只保证**分区**变大;文件系统要另外扩。2026-09 用 40G 假盘实测:
+#   systemd-growfs /data 在这种"自己 mount(8) 挂的"挂载点上**会失败**
+#   (它要的是 systemd 的 .mount 单元),所以现在的顺序是
+#   "先试 systemd-growfs(把错误打出来)→ 失败就用 resize2fs 直接扩"(坑 #42)。
+#   两个数字(分区 / 文件系统)都会打印出来,不一致就是没扩到位。
 # ---------------------------------------------------------------------------
 do_grow_data() {
     local pn rel disk part_bytes dev_bytes
@@ -175,16 +177,23 @@ do_grow_data() {
     sync
 
     # 第二步:把文件系统顶满分到的新空间(需要 resize2fs,e2fsprogs 提供)。
-    # 已经到顶时 systemd-growfs 什么也不做,所以重复执行是安全的。
+    # **先试 systemd-growfs,失败就退回 resize2fs**(坑 #42):systemd-growfs 要求挂载点
+    # 背后有 systemd 的 .mount 单元,而 /data 是 keel-mounts 自己 mount(8) 挂的
+    # (不变量 2)⇒ 它在这里会失败,2026-09 用 40G 假盘复现过"分区扩了、文件系统没扩"。
+    # ext4 的 resize2fs 支持在线扩容(挂载状态下直接扩),已经到顶时返回 0。
+    data_dev="$(readlink -f "$DATA_PART")"
     if command -v systemd-growfs >/dev/null 2>&1 || [ -x /usr/lib/systemd/systemd-growfs ]; then
-        if systemd-growfs /data; then
-            keel_log "文件系统已扩到分区大小"
+        if gf_out=$(systemd-growfs /data 2>&1); then
+            keel_log "文件系统已扩到分区大小(systemd-growfs)"
         else
-            keel_log "systemd-growfs 失败:确认 e2fsprogs(resize2fs)装了、/data 是可写的 ext4"
+            keel_log "systemd-growfs 失败($gf_out),改用 resize2fs(坑 #42)"
         fi
-    else
-        keel_log "找不到 systemd-growfs,文件系统没扩;手动跑 resize2fs $(readlink -f "$DATA_PART")"
     fi
+    if ! rs_out=$(resize2fs "$data_dev" 2>&1); then
+        keel_die "resize2fs $data_dev 失败:$rs_out(e2fsprogs 装了吗?/data 是 ext4 吗?)"
+    fi
+    keel_log "文件系统已扩到分区大小:$(printf '%s' "$rs_out" | tr '\n' ' ')"
+    echo "现在的大小:分区 $(blockdev --getsize64 "$data_dev" 2>/dev/null) 字节 / 文件系统 $(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $2}') 字节"
     keel_log "完成。用 lsblk 和 df -h /data 确认新的大小"
 }
 

@@ -66,11 +66,12 @@ fi
 # (源码里 context_mkfs() 对已存在的分区直接 continue)。repart 定义里的
 # GrowFileSystem= 只是打一个 GPT 标志位,而那个标志只被 systemd-gpt-auto-generator
 # 消费 —— 我们的 /data 是 keel-mounts 自己用 `mount` 挂的(不变量 2),
-# 根本不过 gpt-auto-generator。所以文件系统必须自己调 systemd-growfs 扩。
+# 根本不过 gpt-auto-generator。所以文件系统必须自己扩:先试 systemd-growfs,
+# 失败就退回 resize2fs(坑 #42)。
 # (docs/traps.md 坑 #14;真机首启后请用 df -h /data 复核。)
 #
-# 两步都幂等:分区表符合定义时 repart 什么都不做;文件系统到顶时 systemd-growfs
-# 也不做任何事。所以每次启动跑一遍是安全的,这也是"把镜像 dd 到更大的盘之后"的自愈入口。
+# 两步都幂等:分区表符合定义时 repart 什么都不做;文件系统到顶时 resize2fs 返回 0。
+# 所以每次启动跑一遍是安全的,这也是"把镜像 dd 到更大的盘之后"的自愈入口。
 # ---------------------------------------------------------------------------
 vol=$(readlink -f /dev/disk/by-partlabel/data 2>/dev/null || true)
 if [ -n "$vol" ] && [ -b "$vol" ]; then
@@ -80,12 +81,30 @@ if [ -n "$vol" ] && [ -b "$vol" ]; then
             keel_log "data 分区扩容失败(稍后可以手动跑 os-rescue --grow-data)"
         fi
     fi
-    # 分区弄好之后再把文件系统顶满(需要 e2fsprogs 的 resize2fs)
-    if ! systemd-growfs /data >/dev/null 2>&1; then
-        # live/实验镜像里 data 分区本来就是"整盘剩下的 1 GiB",没有可扩的余地 ⇒ 这条是预期噪音。
-        # 真机上如果一直看到它,再按提示排查(见 docs/troubleshooting.md)。
-        keel_log "注意:data 文件系统没能扩容(镜像/实验环境里通常因为已经没有剩余空间)"
-        keel_log "      真机上请看 df -h /data;需要时手动跑 os-rescue --grow-data 或 systemd-growfs /data"
+    # 分区弄好之后再把文件系统顶满。
+    #
+    # 为什么**不用** systemd-growfs 当唯一手段(2026-09,用 40G 假盘复现,坑 #42):
+    # 它要求挂载点背后有一个 **systemd .mount 单元**,而我们的 /data 是 keel-mounts
+    # 自己用 mount(8) 挂的(不变量 2)⇒ 它直接失败,而原来的写法把输出 `>/dev/null 2>&1`
+    # 吞掉了 ⇒ 现象是"分区扩到 27G 了、文件系统还是 974M",日志里只有一句看不出原因的
+    # "没能扩容"。现在:先试它、**把它的错误原样打出来**,失败就退回 resize2fs
+    # (ext4 的在线扩容,mounted 状态下也能扩;已经到顶时它返回 0)。
+    if ! gf_out=$(systemd-growfs /data 2>&1); then
+        keel_log "systemd-growfs /data 失败:$gf_out"
+        keel_log "改用 resize2fs 直接扩 /data(ext4 在线扩容;坑 #42)"
+        if rs_out=$(resize2fs "$vol" 2>&1); then
+            keel_log "resize2fs 成功:$(printf '%s' "$rs_out" | tr '\n' ' ')"
+        else
+            keel_log "错误:resize2fs 也失败了:$rs_out(手动入口:os-rescue --grow-data)"
+        fi
+    fi
+    # 每次都把"分区多大 / 文件系统多大"记下来 —— 这两个数字不一致就是坑 #42 复发
+    part_bytes=$(blockdev --getsize64 "$vol" 2>/dev/null) || part_bytes=""
+    fs_bytes=$(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $2}') || fs_bytes=""
+    keel_log "data 尺寸:分区 ${part_bytes:-未知} 字节 / 文件系统 ${fs_bytes:-未知} 字节"
+    if [ -n "$part_bytes" ] && [ -n "$fs_bytes" ] &&
+       [ "$part_bytes" -gt "$fs_bytes" ] 2>/dev/null; then
+        keel_log "警告:data 分区比文件系统大 $(( (part_bytes - fs_bytes) / 1048576 )) MiB —— 文件系统没扩到位(坑 #42)"
     fi
 fi
 
