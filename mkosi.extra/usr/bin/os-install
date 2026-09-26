@@ -3,13 +3,13 @@
 #
 # 见 docs/architecture.md §7(安装流程)、§3(磁盘布局);用户文档见 docs/install.md §2.2。
 #
-# !!! 重要:这条路径**没有在真机上验证过** !!!
-# 本仓库的开发容器没有 loop 设备、没有 /dev/kvm(docs/traps.md 坑 #11),所以下面每一步
-# 都只是按 systemd / util-linux 的文档语义写的。真机第一次跑之前:
-#   1. 先在 QEMU 里走一遍(docs/install.md §1:mkosi --profile install vm);
-#   2. 目标盘先备份 —— 本命令会**整盘擦除**;
-#   3. 出错时按"报错信息 + lsblk -f 现状"定位,不要盲目重试。
-# 标了 TODO(待验证) 的假设见脚本内注释与最后的总结。
+# 验证状态(2026-09-26):
+#   * 已在 **libvirt「真装机路径」**上多次端到端验证:live 启动 → `os-install --yes` →
+#     只挂目标盘首启 → `keel-check`(证据见 docs/update.md §9.1);erofs 落地后也复验过。
+#   * **物理真机(U 盘 + 笔记本)仍未做过**。第一次上真机前请先备份目标盘 ——
+#     本命令会**整盘擦除**;出错时按"报错信息 + `lsblk -f` 现状"定位,不要盲目重试。
+# v1 遗留的两个 TODO(**根占用 vs 目标分区**、**pending 存在但没有 running_slot 历史**)
+# 已在 2026-09-26 结清,理由分别写在下面 §2 与 §3b 的注释里。
 set -euo pipefail
 
 # shellcheck source=/usr/lib/keel/lib.sh
@@ -234,25 +234,34 @@ keel_log "目标分区:root-a=${part_root_a} data=${part_data} esp=${part_esp}"
 #
 # live 与目标盘上都有 PARTLABEL=root-a,所以分区名不能用 by-partlabel 定位 ——
 # 上面 find_part 已经按"父设备 = 目标盘"筛过了。
-# 根分区以 ro 挂载(不变量 1),读它没问题。dd 复制的是整个块设备,
-# 目标分区不小于当前根分区是 repart 定义的硬要求(两边都是同一个布局)。
+# 根分区以 ro 挂载(不变量 1),读它没问题。
 #
-# v1.1:根文件系统是 **erofs**,两边都还是 6 GiB 的定长分区,所以这条 dd 不受影响;
-#   erofs 的"文件系统大小"写在超级块里、可以远小于分区,分区尾部不会再有数据。
-#
-# TODO(待验证):根文件系统的实际占用大于目标分区时会截断。装机镜像里 root-a 是
-#   6 GiB 常量,但 live 环境长期使用后 /etc 的 overlay upper 会变大 —— 而 upper 在
-#   /data 上,不在根分区里,所以正常情况下根分区不会增长。真机上仍应确认
-#   `blockdev --getsize64` 两边接近且 df 用量远小于目标分区。
+# v1.1:根是 **erofs**,两边都还是 6 GiB 的定长分区。这里拷的是**整块设备**,
+#   所以判据是"**分区容量**"而不是"文件系统占用":erofs 的 fs 大小写在超级块里、
+#   可以远小于分区(实测装机镜像 root-a 是 6 GiB 分区、内容 401 MiB),dd 把整块设备
+#   原样搬过去,分区尾部没有数据。
+#   ⇒ 唯一会截断文件系统的情况是"**目标分区比当前根分区小**",下面直接拒绝。
+#   (v1 留下的 TODO 问"根 fs 实际占用会不会超过目标分区":不会 —— 原因就是上面这条;
+#    2026-09-26 的装机演练确认过两边都是 6 GiB、`df /` 远小于分区。)
 # ---------------------------------------------------------------------------
 if [ -z "$CUR_ROOT_SRC" ]; then
     keel_die "定位不到当前根设备,无法复制根文件系统"
 fi
 cur_root_bytes="$(blockdev --getsize64 "$CUR_ROOT_SRC" 2>/dev/null)" || cur_root_bytes=""
 tgt_root_bytes="$(blockdev --getsize64 "$part_root_a" 2>/dev/null)" || tgt_root_bytes=""
-if [ -n "$cur_root_bytes" ] && [ -n "$tgt_root_bytes" ] && [ "$tgt_root_bytes" -lt "$cur_root_bytes" ]; then
+# 读不到容量就**不许往下走**:这是整盘安装里唯一不可逆的一步,"证明不了装得下"必须
+# 等于拒绝,不能等于"跳过检查"。旧写法是 `[ -n .. ] && [ -n .. ] && refuse` —— 两个
+# 变量都空时检查被静默跳过、dd 照样跑,那正是坑 #36 那种"每一步都成功"的形态。
+case "${cur_root_bytes:-}" in
+    ''|*[!0-9]*) keel_die "读不到当前根设备 ${CUR_ROOT_SRC} 的容量(blockdev 失败)⇒ 无法证明目标分区装得下,拒绝复制。" ;;
+esac
+case "${tgt_root_bytes:-}" in
+    ''|*[!0-9]*) keel_die "读不到目标分区 ${part_root_a} 的容量(blockdev 失败)⇒ 拒绝复制(证明不了就不动盘)。" ;;
+esac
+if [ "$tgt_root_bytes" -lt "$cur_root_bytes" ]; then
     keel_die "目标 root-a(${tgt_root_bytes} 字节)比当前根分区(${cur_root_bytes} 字节)小,拒绝复制(会截断文件系统)。"
 fi
+keel_log "容量核对:当前根 $((cur_root_bytes / 1048576)) MiB → 目标 root-a $((tgt_root_bytes / 1048576)) MiB(整块设备复制)"
 # 复制整块设备(不是文件系统内容):目标分区由 repart 建成同样的布局,dd 到分区起点即可
 keel_log "复制当前根 ${CUR_ROOT_SRC} → ${part_root_a}(可能耗时几分钟)"
 dd if="$CUR_ROOT_SRC" of="$part_root_a" bs=4M conv=fsync status=progress ||
@@ -294,7 +303,15 @@ fi
 #
 # 为什么要写:首启时 keel-confirm 需要 pending 来判定新槽是否启动成功(§5.3 ⑨)。
 # 目标盘的 state 文件是新建的,由本脚本直接写(keel_state_set 只能写 live 的那份)。
-# TODO(待验证):keel-confirm 对"pending 存在但没有 running_slot 历史"的处理。
+#
+# "pending 存在但没有 running_slot 历史"这条边界(v1 的 TODO,2026-09-26 结清):
+#   判定与"一次刚成功的更新"共用一条(pending == 当前槽 ⇒ 确认成功),但**日志要分开**,
+#   免得读日志的人以为刚发生过一次更新。**不能用"running_slot 为空"当判据** ——
+#   keel-firstboot 跑在 keel-confirm 之前,它见 running_slot 为空就会写上当前槽
+#   (firstboot:58),等到 confirm 时那个条件早就没了(2026-09-26 实测踩到:
+#   首启日志打的是"更新成功")。所以这里放一个**显式标记** first_boot=1,
+#   由 confirm 消费后清掉。纯新增的键:老版本读不懂就忽略(只增不破)。
+#   装机路径已实测:首启后 last_result=success、pending 清空、running_slot=a、first_boot 已清。
 # ---------------------------------------------------------------------------
 if [ -d "$DATA_MNT/keel" ]; then
     if ! {
@@ -304,6 +321,7 @@ if [ -d "$DATA_MNT/keel" ]; then
         echo "last_result="
         echo "last_result_version="
         echo "last_result_time="
+        echo "first_boot=1"
     } >"$DATA_MNT/keel/state"; then
         keel_log "警告:写目标 /data/keel/state 失败(首启的成功判定会退化为'无 pending')"
     fi

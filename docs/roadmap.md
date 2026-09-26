@@ -11,7 +11,7 @@
 
 | 版本 | 主题 | 内容(对应下面的条目) | 粗估 |
 |---|---|---|---|
-| **v1.1** | 功能与运维 | **① ✅ erofs 只读根(2.9,已完成:载荷 6 GiB → 401 MiB,`dist/`、演练 qcow2 增长一起变小)** → **② ✅ ESP 余量 + `.failed` 清理(stage 动分区前先查 ESP 空间 + 自动清墓碑 + `os-rescue --clean-esp` 显式入口)** → **③ ✅ 更新检查(`keel-update-check.timer`:只 check + 通知;绝不 fetch/stage)** → ④ `os-install` 两个 TODO(2.7)→ ⑤ 演练/开发的磁盘占用收紧(live 镜像 truncate 尺寸可配)→ ⑥ 原生 ✅ 已实测 / **rootless 待做**,并写进文档 | 不赶时间,分多次 |
+| **v1.1** | 功能与运维 | **① ✅ erofs 只读根(2.9,已完成:载荷 6 GiB → 401 MiB,`dist/`、演练 qcow2 增长一起变小)** → **② ✅ ESP 余量 + `.failed` 清理(stage 动分区前先查 ESP 空间 + 自动清墓碑 + `os-rescue --clean-esp` 显式入口)** → **③ ✅ 更新检查(`keel-update-check.timer`:只 check + 通知;绝不 fetch/stage)** → **④ ✅ `os-install` 两个 TODO 结清(2.7)** → **⑤ ✅ 演练/开发磁盘收紧(镜像尺寸可配:默认 40G → 24G,下限 20G + `fetch` 预算按实测载荷改回 2 GiB)** → ⑥ 原生 ✅ 已实测 / **rootless 待做**,并写进文档 | 不赶时间,分多次 |
 | **v1.2** | 安全 | **更新签名**(1.1)→ **Secure Boot**(1.2,含 UKI 签名、自己的密钥库、解封 `pcrlock`);initrd 冻结修复(3.0) | —— |
 | **v2.0** | 结构与可信 | **迁移执行器**(2.8,先做,它是下面一切的前提)→ **`/data` 加密 + TPM 封印**(1.3)+ **dm-verity**(1.4)+ **早期启动重排**(把 `/etc` overlay 提到 initrd,见 D19 方案 A —— **它才是 #24/#29/#37/#61 四条的真正解法**)→ 可选:`systemd-sysupdate` 底层(2.5)、`cache` 分区(2.4)、`server` profile(2.2) | —— |
 | 不排期 | 等上游 / 可选 | "连续三次"试用语义(2.5b,等 Debian 的 systemd ≥ 261)、`desktop` profile(2.1)、`/usr/lib/modules` 外置(2.3)、`machines/`(3.4) | —— |
@@ -52,7 +52,7 @@
 | 2.5 | **`systemd-sysupdate` 换掉"直接写盘"** | `os-update` 是门面,底层可替换(决策 D8)。要先验证 `Type=partition` 对双槽布局的匹配语义,再换 |
 | 2.5b | **恢复"连续三次"的试用语义** | 原设计用 `bootctl set-preferred`(感知 boot assessment),但 Debian trixie 的 systemd 257 没有这个动词,现在用 `set-oneshot` **只试一次**(坑 #43)。等基底 systemd ≥ 261(或 Debian 把补丁回移)再换回去:改 `lib.sh` 的 `keel_boot_candidate()`,并在 VM 里复验"连续失败三次才回退" |
 | 2.6 | **自动更新定时器** | **v1.1 ③ 已做"检查"那一半**:`keel-update-check.timer` 只跑只读的 `os-update check` + 写结论 + 通知(`docs/update.md` §8)。**真正的"自动 fetch / 自动 stage"仍不做** —— 硬约束 1:要等 v1.2 的更新签名。到那时再按"检查频率 + 按窗口下载"的保守策略加,并且记得把 `tools/verify.sh` 里"update-check 里每一处 os-update 都必须是 check"的反向断言一起改掉 |
-| 2.7 | **`os-install` 的两个 TODO** | ① 根文件系统实际占用超过目标分区尺寸时的截断检查;② `keel-confirm` 的 pending/running_slot 边界 |
+| 2.7 | **`os-install` 的两个 TODO** | ✅ **已结清(v1.1 ④,2026-09-26)**:① **根占用 vs 目标分区** —— 拷的是**整块设备**,所以判据是**分区容量**而不是文件系统占用(erofs 的 fs 大小写在超级块里、可远小于分区);并且**读不到容量就拒绝**(旧写法两个变量都空时会静默放行,那正是坑 #36 的形态)。② **`keel-confirm` 的 pending/running_slot 边界** —— 装机写入的 `pending_slot=a` + 空的 `running_slot`/`last_result` 现在被明确识别为"装机后首次启动",日志与"一次更新成功"分开报;装机路径实测 `last_result=success`、pending 清空、`running_slot=a` |
 | 2.8 | **`/data` schema 迁移执行器**(v1 明确不做) | v1 的行为是:带 `migrate=` 的载荷被 `fetch` **拒绝**(坑 #48),布局冻结在 schema 1。要做的时候:① 定义 manifest 的迁移语法(只增不破的 mkdir/权限/文件);② 想清楚 `schema`(载荷要求的布局版本)与 `schema_min`(载荷还能读的最低版本)的区别 —— 现在 `fetch` 那句 `schema > 本机 ⇒ 拒绝` 与"由旧系统迁移"的语义是**互相矛盾**的,得先理顺;③ 在 VM 里按 §4 演练(含**回滚**到旧版本后旧系统仍能读 /data);④ 第一次真实迁移前不要动布局 |
 
 ## 2.95 已复核:控制台日志级别与日志落盘(D27 / 坑 #61)
@@ -79,7 +79,7 @@
 | 1c | **运行时 repart 定义**(`mkosi.postinst` 装进镜像的那份) | ⚠ **新发现的硬约束**:它按坑 #31 去掉了 `CopyFiles=`,于是 root-a 的 `Format=erofs` 会让 **`os-install` 建表直接失败**。⇒ postinst 生成时**同时去掉 `Format=erofs`**;`tools/verify.sh` 的运行时模拟必须与 postinst 逐字同源,并断言两边一致(否则 verify 全绿、真实装机失败)。槽根不需要在这里格式化:root-a 被 live 根 dd 覆盖,root-b 等首次更新 |
 | 2 | 构建侧要有 `mkfs.erofs` | ✅ 已确认:mkosi 的 Debian **tools tree 自带 `erofs-utils`**(构建期不用额外配置)。**但镜像里必须显式加 `erofs-utils`** —— 格式化发生在运行时的 `os-install`,与坑 #32(dosfstools)同一个形状。已加进 `mkosi.conf.d/20-packages.conf` + verify 断言 |
 | 3 | **initrd 必须能挂 erofs** | ✅ **已实测确认**(不用起 VM):mkosi 默认 initrd 里带 `erofs.ko.xz`。方法见坑 #63:`objcopy --only-section=.initrd` + 按 zstd 魔数切帧(`.initrd` 是**多帧**的,`zstd -dc` 只解第一帧)+ `cpio -it`。另外 `docs/decisions.md` D2 里"ext4 是内核内建"的说法**是错的**(`CONFIG_EXT4_FS=m`,v1 靠 initrd 里的 `ext4.ko` 才起来),已更正 |
-| 4 | `keel-check` / `os-status` / `os-update` 里对根文件系统的假设 | ✅ 已审计:唯一的"分区 vs 文件系统尺寸"比较是 **`/data`**(仍 ext4,不变);根只有一条"挂载选项含 `ro`"的断言,erofs 天然通过。**顺带**:`os-update fetch` 的空间预算原本按 13 GiB 写(两个 6 GiB 根镜像),已改成 erofs 的保守上限(硬下限 6 GiB / 警告线下 10 GiB) |
+| 4 | `keel-check` / `os-status` / `os-update` 里对根文件系统的假设 | ✅ 已审计:唯一的"分区 vs 文件系统尺寸"比较是 **`/data`**(仍 ext4,不变);根只有一条"挂载选项含 `ro`"的断言,erofs 天然通过。**顺带**:`os-update fetch` 的空间预算原本按 13 GiB 写(两个 6 GiB 根镜像),erofs 之后按**实测载荷 1.1 GiB** 定成 **2 GiB 硬下限 / 4 GiB 警告线**(中间一度写成 6 GiB/10 GiB —— 那会把 20 GiB 的演练盘挡在门外,④⑤ 那批实测发现后改回,见下面 ⑤) |
 | 5 | slot 尺寸常量 | **本次不动**(不变量 9);等 erofs 落地后再讨论"新机器是否改小"(见 §0 硬约束 3) |
 | 6 | 文档 | ✅ `architecture.md` §3.1/§3.2/§3.3、`decisions.md` D2(含"ext4 内建"更正)、`AGENTS.md` 不变量 1、`docs/install.md`、`docs/update.md`、`docs/traps.md` 坑 #63 |
 | 7 | **OTA 演练(`--drill`)的坏槽构造** | ✅ **已支持 erofs(2026-09-26)**。原实现只用 `debugfs` 改 ext4(删 PID1 / 把 `default.target` 换成悬空链接),对 erofs 无效 —— 而 `debugfs` **对打不开的文件也返回 0**(坑 #47),会"成功"产出**根本没坏**的载荷 ⇒ 回滚演练变假绿。现在按**超级块魔数**分派:erofs 走 `fsck.erofs --extract` → 改树 → `mkfs.erofs` 重打包(**不用 mount/loop**,容器路径也能跑,坑 #17 的教训),ext4 仍走 `debugfs`,认不出则明确失败。实测:401 MiB 载荷解包 2.6 s、重打包 0.5 s,产物大小不变(420,880,384 B)、`blkid` 仍报 erofs、可正常挂载。**顺带更正一条错误笔记**:`fsck.erofs --extract` 对 root **保留 owner 与权限(含 setuid)** —— 解出来的 `/usr/bin/sudo` 是 `-rwsr-xr-x`;之前记的"会丢 setuid"是错的,那是我自己在解包后又 `chown`,而 `chown` 本来就会清 setuid |

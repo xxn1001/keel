@@ -290,6 +290,9 @@ sudo tools/build.sh -p <密码>                # 给 admin 设初始密码(root 
 sudo tools/build.sh --profile desktop        # 叠加变体 profile(可重复)
 sudo tools/build.sh --vm                     # 构建完直接在 QEMU 里起一遍
 sudo tools/build.sh --drill                  # 完整 OTA 演练(载荷+引导镜像+HTTP 源+VM 自检)
+#   演练的 guest 镜像默认放大到 **24G**(v1.1 ⑤ 起可配);想再压:
+#   KEEL_DRILL_IMAGE_SIZE=20G sudo tools/build.sh --drill
+#   下限 20G(布局 13 GiB + /data 基础占用 + 两份载荷 + fetch 的 2 GiB 余量),写小了会直接拒。
 
 # 宿主是 NixOS 等 mkosi 不支持的发行版 → 容器适配器(选项同上,-p/--profile/--vm/--drill 都认)
 sudo tools/build-container.sh                # 构建
@@ -400,6 +403,18 @@ sudo tools/burn.sh /dev/nvme0n1
       更新签名之后;`tools/verify.sh` 有反向断言守着("脚本里每一处 `os-update` 都必须是 `check`")。
       巡检**永远 `exit 0`**(失败只写 `verdict=error`),否则 `keel-check` 的"失败单元为空"
       会被巡检噪音污染;没配更新源时**连网络都不碰**。用户视角见 `docs/update.md` §8
+- [x] **v1.1 ④:两个 `os-install` TODO 结清(2026-09-26)** —— ① **根占用 vs 目标分区**:
+      拷的是整块设备 ⇒ 判据是**分区容量**而不是文件系统占用;并且**读不到容量就拒绝**
+      (旧写法两个变量都空时会静默放行 —— 坑 #36 的形态)。② **`keel-confirm` 的
+      pending/running_slot 边界**:装机写的 `pending_slot=a` + 空的 `running_slot`/`last_result`
+      现在被识别成"装机后首次启动",日志与"一次更新成功"分开报
+- [x] **v1.1 ⑤:演练/开发磁盘收紧(2026-09-26)** —— `tools/ota-drill-container.sh` 不再硬编码
+      `truncate -s 40G`,改成 `KEEL_DRILL_IMAGE_SIZE`(默认 **24G**,v1 的 40G 是 13 GiB 载荷
+      时代的余量),并加了 **20G 下限检查**(布局 13 GiB + `/data` 基础占用 ~2.2 GiB + 两份载荷
+      ~2.2 GiB + `fetch` 自己的 2 GiB 硬下限)。**顺带修掉 ③ 里的一个跨项回归**:`fetch` 的
+      空间预算一度写成 6 GiB/10 GiB,20G 的演练盘(只剩 4.8 GiB)连演练自己都跑不起来 ⇒
+      按实测载荷 1.1 GiB 改回 **2 GiB 硬下限 / 4 GiB 警告线**。`AGENTS.md` §4 与
+      `docs/update.md` §9 都写了怎么调
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 

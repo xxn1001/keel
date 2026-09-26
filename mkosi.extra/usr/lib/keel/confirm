@@ -55,9 +55,31 @@ if [ -e "$KEEL_UKI_DIR/$uki_name" ]; then
     keel_state_set "entry_$slot" "$uki_name"
 fi
 
+# 这次确认该报"首次启动"还是"更新成功"?
+# 判据是 **os-install 写的一次性标记 `first_boot=1`**,不是"running_slot/last_result 为空" ——
+# keel-firstboot 跑在本单元之前,会把空的 running_slot 填上(firstboot:58),那种判据永远为假
+# (2026-09-26 实测踩到,见 docs/traps.md 坑 #65)。抽成函数是为了能被单独测(verify.sh)。
+confirm_kind() {
+    if [ "$(keel_state_get first_boot)" = 1 ]; then
+        printf 'first-boot'
+    else
+        printf 'update'
+    fi
+}
+
 # --- ② 判定这次启动是"更新成功"还是"更新失败后回滚" ---
+#
+# "pending 存在但没有 running_slot 历史"= **装机后的第一次启动**(os-install 的 3b 写入
+# pending_slot=a 与显式标记 `first_boot=1`)。判定与"更新成功"共用同一条
+# (pending == 当前槽 ⇒ 确认成功),但**日志要分开说** —— 否则读日志的人会以为
+# 刚发生过一次更新(2026-09-26 结清 v1 的这条 TODO)。标记用完即清,保证只生效一次。
 if [ -n "$pending" ] && [ "$pending" = "$slot" ]; then
-    keel_log "更新成功:槽 $slot 上的 $(keel_version) 已确认"
+    if [ "$(confirm_kind)" = first-boot ]; then
+        keel_log "首次启动确认:槽 $slot 上的 $(keel_version) 是装机后的第一次启动(first_boot 标记)"
+    else
+        keel_log "更新成功:槽 $slot 上的 $(keel_version) 已确认"
+    fi
+    keel_state_set first_boot ""
     keel_state_set last_result success
     keel_state_set last_result_version "$(keel_version)"
     keel_state_set last_result_time "$(date +%s)"

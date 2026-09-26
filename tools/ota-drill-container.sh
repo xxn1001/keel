@@ -13,9 +13,19 @@
 #   1. 静态校验
 #   2. tools/build.sh → 新版本载荷 dist/keel-<时间戳>/
 #   3. 用**显式更旧的版本号**构建引导镜像(否则 os-update check 会说"已经是最新")
-#   4. 把安装镜像 truncate 到 40G(载荷 4 个产物约 4 GiB(erofs),而 live 镜像的 /data 只有 1 GiB)
+#   4. 把安装镜像放大到 $KEEL_DRILL_IMAGE_SIZE(默认 24G,见下面 step 4 的说明;
+#      live 镜像自己的 /data 只有 1 GiB,不够放载荷)
 #   5. 起本地 HTTP 源(见下面"为什么必须在容器里起")
 #   6. 起 VM:guest 里的 keel-ota-drill.service 会自己跑完 check/fetch/stage/重启/确认/回滚
+#
+# 可调的环境变量(不设就用默认值):
+#   KEEL_DRILL_IMAGE_SIZE    安装镜像放大到多大(整数 GiB,默认 24G;下限 20G)
+#   KEEL_DRILL_BOOT_VERSION  引导镜像的版本号(默认 2000.01.01.0001,必须旧于载荷)
+#   KEEL_DRILL_PORT          本地 HTTP 源端口(默认 8000)
+#   KEEL_DRILL_VM_TIMEOUT    VM 超时秒数(默认 1500)
+#   KEEL_DRILL_BAD_SLOT      做坏载荷的目标槽(默认 b)
+#   KEEL_DRILL_SABOTAGE      坏法:userspace(默认)/ initrd
+#   KEEL_ROOT_PASSWORD       给 admin 的初始密码(经 mkosi --root-password)
 #
 # 为什么要拆成独立脚本:整个流程要塞进 `bash -lc "…"` 的话,引号要套三层
 # (容器 → PAYLOAD → mkosi),第一次跑就栽在"容器里没有 curl"这种小地方,
@@ -31,8 +41,24 @@ REPO=$PWD   # 容器里是 /work,原生宿主上是仓库目录 —— 脚本内
 DRILL_BOOT_VERSION=${KEEL_DRILL_BOOT_VERSION:-2000.01.01.0001}
 DRILL_PORT=${KEEL_DRILL_PORT:-8000}
 DRILL_VM_TIMEOUT=${KEEL_DRILL_VM_TIMEOUT:-1500}
+# 安装镜像放大到多大。v1 时代硬编码 40G —— 那时一份载荷 13 GiB,必须留足;
+# erofs 之后一份载荷只有 ~1.1 GiB(实测),40G 是纯粹的浪费(guest 真写真占、
+# 演练 qcow2 跟着长)。默认 24G 仍然很宽松,**下限 20G**(见 step 4 的算式:
+# 布局 13 GiB + 基础 /data 占用 ~2.2 GiB + 两份载荷 ~2.2 GiB + 每次 fetch 的 2 GiB 余量)。
+DRILL_IMAGE_SIZE=${KEEL_DRILL_IMAGE_SIZE:-24G}
+DRILL_IMAGE_MIN_G=20
 ROOTPW_ARGS=()
 [ -n "${KEEL_ROOT_PASSWORD:-}" ] && ROOTPW_ARGS=("--root-password=$KEEL_ROOT_PASSWORD")
+
+# 尺寸参数解析 + 下限检查。抽成函数是为了能**单独测**(tools/verify.sh 会把它原样抽出来
+# 跑几个用例,而不是只用 grep 看字符串在不在):返回解析出的整数 GiB;不合法或低于下限返回非 0。
+drill_image_gib() {
+    local s=$1 n
+    case "$s" in *G) n=${s%G} ;; *) return 1 ;; esac
+    case "$n" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$n" -ge "$DRILL_IMAGE_MIN_G" ] || return 1
+    printf '%s' "$n"
+}
 
 step() { printf '\n== %s ==\n' "$*"; }
 
@@ -52,8 +78,18 @@ step "3/7 构建引导镜像(版本 $DRILL_BOOT_VERSION,必须旧于载荷)"
 mkosi --profile install --profile test --image-version="$DRILL_BOOT_VERSION" \
       "${ROOTPW_ARGS[@]+"${ROOTPW_ARGS[@]}"}" --force build
 
-step "4/7 把安装镜像放大到 40G(首启的 repart + resize2fs 会把 data 扩到整盘)"
-truncate -s 40G mkosi.output/keel.raw
+step "4/7 把安装镜像放大到 $DRILL_IMAGE_SIZE(首启的 repart + resize2fs 会把 data 扩到整盘)"
+if ! img_g=$(drill_image_gib "$DRILL_IMAGE_SIZE"); then
+    echo "   错误:KEEL_DRILL_IMAGE_SIZE 不合法:'$DRILL_IMAGE_SIZE'(只接受整数 GiB,例如 20G / 24G)," >&2
+    echo "         或者小于下限 ${DRILL_IMAGE_MIN_G}G。下限怎么来的(2026-09-26 被真事教育过):" >&2
+    echo "           esp 1 + root-a 6 + root-b 6 = 13 GiB,剩下的全给 /data;" >&2
+    echo "           首启后 /data 本身要占 ~2.2 GiB,演练要放**两份** erofs 载荷(各 ~1.1 GiB)," >&2
+    echo "           而 os-update fetch 自己有 2 GiB 的可用空间硬下限 ⇒ 20 GiB 是实测能跑通的最小值。" >&2
+    echo "         (想要更小,得先改布局常量或 fetch 的预算 —— 都不是这个变量能解决的。)" >&2
+    exit 1
+fi
+# 用解析出来的值(而不是原始字符串)去 truncate:顺带把 `024G` 这类写法归一化。
+truncate -s "${img_g}G" mkosi.output/keel.raw
 ls -l mkosi.output/keel.raw | awk '{ print "   keel.raw = " $5 " 字节" }'
 
 step "5/7 起本地 HTTP 源(guest 会访问 http://10.0.2.2:$DRILL_PORT/good)"

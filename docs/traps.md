@@ -1,4 +1,4 @@
-# keel 已知的坑(64 条,都是真踩过的)
+# keel 已知的坑(65 条,都是真踩过的)
 
 > 这份清单原来在 `AGENTS.md` §3。2026-09 拆出来,是因为 `AGENTS.md` 长到 65 KB 之后
 > **超出"工作区指令"的加载预算、末尾会被静默截断**(实测被砍掉过"下一步要验证的事"那一段),
@@ -836,6 +836,8 @@
     ① **空间**:`/data` 27 GiB,里面已经躺着上一份 13 GiB 的载荷 ⇒ 第二份写不下。
        `fetch` 的空间检查阈值是"低于 2 GiB 才拒绝、低于 16 GiB 只警告",12.4 GiB 只触发警告,
        然后 curl 撞 ENOSPC —— 而**错误信息只说"下载失败"**,看起来像网络问题。
+       (**2026-09-26 现状**:载荷降到 1.1 GiB 后,阈值改成 **低于 2 GiB 拒绝 / 低于 4 GiB 警告**;
+       警告线压到 4 GiB 正是为了不再出现本文这种"只警告、然后 ENOSPC"。)
     ② **`stage` 装哪一版**:它取 `/data/ota/` 下**版本号最大**的那份已下载载荷。
        `fetch` 失败时 `stage` 不会报错,而是**静默装回更旧的那一份** —— 一次"我要装坏载荷"
        的尝试,结果变成"把好载荷又装了一遍"。演练里这个错误被"p3 判定与预期不符"抓住,
@@ -1230,3 +1232,29 @@
     (本次 ①b 的 erofs 坏槽构造因此没能留下 drill 现场的 step 6 输出;补的办法是把那四个函数
     从脚本里按 `^fs_kind()`…`^}` 原样抽出来单独跑一遍 —— 它确实走了 `槽载荷的文件系统:erofs`
     → `解包 erofs` → `重打包 mkfs.erofs` → `回读确认`。) 
+
+65. **"某个键为空"这种判据会被**别的单元先填上** —— 首启的 `running_slot` 就是(2026-09-26,v1.1 ④ 结清 os-install 的 TODO 时)。**
+    v1 留的 TODO 是"`keel-confirm` 对**pending 存在但没有 `running_slot` 历史**的处理"。
+    装机器上,`os-install` 3b 写的 state 是:
+    ```
+    pending_slot=a / pending_version=X / running_slot= / last_result= / …
+    ```
+    于是很自然地写成 `[ -z "$(keel_state_get running_slot)" ] && [ -z "$(keel_state_get last_result)" ]`
+    ⇒ "没有历史 = 装机首启"。**逻辑看着没错,静态断言也拦不住**。
+    实测(装机 → 首启)打出来的是 `更新成功:槽 a 上的 … 已确认`,不是"首次启动确认"。
+    **原因**:`keel-firstboot.service` 跑在 `keel-confirm.service` **之前**(前者 `Before=multi-user.target`,
+    后者挂在 `boot-complete.target` 上),而它第 58–59 行正是:
+    ```bash
+    if [ -z "$(keel_state_get running_slot)" ]; then
+        keel_state_set running_slot "$(keel_current_slot)"
+    fi
+    ```
+    —— 轮到 confirm 时,`running_slot` 早就被填上了,那个判据永远为假。
+    **修法**:别用"某键为空"表达"没有历史"(它是个**共享可变状态**,谁都能先动);
+    改成**显式标记** —— `os-install` 写 `first_boot=1`,`confirm` 读到就报"首次启动确认"
+    并**用完即清**(`keel_state_set first_boot ""`),这样只生效一次,也不会被别的单元误碰。
+    **教训**:① 判"是不是第一次"要用**一次性标记**,不要用"某个字段恰好为空";
+    ② 单元之间的**执行顺序**(`firstboot` 早于 `confirm`)是判据的一部分 —— 看代码时要连
+    `Before=`/`After=` 一起看,光看函数体永远看不出这个 bug;
+    ③ 同一类的还有 `last_result`:它只会被 confirm 写,所以作为"有没有跑过确认"的判据是安全的,
+    `running_slot` 不是 —— **同样是"状态键",写入者不同,可信度就不同**。

@@ -33,7 +33,7 @@ sudo os-update stage --reboot  # 同上,并立即重启
 | `os-update fetch` | 下载到 `/data/ota/<ver>/`,校验 sha256、签名(v1 只留接口)、schema 兼容性(§8) | 什么都没写进槽,重试即可 |
 | `os-update stage` | §5.3 的 ①–⑦(见下表) | 写分区阶段失败只是白写了一遍非活动槽,当前系统不受影响 |
 | `os-update stage` 装的是哪一版 | **`/data/ota/` 下版本号最大**的那份已下载载荷(和 `gc` 的保留策略一致)。所以 `fetch` 失败时**不要**接着 `stage` —— 它不会报错,而是装回更旧的那一份(2026-09 演练踩到过:坏载荷 ENOSPC 没下下来,`stage` 静默装回了上一版好载荷) |
-| 空间账 | 一份载荷是 **erofs**,只占内容大小(v1.1 起约 1.5–2 GiB/槽 + 两个 ~156 MiB UKI)。v1 时是 13 GiB(两个 6 GiB 根镜像)—— erofs 之后 `/data` 的余量宽松了很多。`fetch` 前先 `os-update gc`,或删掉 `/data/ota` 下的旧版本(已装进槽的内容不受影响) |
+| 空间账 | 一份载荷是 **erofs**,只占内容大小(实测 **~1.1 GiB/份**:两个 401 MiB 根镜像 + 两个 ~156 MiB UKI)。v1 时是 13 GiB(两个 6 GiB 根镜像)—— erofs 之后 `/data` 的余量宽松了很多。`fetch` 前的硬下限是 **2 GiB**(警告线 4 GiB)。`fetch` 前先 `os-update gc`,或删掉 `/data/ota` 下的旧版本(已装进槽的内容不受影响) |
 | 重启 | systemd-boot 用 one-shot 启动候选条目,文件名从 `keel-<目标>+3.efi` 退化为 `keel-<目标>+2-1.efi`;到达 `boot-complete.target` 后 `systemd-bless-boot` 把它改名成 `keel-<目标>.efi`,`keel-confirm.service` 把它设成**持久默认**、记 success、清 pending(§5.3 ⑧⑨) | 见 §3 |
 
 `os-update stage` 内部按顺序做这些事(§5.3 ①–⑦):
@@ -234,8 +234,13 @@ sudo tools/build-container.sh -p <临时密码> drill
 2. 用显式**较旧**的版本号(`2000.01.01.0001`)构建引导镜像 —— 这样
    `os-update check` 才会认为"有新版本";镜像里的 test profile 带一个**自驱动状态机**
    (`keel-ota-drill.service`,状态在 `/data/keel/ota-drill.state`,跨重启);
-3. 把安装镜像 `truncate -s 40G`(载荷 4 个产物约 13 GiB,而 live 镜像的 `/data` 只有 1 GiB;
-   首启会把 `data` 扩到整盘 ⇒ 27 GiB);
+3. 把安装镜像放大到 `$KEEL_DRILL_IMAGE_SIZE`(默认 **24G**,下限 **20G**)。为什么非要放大:
+   live 镜像自己的 `/data` 只有 1 GiB,放不下载荷;首启会把 `data` 扩到整盘。
+   **erofs 之后 40G 已经是浪费**(v1 时代一份载荷 13 GiB 才需要),所以尺寸做成了可配,
+   想再压就 `KEEL_DRILL_IMAGE_SIZE=20G sudo tools/build.sh --drill`。
+   下限的来历(2026-09-26 实测):布局 13 GiB(esp 1 + 两个槽各 6)+ `/data` 基础占用 ~2.2 GiB
+   + 演练要放**两份** erofs 载荷(各 ~1.1 GiB)+ `os-update fetch` 自己的 2 GiB 可用空间硬下限
+   ⇒ 20 GiB 是能跑通的最小值;脚本会自己检查,写小了直接拒。
 4. 在容器里起 HTTP 源(guest 走 QEMU 用户态网络访问 `http://10.0.2.2:8000/good`);
 5. 起 VM,状态机自己跑:
 
@@ -247,9 +252,12 @@ sudo tools/build-container.sh -p <临时密码> drill
 | p3 | 坏槽那次启动**起不来**之后**自动回到旧槽** → poweroff | 当前槽 = 旧槽、`last_result=failed`、ESP 上出现 `keel-<坏槽>+N.efi.failed` |
 
 坏载荷由 `tools/ota-drill-container.sh` 现场制作,两种破坏方式各验证一类失败
-(`KEEL_DRILL_SABOTAGE=initrd|userspace`):把目标槽的根镜像复制一份,用 `debugfs` 删掉
+(`KEEL_DRILL_SABOTAGE=initrd|userspace`):把目标槽的根镜像复制一份,再按**文件系统**改它 ——
+`erofs`(v1.1 起)走 `fsck.erofs --extract` → 改树 → `mkfs.erofs` 重打包(**不用 mount/loop**),
+`ext4` 仍走 `debugfs`(认不出就明确失败,不让它静默产出"假坏载荷")。`initrd` 型删掉
 **PID1**(`/usr/lib/systemd/systemd`)/内核的 init 兜底(`/bin/sh` → `dash`、`bash`)/initrd 里的东西
-⇒ 内核要么 panic、要么进 emergency。删完会**回读确认**(按输出文本,不看退出码 —— 坑 #47),
+⇒ 内核要么 panic、要么进 emergency;`userspace` 型把 `default.target` 换成悬空符号链接。
+改完会**回读确认**(erofs 是重新解包产物镜像看;ext4 是按输出文本,不看退出码 —— 坑 #47),
 并重算那个产物的 sha256 写进坏 manifest(版本号加 `.bad` 后缀)。
 
 ### v1 实测结果(2026-09,VM;三轮 `tools/build-container.sh -p <密码> drill`)

@@ -674,6 +674,60 @@ else
     no "os-install 与 mkosi.postinst 对 repart 定义目录不一致(os-install 读 '${defs_in_script:-空}')"
 fi
 
+# ---------------------------------------------------------------------------
+# ④ 的两个 v1 TODO 必须在 2026-09 结清(roadmap §0 ④ / §2.7)
+#
+# 结清 ≠ 删掉注释:两条都要有**可检查的替代物** ——
+#   ① 容量判据:读不到容量必须**拒绝**(旧写法是 `[ -n .. ] && [ -n .. ] && refuse`,
+#      两个变量都空时静默放行 —— 那是坑 #36 那种"每一步都成功"的形态);
+#   ② 首启边界:keel-confirm 要把"装机后的第一次启动"和"一次更新成功"在日志上分开。
+# ---------------------------------------------------------------------------
+if ! grep -q 'TODO(待验证):根文件系统的实际占用' mkosi.extra/usr/bin/os-install &&
+   grep -q '容量核对' mkosi.extra/usr/bin/os-install &&
+   grep -q '读不到当前根设备' mkosi.extra/usr/bin/os-install &&
+   grep -q '读不到目标分区' mkosi.extra/usr/bin/os-install; then
+    ok "os-install ① 已结清:拷整块设备 ⇒ 判据是分区容量;读不到容量**拒绝**而不是跳过检查"
+else
+    no "os-install 的容量判据没结清(要么 TODO 还在,要么读不到容量时仍会放行)"
+fi
+if ! grep -q 'TODO(待验证):keel-confirm 对' mkosi.extra/usr/bin/os-install &&
+   grep -q 'first_boot=1' mkosi.extra/usr/bin/os-install &&
+   grep -q 'keel_state_get first_boot' mkosi.extra/usr/lib/keel/confirm &&
+   grep -q 'keel_state_set first_boot ""' mkosi.extra/usr/lib/keel/confirm &&
+   grep -q '首次启动' mkosi.extra/usr/lib/keel/confirm &&
+   grep -q 'firstboot:58' mkosi.extra/usr/lib/keel/confirm; then
+    ok "os-install ② 已结清:显式 first_boot 标记区分「装机后首次启动」与「更新成功」,用完即清(不靠 running_slot 是否为空 —— firstboot 会先把它填上)"
+else
+    no "首启边界没结清:os-install 写 first_boot、confirm 读+清 first_boot 要成对,且不能用 running_slot 判"
+fi
+# 功能测试:confirm_kind 的判据必须是**一次性标记**,不是"running_slot 恰好为空"。
+# 后者被 keel-firstboot 先填上,永远为假 —— 那正是本仓库坑 #65 的现场。
+ft3=$(tmpd)
+sed -n '/^confirm_kind()/,/^}/p' mkosi.extra/usr/lib/keel/confirm >"$ft3/fn.sh"
+if [ -s "$ft3/fn.sh" ] && (
+    # shellcheck disable=SC1091
+    . mkosi.extra/usr/lib/keel/lib.sh
+    KEEL_STATE_DIR="$ft3/keel"
+    KEEL_STATE="$KEEL_STATE_DIR/state"
+    install -d -m 0755 "$KEEL_STATE_DIR"
+    # shellcheck disable=SC1090
+    . "$ft3/fn.sh"
+    # ① 有 first_boot=1 → 首次启动
+    printf 'running_slot=a\nfirst_boot=1\n' >"$KEEL_STATE"
+    [ "$(confirm_kind)" = first-boot ] || exit 1
+    # ② 没有 first_boot(而且 running_slot **已经有值**)→ 更新成功
+    printf 'running_slot=a\nlast_result=success\n' >"$KEEL_STATE"
+    [ "$(confirm_kind)" = update ] || exit 1
+    # ③ first_boot 存在但不是 1 → 更新成功(别把空值当成 true)
+    printf 'first_boot=\n' >"$KEEL_STATE"
+    [ "$(confirm_kind)" = update ] || exit 1
+    exit 0
+); then
+    ok "confirm_kind 实跑:first_boot=1 → 首次启动;没有它(哪怕 running_slot 已填)→ 更新"
+else
+    no "confirm_kind 判据不对 —— 可能又用回了「running_slot 为空」(坑 #65)"
+fi
+
 # keel 的"系统版本"必须来自 /usr/lib/os-release 的 IMAGE_VERSION(mkosi 写的),
 # **不能**用 Debian 的 VERSION_ID —— 那会让版本显示成 "13",而且 os-update 的版本比较
 # 会恒等 ⇒ 永远认为"已经是最新"(坑 #35)。
@@ -836,11 +890,11 @@ fi
 if grep -q 'drill)' tools/build-container.sh &&
    grep -q 'ota-drill-container.sh' tools/build-container.sh &&
    [ -x tools/ota-drill-container.sh ] &&
-   grep -q 'truncate -s 40G' tools/ota-drill-container.sh &&
+   grep -q 'DRILL_IMAGE_SIZE' tools/ota-drill-container.sh &&
    grep -q 'DRILL_BOOT_VERSION' tools/ota-drill-container.sh &&
    grep -q 'python3 -m http.server' tools/ota-drill-container.sh &&
    grep -q 'urllib.request' tools/ota-drill-container.sh; then
-    ok "drill 模式:独立编排脚本(远古引导版本 + truncate 40G + 容器内 HTTP 源 + python3 探测)"
+    ok "drill 模式:独立编排脚本(远古引导版本 + 可配镜像尺寸 + 容器内 HTTP 源 + python3 探测)"
 else
     no "drill 编排不完整(见 tools/build-container.sh / tools/ota-drill-container.sh)"
 fi
@@ -943,6 +997,42 @@ if grep -q 'fs_kind' tools/ota-drill-container.sh &&
     ok "演练的坏载荷构造按文件系统分派(erofs:解包/改树/重打包;ext4:debugfs;认不出则失败)"
 else
     no "drill 的坏载荷构造没有覆盖 erofs ⇒ 载荷换成 erofs 后会静默产出假坏载荷,回滚演练变假绿"
+fi
+
+# v1.1 ⑤:演练的镜像尺寸**可配**(别再硬编码 40G)+ 太小要**明确拒绝**。
+# 一条 `truncate -s 40G` 写死会让"磁盘最紧"这条约束永远松不下来;
+# 而尺寸改小又是最容易写错的地方(小于布局 14 GiB 就会在 guest 里炸),所以下限要自己拦。
+if grep -q 'KEEL_DRILL_IMAGE_SIZE' tools/ota-drill-container.sh &&
+   grep -qE '^DRILL_IMAGE_SIZE=\$\{KEEL_DRILL_IMAGE_SIZE:-' tools/ota-drill-container.sh &&
+   ! grep -qE 'truncate -s +40G' tools/ota-drill-container.sh &&
+   grep -q 'DRILL_IMAGE_MIN_G' tools/ota-drill-container.sh &&
+   grep -qF 'truncate -s "${img_g}G"' tools/ota-drill-container.sh; then
+    ok "演练镜像尺寸可配(KEEL_DRILL_IMAGE_SIZE,默认 24G)+ 低于下限明确拒绝,不再硬编码 40G"
+else
+    no "演练镜像尺寸没做成可配(或还硬编码 40G / 没有下限检查)—— 见 roadmap §0 ⑤"
+fi
+# 功能测试(不只 grep):把 drill_image_gib 原样抽出来,跑合法值与各种坏值。
+# 这条守住的是"改小到装不下"这个最容易犯的错(布局 14 GiB 是硬底)。
+ft2=$(tmpd)
+sed -n '/^drill_image_gib()/,/^}/p' tools/ota-drill-container.sh >"$ft2/fn.sh"
+if [ -s "$ft2/fn.sh" ] && (
+    # export 是给 shellcheck 看的(SC2034):这个值由下面 source 进来的函数读,
+    # 它看不见跨文件的引用,会误报"未使用"。
+    export DRILL_IMAGE_MIN_G=20
+    # shellcheck disable=SC1090
+    . "$ft2/fn.sh"
+    [ "$(drill_image_gib 24G)" = 24 ] || exit 1
+    [ "$(drill_image_gib 20G)" = 20 ] || exit 1
+    drill_image_gib 19G  && exit 1
+    drill_image_gib 4G   && exit 1
+    drill_image_gib 24   && exit 1
+    drill_image_gib abcG && exit 1
+    drill_image_gib ""   && exit 1
+    exit 0
+); then
+    ok "drill_image_gib 实跑:24G/20G 通过;19G/4G/24/abcG/空 一律拒绝"
+else
+    no "drill_image_gib 的格式/下限检查不对(要么放行了装不下的尺寸,要么把合法尺寸也拒了)"
 fi
 
 # v1.1 ②:ESP 余量 —— 写 UKI 之前必须先问 ESP 空间(和 /data 的空间检查同一个道理,
@@ -1551,9 +1641,18 @@ else
     no "mounts 里没有清理旧 etc.bak-* 的逻辑"
 fi
 if grep -q 'free_bytes' mkosi.extra/usr/bin/os-update && grep -q 'os-update gc' mkosi.extra/usr/bin/os-update; then
-    ok "os-update fetch 先查 /data 空间(载荷预算:两个 erofs 根镜像 + 两个 UKI,上限 6 GiB)"
+    ok "os-update fetch 先查 /data 空间(载荷预算:两个 erofs 根镜像 + 两个 UKI)"
 else
     no "os-update fetch 没有检查 /data 可用空间"
+fi
+# 预算的**具体数字**也钉住:它决定"多小的 /data 还能升级",而且 ⑤ 的演练盘尺寸依赖它。
+# 2026-09-26 踩过:③ 一度按"1.5–2 GiB/槽"估成 6 GiB/10 GiB,结果 20 GiB 的演练盘
+# (/data 只剩 4.8 GiB)连**演练自己**都跑不起来。实测载荷是 1.1 GiB ⇒ 2 GiB / 4 GiB。
+if grep -q 'need_hard=$((2 \* 1024 \* 1024 \* 1024))' mkosi.extra/usr/bin/os-update &&
+   grep -q 'need_warn=$((4 \* 1024 \* 1024 \* 1024))' mkosi.extra/usr/bin/os-update; then
+    ok "fetch 的空间预算 = 2 GiB 硬下限 / 4 GiB 警告线(实测载荷 1.1 GiB,与 ⑤ 的 20G 演练盘相容)"
+else
+    no "fetch 的空间预算被改过 —— 改之前先确认 20G 的演练盘(/data 约 4.8 GiB 可用)仍能 fetch(roadmap §0 ⑤)"
 fi
 if grep -q '自动清理旧载荷失败' mkosi.extra/usr/bin/os-update && grep -q 'cmd_gc >/dev/null' mkosi.extra/usr/bin/os-update; then
     ok "os-update stage 成功后自动清理旧载荷"

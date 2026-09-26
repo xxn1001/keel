@@ -181,15 +181,21 @@ cmd_fetch() {
 
     install -d -m 0755 "$KEEL_OTA"
     # 下载之前先问空间(决策 D23)。v1.1 起根载荷是 **erofs**(不再是钉死的 6 GiB):
-    # 一份载荷 = slot-a/b 两个根镜像 + 两个 ~156 MiB 的 UKI,erofs 只占内容大小
-    # (实测 ~1.5–2 GiB/槽,见 docs/roadmap.md §2.9)。manifest 里只有 sha256、**没有尺寸**,
-    # 所以下载前拿不到真实字节数 —— 这里用的是"两个槽 + 两个 UKI"的**保守上限**,
-    # 宁可早拒,不要下到一半 ENOSPC 留下半个载荷;更糟的是把 /data 填满会连带
-    # /etc 也写不进去(坑 #37),那会连累 machine-id 固化与 SSH 主机密钥。
-    # (v1 时这个预算是 13 GiB —— 两个 6 GiB 根镜像;erofs 之后跟着下调。)
+    # 一份载荷 = slot-a/b 两个根镜像 + 两个 ~156 MiB 的 UKI。**实测 ~1.1 GiB/份**
+    # (erofs 根 401 MiB ×2 + UKI 156 MiB ×2,见 docs/roadmap.md §2.9)。
+    # manifest 里只有 sha256、**没有尺寸**,下载前拿不到真实字节数,所以这里用一个
+    # **保守但贴着实测**的预算,宁可早拒,不要下到一半 ENOSPC 留下半个载荷;
+    # 更糟的是把 /data 填满会连带 /etc 也写不进去(坑 #37),那会连累 machine-id 固化
+    # 与 SSH 主机密钥。
+    #
+    # ⚠ 别把这两个数随手放大:它们直接决定"多小的 /data 还能升级"。2026-09-26 踩过一次 ——
+    #   ③ 里一度写成 6 GiB/10 GiB(按"两个 erofs 根各 1.5–2 GiB"估的),结果 20 GiB 的
+    #   演练盘(/data 只剩 4.8 GiB)连**演练自己**都跑不起来。实测量到的载荷是 1.1 GiB,
+    #   所以 2 GiB 硬下限(载荷 + ~0.9 GiB 余量)才是对的;v1 的 2 GiB 之所以危险,
+    #   是因为那时一份载荷 13 GiB —— 数字相同、含义完全不同。
     fb="$(free_bytes)"
-    need_hard=$((6 * 1024 * 1024 * 1024))
-    need_warn=$((10 * 1024 * 1024 * 1024))
+    need_hard=$((2 * 1024 * 1024 * 1024))
+    need_warn=$((4 * 1024 * 1024 * 1024))
     if [ "$fb" -lt "$need_hard" ]; then
         keel_die "/data 可用空间只有 $((fb / 1048576)) MiB,放不下更新载荷(两个 erofs 根镜像 + 两个 UKI,预算 $((need_hard / 1073741824)) GiB)。先跑 os-update gc,或删掉 /data/ota 下的旧版本。"
     fi
