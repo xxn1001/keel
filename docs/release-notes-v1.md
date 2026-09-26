@@ -17,7 +17,7 @@
 
 | 项 | 证据 |
 |---|---|
-| 构建 | 在 NixOS 宿主上走容器适配器构建(140+ 项静态校验先过);`dist/keel-<版本>/` 六个产物 + manifest(含 sha256) |
+| 构建 | 在 NixOS 宿主上走容器适配器构建(140+ 项静态校验先过);`dist/keel-<版本>/` 六个产物 + manifest(含 sha256)。**v1.1 补**:`tools/build.sh` 原生路径已在 **Debian 13(FHS 宿主)**上端到端跑通(连跑三次,含 `-p` 初始密码),见 `roadmap.md` §0 ⑥ |
 | 装机(libvirt,整盘) | `os-install --yes /dev/vdb` → `esp 1G + root-a 6G + root-b 6G + data 27G`;**拔掉 U 盘式启动**(只挂目标盘)成功 |
 | 装机后体检 | `sudo ~/keel-check` = **通过 50 / 失败 0 / 警告 0 / 跳过 3**(跳过项 = 虚拟机微码、无 vTPM、可选的 nix 装包测试) |
 | 更新 | 13 GiB 载荷 30–40 秒下完(600–900 MB/s)、sha256 全对;写 6 GiB 根分区 11 秒;重启进新槽、条目被 bless 成 `keel-b.efi`、`last_result=success` |
@@ -27,8 +27,9 @@
 | `/data` 写满 | 看门人三级(warn / critical / emergency)+ 交还 256 MiB 应急空间 + 满盘时 `os-update fetch` 直接拒绝(HTTP 日志零产物请求) |
 | 日志 | **落盘**(`/var/log/journal/` 有 `system.journal`,重启后能看到上一次启动);控制台只印 warning 及以上(`kernel.printk = 4 4 1 7`) |
 
-**没验过**:真机(U 盘 + 笔记本)装机;原生 FHS 宿主(CachyOS 等)上的 `tools/build.sh` 那条路径;
+**没验过**:真机(U 盘 + 笔记本)装机;
 initrd 阶段的冻结(见下面限制);第三方内核模块;GPU 直通。
+(**原生 FHS 宿主上的 `tools/build.sh` 已从这份"没验过"清单里移走 —— v1.1 在 Debian 13 上跑通了。**)
 
 ## 3. 怎么装、怎么更新
 
@@ -98,8 +99,11 @@ sudo os-update rollback                  # 主动回滚到另一个槽
 
 ### 4.5 工程/流程
 
-20. **原生构建路径(`tools/build.sh`)还没在真正的 FHS 宿主上端到端跑过** —— 两条路径(原生 / 容器)
-     的 CLI 与能力已对齐并有断言,但第一次实战是接下来在 CachyOS 上的那一轮。
+20. ~~**原生构建路径(`tools/build.sh`)还没在真正的 FHS 宿主上端到端跑过** —— 两条路径(原生 / 容器)
+     的 CLI 与能力已对齐并有断言,但第一次实战是接下来在 CachyOS 上的那一轮。~~
+     **已解决(v1.1,2026-09-26)**:构建机本身就是 Debian 13(FHS 宿主),`sudo tools/build.sh -p <密码>`
+     连跑三次(两个 v1.1 载荷 + 一个引导镜像)全部 exit 0,产物、`dist/` 布局、`-p` 初始密码链路
+     都与容器路径一致。**仍未做的是 rootless(不带 sudo)那一半** —— 见 `roadmap.md` §0 ⑥。
 21. `os-install` 还留着两个 TODO:根镜像实际占用超过目标分区尺寸时的截断检查;
      `keel-confirm` 的 pending / running_slot 边界。(roadmap 2.7)
 22. `docs/` 里的历史叙述偶尔还带着"当时还没做"的口气,发版后统一清一遍。(roadmap 3.3)

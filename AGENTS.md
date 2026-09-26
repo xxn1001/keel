@@ -379,6 +379,20 @@ sudo tools/burn.sh /dev/nvme0n1
       v1 机器,用**它自带的那份 v1 `os-update`** 更新后重启即进 erofs 槽(`findmnt /` = `/dev/vda3 erofs`)。
       途中挖出坑 #63(空 erofs **造不出来** / 运行时 repart 定义必须去掉 `Format=erofs` /
       "ext4 是内核内建"是个假前提)。完整证据见 `docs/roadmap.md` §2.9 与 §2.9.1
+- [x] **v1.1 ②:ESP 余量 + `.failed` 清理(2026-09-26)** —— `os-update stage` 在**动根分区之前**
+      先查 ESP 可用空间(判据 = 新 UKI ×2 + 50 MiB;不够就拒,否则会出现"根已换、UKI 没写进去"
+      ⇒ 内核与根不配对,不变量 3),并顺手清掉**所有**槽的 `.failed`/`.bad` 墓碑;
+      新增显式入口 **`os-rescue --clean-esp`**(只删墓碑与"已被正式条目取代"的计数条目,
+      **跳过 pending 槽**;不碰正式条目、引导器文件与 NVRAM);`keel-check` 在 ESP 可用
+      低于 400 MiB 时警告并给出清理命令。ESP=1 GiB 的余量结论写进 `architecture.md` §3.2
+- [x] **v1.1 ①b:OTA 演练的坏槽构造支持 erofs(2026-09-26)** —— 原实现只用 `debugfs`
+      (ext4 专用,而且它对打不开的文件也返回 0 ⇒ 会产出"假坏载荷"让回滚演练变假绿)。
+      现在按**超级块魔数**分派:erofs 走 `fsck.erofs --extract` → 改树 → `mkfs.erofs` 重打包
+      (**不用 mount/loop**),ext4 仍走 `debugfs`,认不出就明确失败。顺带更正一条错误笔记:
+      `fsck.erofs --extract` 对 root **保留 setuid**(实测 `/usr/bin/sudo` 是 `-rwsr-xr-x`)
+- [x] **v1.1 ⑥-原生:原生 FHS 构建路径已实战(2026-09-26)** —— 构建机本身是 Debian 13,
+      `sudo tools/build.sh -p <密码>` 连跑三次全部 exit 0;`release-notes-v1.md` 的已知限制 #20
+      已划掉(补了证据)。**仍未做的是 rootless(不带 sudo)那一半**
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 

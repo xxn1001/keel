@@ -178,6 +178,26 @@ sudo systemctl restart keel-mounts   # 只是想把挂载重做一遍
 > 旧文档/旧日志里的 `/Volume` 就是现在的 `/data`(2026-09 改名,决策 D17);
 > 分区标签就是 `data`,所以 `lsblk` 里 `PARTLABEL` 也是 `data`。
 
+### 2.4 ESP 写不进去 / `os-update stage` 说「ESP 可用空间只有 … MiB」
+
+ESP 只有 1 GiB,而一个 UKI 约 157 MiB。`systemd-bless-boot` 会把"起不来"的槽留成
+`keel-<槽>.efi.failed` 墓碑,反复失败/反复更新还会留下旧的计数条目 —— 它们**不参与启动、
+只吃空间**。
+
+```bash
+df -h /boot                     # ESP 的可用空间(低于 ~400 MiB 就该清)
+ls -l /boot/EFI/Linux/          # 有哪些 keel-* 条目
+sudo os-rescue --clean-esp      # 清墓碑 + 已被正式条目取代的计数条目
+```
+
+`--clean-esp` **只删残留**:`.failed`/`.bad` 墓碑,以及"同槽已有 `keel-<槽>.efi` 正式条目"的
+旧计数条目(`+N.efi`)。正式条目、**正在等待确认(pending)的那个候选条目**、引导器文件与
+NVRAM 都不动;删前删后都会把清单和回收的空间打出来。
+
+正常的更新路径会自己收敛:`os-update stage` 在**动根分区之前**就检查 ESP 空间(不够直接拒,
+提示里带 `--clean-esp`),并顺手清掉所有槽的墓碑。`keel-check` 在 ESP 可用低于 400 MiB 时
+会给出警告。
+
 ### 2.5 登录不了(`keel login:` 上输什么都不对)
 
 镜像里唯一的账号是 **`admin`**,root 是**锁定**的(决策 D21)—— 所以"用 root 试一下"永远不会成功。

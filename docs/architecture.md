@@ -68,6 +68,16 @@
   `os-update` 把 erofs 镜像 dd 进来时,分区里没有任何旧文件系统签名,探测不会有歧义。
   (systemd-repart 官方支持"装机时只有 A 槽、首启自动创建 B 槽"这个模式,可以省 6 GiB 镜像体积,
   但需要给 B 预留空隙 + 首启跑 repart,多一个失败点。留作将来的优化项。)
+- **ESP 是 1 GiB,余量够但需要看住(v1.1 ②)。** 一个 UKI 约 157 MiB;稳态占用 =
+  两个正式条目(`keel-a.efi` + `keel-b.efi`)≈ 314 MiB,更新过程中最多再加一个候选
+  (`keel-b+3.efi`)≈ 471 MiB,**剩余约 550 MiB**。systemd-bless-boot 会把"起不来"的槽
+  留成 `keel-<槽>.efi.failed` 墓碑,反复失败/反复更新还可能留下旧的计数条目 —— 它们不参与
+  启动、只吃空间。两道防线:
+  ① `os-update stage` 在**动根分区之前**先查 ESP 可用空间(不够就拒,因为"写半个 UKI 而根
+  已经换了"会让内核与根不配对,不变量 3),并顺手清掉所有槽的 `.failed`/`.bad`;
+  ② 显式入口 `os-rescue --clean-esp`(也可以从 `keel-check` 的提示里看到)。
+  ESP 尺寸同样是**布局常量**:老机器改不了,所以这里只保证"1 GiB 够用 + 脏了能清",
+  不追求加大。
 
 ### 3.3 更新载荷(profile `slot-a` / `slot-b`)
 
@@ -415,6 +425,7 @@ os-update gc               # 清理旧载荷(保留最近 2 个版本 + 当前)
 | | `--mark-bad` | 把当前槽标记为 bad(`systemd-bless-boot bad`) |
 | | `--grow-data` | 手动把 `data` 分区扩到整盘 |
 | | `--repair-boot` | 重装引导器并重建 NVRAM 启动项 |
+| | `--clean-esp` | 清掉 ESP(`EFI/Linux`)上的**残留条目**回收空间:墓碑(`keel-*.efi.failed` / `.bad`)与已被正式条目取代的计数条目(**pending 槽的候选条目除外**)。不动正式条目、引导器文件与 NVRAM |
 
 `os-update` 是**门面**:对外的子命令与状态语义是稳定的,底层怎么把载荷写进另一个槽是可以替换的
 (决策 D8)。**v1 的底层是"直接写盘"**:校验 sha256 → `dd` 进目标分区 → 拷 UKI 到 ESP →

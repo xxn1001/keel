@@ -930,14 +930,49 @@ if grep -q 'debugfs' tools/ota-drill-container.sh &&
 else
     no "drill 模式缺少坏载荷的准备(破坏性回滚验不了)"
 fi
-# v1.1:槽载荷换成 erofs 之后,debugfs(ext4 专用)打不开它。做法是**认出来就明确拒绝**,
-# 而不是让它去 produce 一个"看起来坏了其实没坏"的载荷 —— 后者会让回滚演练变成假绿。
-# erofs 版的坏槽构造(解包/重打包)是 v1.1 的遗留项,记在 docs/roadmap.md §2.9。
-if grep -q 'e2e1f5e0' tools/ota-drill-container.sh &&
-   grep -q 'erofs' tools/ota-drill-container.sh; then
-    ok "演练会先认 erofs 载荷并明确拒绝(不让 debugfs 静默产出'假坏载荷';erofs 版坏槽待做)"
+# v1.1:槽载荷换成 erofs 之后,debugfs(ext4 专用)打不开它,而且它对打不开的文件
+# **也返回 0**(坑 #47)⇒ 会产出"看起来坏了其实没坏"的载荷,回滚演练变假绿。
+# 现在的方法是**按文件系统选工具**:erofs 走 fsck.erofs --extract → 改树 → mkfs.erofs,
+# ext4 仍走 debugfs;认不出就明确失败。
+if grep -q 'fs_kind' tools/ota-drill-container.sh &&
+   grep -q 'e2e1f5e0' tools/ota-drill-container.sh &&
+   grep -q 'sabotage_erofs' tools/ota-drill-container.sh &&
+   grep -q 'fsck.erofs --extract' tools/ota-drill-container.sh &&
+   grep -q 'mkfs.erofs' tools/ota-drill-container.sh &&
+   grep -q 'sabotage_ext4' tools/ota-drill-container.sh; then
+    ok "演练的坏载荷构造按文件系统分派(erofs:解包/改树/重打包;ext4:debugfs;认不出则失败)"
 else
-    no "drill 没有识别 erofs 载荷的守卫 ⇒ 载荷换成 erofs 后会静默产出假坏载荷,回滚演练变成假绿"
+    no "drill 的坏载荷构造没有覆盖 erofs ⇒ 载荷换成 erofs 后会静默产出假坏载荷,回滚演练变假绿"
+fi
+
+# v1.1 ②:ESP 余量 —— 写 UKI 之前必须先问 ESP 空间(和 /data 的空间检查同一个道理,
+# 不变量 10;而 ESP 写不下时会留下半个 UKI 而根分区已经写好了 ⇒ 违反不变量 3)。
+if grep -q 'ESP \*\*空间\*\*也要在写根分区之前确认' mkosi.extra/usr/bin/os-update &&
+   grep -q 'os-rescue --clean-esp' mkosi.extra/usr/bin/os-update; then
+    ok "os-update stage 在动分区之前检查 ESP 空间,并指向 os-rescue --clean-esp"
+else
+    no "os-update stage 没有 ESP 空间前置检查 ⇒ ESP 满时会写半个 UKI 而根已更新(内核与根不配对)"
+fi
+# v1.1 ②:清掉**所有**槽的 .failed/.bad 墓碑(不只目标槽)
+if grep -q 'keel-\*.efi.failed' mkosi.extra/usr/bin/os-update; then
+    ok "os-update stage 顺手清掉所有槽的 .failed/.bad 墓碑(ESP 空间自愈)"
+else
+    no "os-update stage 只清目标槽的残留 ⇒ 别槽的 .failed 会一直占着 ESP 空间"
+fi
+# v1.1 ②:os-rescue --clean-esp 这个显式入口(usage + 分派 + 实现)
+if grep -q -- '--clean-esp' mkosi.extra/usr/bin/os-rescue &&
+   grep -q 'do_clean_esp' mkosi.extra/usr/bin/os-rescue &&
+   grep -q 'clean-esp) do_clean_esp' mkosi.extra/usr/bin/os-rescue &&
+   grep -q 'pending' mkosi.extra/usr/bin/os-rescue; then
+    ok "os-rescue --clean-esp:清墓碑与被取代的计数条目,且**跳过 pending 槽**(不取消待确认的更新)"
+else
+    no "os-rescue 缺少 --clean-esp(pending 槽不被误删的判据也要在)"
+fi
+# keel-check 要指向清理入口,不能只报"有 N 个 .failed"
+if grep -q 'os-rescue --clean-esp' mkosi.extra/usr/share/keel/keel-check; then
+    ok "keel-check 发现 .failed / ESP 空间紧张时给出 os-rescue --clean-esp"
+else
+    no "keel-check 只报告 .failed 却不告诉人怎么清"
 fi
 
 # v1 不支持 /data 迁移:带 migrate= 的载荷必须在 fetch 阶段被拒(而不是装上)

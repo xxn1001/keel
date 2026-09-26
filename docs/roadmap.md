@@ -11,7 +11,7 @@
 
 | 版本 | 主题 | 内容(对应下面的条目) | 粗估 |
 |---|---|---|---|
-| **v1.1** | 功能与运维 | **① ✅ erofs 只读根(2.9,已完成:载荷 6 GiB → 401 MiB,`dist/`、演练 qcow2 增长一起变小)** → ② ESP 余量 + `.failed` 条目清理 → ③ 更新**检查**(默认只 check + 通知,**不自动装**)→ ④ `os-install` 两个 TODO(2.7)→ ⑤ 演练/开发的磁盘占用收紧(live 镜像 truncate 尺寸可配)→ ⑥ 原生/rootless 构建实测并写进文档 | 不赶时间,分多次 |
+| **v1.1** | 功能与运维 | **① ✅ erofs 只读根(2.9,已完成:载荷 6 GiB → 401 MiB,`dist/`、演练 qcow2 增长一起变小)** → **② ✅ ESP 余量 + `.failed` 清理(stage 动分区前先查 ESP 空间 + 自动清墓碑 + `os-rescue --clean-esp` 显式入口)** → ③ 更新**检查**(默认只 check + 通知,**不自动装**)→ ④ `os-install` 两个 TODO(2.7)→ ⑤ 演练/开发的磁盘占用收紧(live 镜像 truncate 尺寸可配)→ ⑥ 原生 ✅ 已实测 / **rootless 待做**,并写进文档 | 不赶时间,分多次 |
 | **v1.2** | 安全 | **更新签名**(1.1)→ **Secure Boot**(1.2,含 UKI 签名、自己的密钥库、解封 `pcrlock`);initrd 冻结修复(3.0) | —— |
 | **v2.0** | 结构与可信 | **迁移执行器**(2.8,先做,它是下面一切的前提)→ **`/data` 加密 + TPM 封印**(1.3)+ **dm-verity**(1.4)+ **早期启动重排**(把 `/etc` overlay 提到 initrd,见 D19 方案 A —— **它才是 #24/#29/#37/#61 四条的真正解法**)→ 可选:`systemd-sysupdate` 底层(2.5)、`cache` 分区(2.4)、`server` profile(2.2) | —— |
 | 不排期 | 等上游 / 可选 | "连续三次"试用语义(2.5b,等 Debian 的 systemd ≥ 261)、`desktop` profile(2.1)、`/usr/lib/modules` 外置(2.3)、`machines/`(3.4) | —— |
@@ -82,7 +82,7 @@
 | 4 | `keel-check` / `os-status` / `os-update` 里对根文件系统的假设 | ✅ 已审计:唯一的"分区 vs 文件系统尺寸"比较是 **`/data`**(仍 ext4,不变);根只有一条"挂载选项含 `ro`"的断言,erofs 天然通过。**顺带**:`os-update fetch` 的空间预算原本按 13 GiB 写(两个 6 GiB 根镜像),已改成 erofs 的保守上限(硬下限 6 GiB / 警告线下 10 GiB) |
 | 5 | slot 尺寸常量 | **本次不动**(不变量 9);等 erofs 落地后再讨论"新机器是否改小"(见 §0 硬约束 3) |
 | 6 | 文档 | ✅ `architecture.md` §3.1/§3.2/§3.3、`decisions.md` D2(含"ext4 内建"更正)、`AGENTS.md` 不变量 1、`docs/install.md`、`docs/update.md`、`docs/traps.md` 坑 #63 |
-| 7 | **遗留**:OTA 演练(`--drill`)的**坏槽构造** | ⚠ **未做**。它用 `debugfs` 删 PID1 / 改 `default.target`,而 `debugfs` 是 ext4 专用、对 erofs 打不开 —— 且它**对打不开的文件也返回 0**(坑 #47),会"成功"产出**根本没坏**的载荷 ⇒ 回滚演练变假绿。现在加了**守卫**:认到 erofs 超级块魔数(`e2e1f5e0`)就明确失败,不去猜。erofs 版坏槽构造要单独设计(提取/重打包会**丢 setuid 位**,不是加两行就行) |
+| 7 | **OTA 演练(`--drill`)的坏槽构造** | ✅ **已支持 erofs(2026-09-26)**。原实现只用 `debugfs` 改 ext4(删 PID1 / 把 `default.target` 换成悬空链接),对 erofs 无效 —— 而 `debugfs` **对打不开的文件也返回 0**(坑 #47),会"成功"产出**根本没坏**的载荷 ⇒ 回滚演练变假绿。现在按**超级块魔数**分派:erofs 走 `fsck.erofs --extract` → 改树 → `mkfs.erofs` 重打包(**不用 mount/loop**,容器路径也能跑,坑 #17 的教训),ext4 仍走 `debugfs`,认不出则明确失败。实测:401 MiB 载荷解包 2.6 s、重打包 0.5 s,产物大小不变(420,880,384 B)、`blkid` 仍报 erofs、可正常挂载。**顺带更正一条错误笔记**:`fsck.erofs --extract` 对 root **保留 owner 与权限(含 setuid)** —— 解出来的 `/usr/bin/sudo` 是 `-rwsr-xr-x`;之前记的"会丢 setuid"是错的,那是我自己在解包后又 `chown`,而 `chown` 本来就会清 setuid |
 
 **验证计划与结果(2026-09-26 全部实测通过;Debian 13 构建机 + libvirt 40 GiB 目标盘)**:
 

@@ -350,6 +350,27 @@ cmd_stage() {
         fi
     fi
 
+    # -----------------------------------------------------------------------
+    # ESP **空间**也要在写根分区之前确认(不变量 10 的精神,理由同上一段)
+    #
+    # ESP 只有 1 GiB,一个 UKI 约 157 MiB。如果它被 .failed / 旧条目塞满,
+    # `cp` 写到一半失败会留下**半个 UKI**,而那一刻根分区已经是新版本
+    # ⇒ 又是"内核与根不配对"(不变量 3),而且失败点离原因很远。
+    # 判据取保守值:放得下"新 UKI ×2(自己 + 另一个槽)"再留 50 MiB 给
+    # bootctl 的 fallback/NVRAM 小文件。不够就**早拒**,并给出清理入口。
+    # -----------------------------------------------------------------------
+    uki_bytes="$(stat -c %s "$uki" 2>/dev/null)" || uki_bytes=""
+    esp_free="$(df -P -B1 "$KEEL_ESP" 2>/dev/null | awk 'NR==2{print $4}')" || esp_free=""
+    if [ -n "$uki_bytes" ] && [ -n "$esp_free" ]; then
+        esp_need=$(( uki_bytes * 2 + 50 * 1024 * 1024 ))
+        if [ "$esp_free" -lt "$esp_need" ]; then
+            keel_die "ESP(${KEEL_ESP})可用空间只有 $((esp_free / 1048576)) MiB,放不下这次要写的 UKI(需约 $((esp_need / 1048576)) MiB = 新 UKI $((uki_bytes / 1048576)) MiB ×2 + 50 MiB 余量)。先清理 ESP 上的残留条目:sudo os-rescue --clean-esp(也可以手工看 ls -l ${KEEL_UKI_DIR})。**拒绝在写不下 UKI 的情况下先动根分区**(不变量 3)。"
+        fi
+        keel_log "ESP 空间检查通过:可用 $((esp_free / 1048576)) MiB,本次预算 $((esp_need / 1048576)) MiB"
+    else
+        keel_log "警告:读不到 ESP(${KEEL_ESP})的可用空间,跳过写入前的空间检查"
+    fi
+
     dev="$(keel_slot_device "$target")"
     [ -b "$dev" ] || keel_die "目标分区不存在:${dev}(分区布局不对?)"
     part_bytes="$(blockdev --getsize64 "$dev")" || keel_die "读不到 $dev 的大小"
@@ -399,6 +420,16 @@ cmd_stage() {
         fi
         rm -f "$stale" || keel_log "警告:删不掉 $stale(留着不影响启动)"
         keel_log "已清理上次残留:${base}"
+    done
+
+    # 顺手把**所有**槽的 `.failed` / `.bad` 墓碑也清掉(不只目标槽)。它们是"曾经起不来"
+    # 的记录,不参与启动,只占 ESP 空间 —— 而 ESP 空间在动分区之前刚查过,留着只会让
+    # 下一次更新更容易被拒。**正式条目(keel-x.efi)与候选条目(+N.efi)一律不碰**,
+    # 那才是启动要用的东西。想手工做同一件事:`sudo os-rescue --clean-esp`。
+    for stale in "$KEEL_UKI_DIR"/keel-*.efi.failed "$KEEL_UKI_DIR"/keel-*.efi.bad; do
+        [ -e "$stale" ] || continue
+        rm -f "$stale" || keel_log "警告:删不掉 $stale(留着不影响启动)"
+        keel_log "已清理残留:${stale##*/}"
     done
 
     # 两个名字要分清(坑 #45,演练实测):

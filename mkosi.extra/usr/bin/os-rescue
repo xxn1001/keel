@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # os-rescue —— 救援与修复入口:重建 /data 骨架、请求重置 /etc、扩展 data 分区、
-#              标记当前槽为坏、重装引导器。
+#              标记当前槽为坏、重装引导器、清理 ESP 残留条目。
 #
 # 见 docs/architecture.md §9(命令集)与 §4.2(/data 骨架);用户操作见
 # docs/update.md §3.2(回滚/标记坏槽)与 docs/troubleshooting.md §3(/data 出问题)。
 #
 # 本脚本只做"幂等且只增不破"的修复:除了 --grow-data 会改分区表(只扩不缩),
 # 没有别的破坏性动作 —— 清空 /etc 这种不可逆的事由 keel-mounts 在下次启动时做,
-# 本脚本只放一个请求标志。
+# 本脚本只放一个请求标志。唯一会**删文件**的是 --clean-esp,它只删 ESP 上的
+# **残留条目**(墓碑与被取代的计数条目),不碰正式条目/pending 候选/引导器文件。
 set -euo pipefail
 
 # shellcheck source=/usr/lib/keel/lib.sh
@@ -24,7 +25,7 @@ readonly DATA_PART="/dev/disk/by-partlabel/data"
 
 usage() {
     cat <<'EOF'
-用法:os-rescue <--init-data|--reset-etc|--grow-data|--mark-bad|--repair-boot>
+用法:os-rescue <--init-data|--reset-etc|--grow-data|--mark-bad|--repair-boot|--clean-esp>
 
   --init-data   幂等修补 /data 骨架:把镜像里的骨架用 no-clobber 方式补进去,
                   不删除任何已有文件。骨架缺失、/var/lib/dbus/machine-id 链接
@@ -37,6 +38,11 @@ usage() {
   --mark-bad      把当前运行的这个槽标记为 bad(systemd-bless-boot bad),
                   让引导器以后不再选它。仅当另一个槽确实可用时才用。
   --repair-boot   重装 ESP 上的引导器并重建 NVRAM 启动项(bootctl install)。
+  --clean-esp     清掉 ESP(EFI/Linux)上的**残留条目**、回收空间:墓碑
+                  (keel-*.efi.failed / .bad)与已被正式条目取代的计数条目
+                  (keel-<槽>+N.efi,且该槽不是正在等待确认的那个)。
+                  **不动**正式条目(keel-a.efi / keel-b.efi)与 pending 槽的候选条目,
+                  也不动 systemd-boot 自己的文件与 NVRAM。删之前/后都会列出清单。
 EOF
 }
 
@@ -305,6 +311,88 @@ do_repair_boot() {
 }
 
 # ---------------------------------------------------------------------------
+# --clean-esp:清掉 ESP 上的残留条目、把空间还回来
+#
+# 为什么需要它:ESP 只有 1 GiB,而一个 UKI 约 157 MiB。systemd-bless-boot 会把"起不来"
+# 的槽留成 keel-<槽>.efi.failed 墓碑,反复失败/反复更新还会留下旧的计数条目 ——
+# 它们都不参与启动,只占空间;`os-update stage` 在动分区之前会检查 ESP 空间,
+# 空间不够就直接拒(见那边注释:写半个 UKI 会让内核与根不配对,不变量 3)。
+#
+# 清什么 / 不清什么:
+#   ✅ keel-*.efi.failed、keel-*.efi.bad                                  —— 墓碑
+#   ✅ keel-<槽>+N.efi,当 同槽的正式条目 keel-<槽>.efi 已存在
+#      且 该槽**不是**当前 pending 的槽                                     —— 已被取代
+#   ❌ keel-a.efi / keel-b.efi(正式条目)、pending 槽的候选条目
+#   ❌ systemd-boot 自己的文件、BOOTX64.EFI、NVRAM 启动项
+# 删除前后都打印清单,并把 ESP 可用空间的变化算出来 —— 用户看得见它做了什么。
+# ---------------------------------------------------------------------------
+# 列出 EFI/Linux 下的 keel-* 条目(用 glob 而不是 `ls | grep`,SC2010)
+list_uki_entries() {
+    local g any=0
+    for g in "$KEEL_UKI_DIR"/keel-*; do
+        [ -e "$g" ] || continue
+        printf '  %s\n' "${g##*/}"
+        any=1
+    done
+    [ "$any" = 1 ] || echo "  (没有 keel-* 条目)"
+}
+
+do_clean_esp() {
+    local pending f base s canonical before after mnt
+    if [ "$KEEL_ESP_MOUNTED" != yes ]; then
+        if mnt=$(keel_esp_mount); then
+            KEEL_ESP=$mnt
+            KEEL_UKI_DIR="$mnt/EFI/Linux"
+            KEEL_ESP_MOUNTED=yes
+            keel_log "ESP 原来没挂上,已挂到 $mnt"
+        else
+            keel_die "找不到/挂不上 PARTNAME=esp 的分区:先 lsblk -o NAME,SIZE,PARTLABEL 看有没有 esp"
+        fi
+    fi
+    if [ ! -d "$KEEL_UKI_DIR" ]; then
+        keel_log "$KEEL_UKI_DIR 不存在 —— 没什么可清的"
+        return 0
+    fi
+
+    before="$(df -P -B1 "$KEEL_ESP" 2>/dev/null | awk 'NR==2{print $4}')" || before=""
+    pending="$(keel_state_get pending_slot 2>/dev/null)" || pending=""
+
+    echo "清理前的条目(${KEEL_UKI_DIR}):"
+    list_uki_entries
+
+    # 1) 墓碑:任何槽的 .failed / .bad
+    for f in "$KEEL_UKI_DIR"/keel-*.efi.failed "$KEEL_UKI_DIR"/keel-*.efi.bad; do
+        [ -e "$f" ] || continue
+        base="${f##*/}"
+        if rm -f "$f"; then keel_log "已删除(墓碑):${base}"; else keel_log "警告:删不掉 ${base}(留着不影响启动)"; fi
+    done
+
+    # 2) 已被正式条目取代的计数条目。**pending 的槽例外** —— 那个 +N.efi 正是
+    #    下次启动要试的条目,删了等于取消更新。
+    for s in a b; do
+        canonical="$KEEL_UKI_DIR/keel-$s.efi"
+        [ -e "$canonical" ] || continue
+        if [ "$pending" = "$s" ]; then
+            keel_log "槽 $s 正在等待下次启动确认(pending),保留它的候选条目"
+            continue
+        fi
+        for f in "$KEEL_UKI_DIR/keel-$s"+*.efi; do
+            [ -e "$f" ] || continue
+            base="${f##*/}"
+            if rm -f "$f"; then keel_log "已删除(已被 keel-$s.efi 取代):${base}"; else keel_log "警告:删不掉 ${base}"; fi
+        done
+    done
+
+    sync
+    after="$(df -P -B1 "$KEEL_ESP" 2>/dev/null | awk 'NR==2{print $4}')" || after=""
+    echo "清理后的条目(${KEEL_UKI_DIR}):"
+    list_uki_entries
+    if [ -n "$before" ] && [ -n "$after" ]; then
+        keel_log "ESP 可用空间:$(awk -v b="$before" 'BEGIN{printf "%.0f", b/1048576}') MiB → $(awk -v a="$after" 'BEGIN{printf "%.0f", a/1048576}') MiB(回收了 $(awk -v b="$before" -v a="$after" 'BEGIN{printf "%.0f", (a-b)/1048576}') MiB)"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
 need_root
@@ -319,6 +407,7 @@ case "$1" in
     --grow-data) do_grow_data ;;
     --mark-bad) do_mark_bad ;;
     --repair-boot) do_repair_boot ;;
+    --clean-esp) do_clean_esp ;;
     -h|--help|help) usage ;;
     *) usage; keel_die "未知参数:$1" ;;
 esac

@@ -258,7 +258,17 @@ if [ -d "$KEEL_UKI_DIR" ]; then
     ok "ESP 上有 $n 个 UKI 条目"
     ls -1 "$KEEL_UKI_DIR" 2>/dev/null | sed 's/^/      /'
     bad=$(ls -1 "$KEEL_UKI_DIR"/*.failed 2>/dev/null | wc -l)
-    [ "${bad:-0}" -gt 0 ] && wn "有 $bad 个 .failed 条目(曾经有个槽起不来,看 os-status 的「上次启动结果」)" || true
+    [ "${bad:-0}" -gt 0 ] && wn "有 $bad 个 .failed 条目(曾经有个槽起不来,看 os-status 的「上次启动结果」;清掉用:sudo os-rescue --clean-esp)" || true
+    # ESP 空间:1 GiB 装 2 个正式条目 + 1 个候选条目(≈471 MiB)是够的,
+    # 但墓碑/旧计数条目会把它吃掉,而 stage 在动分区之前会因此拒写(os-update 里查)。
+    esp_avail=$(df -P -B1 "$KEEL_ESP" 2>/dev/null | awk 'NR==2{print $4}') || esp_avail=""
+    if [ -n "$esp_avail" ]; then
+        if [ "$esp_avail" -lt $((400 * 1024 * 1024)) ]; then
+            wn "ESP 可用空间只剩 $((esp_avail / 1048576)) MiB —— 下次 os-update stage 可能被拒(一个 UKI 约 157 MiB);清理:sudo os-rescue --clean-esp"
+        else
+            ok "ESP 可用空间 $((esp_avail / 1048576)) MiB(够放下一个 UKI 及其余量)"
+        fi
+    fi
 else
     no "看不到 $KEEL_UKI_DIR(ESP 没挂上?)"
 fi

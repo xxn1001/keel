@@ -92,11 +92,9 @@ BAD_SLOT=${KEEL_DRILL_BAD_SLOT:-b}
 #   initrd = 删掉 PID1 与 init 兜底 ⇒ initrd 在 switch-root 时判"没有可用的 init"并**冻结**
 #       (不 panic、不重启)。实测:机器挂住 650+ 秒没有被复位 ⇒ **v1 覆盖不到这种情况**
 #       (initrd 里的看门狗没生效:配置没进去?还是没有 /dev/watchdog?待查,见 docs/roadmap.md 3.0)。
+# 两种文件系统的**实现**不同(v1.1):erofs 走"解包 → 改树 → 重打包"(fsck.erofs/mkfs.erofs),
+# ext4 走 debugfs 就地改;脚本按超级块魔数自己选,见下面 fs_kind()。
 SABOTAGE=${KEEL_DRILL_SABOTAGE:-userspace}
-command -v debugfs >/dev/null 2>&1 || {
-    apt-get update -qq
-    apt-get install -y -qq --no-install-recommends e2fsprogs >/dev/null 2>&1
-}
 rm -rf /tmp/drill-serve/bad
 mkdir -p /tmp/drill-serve/bad
 for f in "$REPO/$DRILL_PAYLOAD"/*; do
@@ -109,54 +107,140 @@ cp --reflink=auto --sparse=always "$REPO/$DRILL_PAYLOAD/slot-$BAD_SLOT.root.raw"
    "/tmp/drill-serve/bad/slot-$BAD_SLOT.root.raw"
 BAD_IMG=/tmp/drill-serve/bad/slot-$BAD_SLOT.root.raw
 
-# ── v1.1 守卫:载荷已经是 erofs,而下面的破坏手段是 debugfs(ext4 专用)────────
-# debugfs 打不开 erofs 镜像,然而它**对打不开的文件也返回 0**(坑 #47),于是它会"成功"
-# 地产出一个**根本没坏**的载荷 ⇒ 回滚演练变成假绿(比直接失败更坏)。
-# 这里认 erofs 的超级块魔数(offset 1024,小端 E0F5E1E2 ⇒ 字节 e2 e1 f5 e0),
-# 认出来就**明确拒绝**,不去猜。
-# erofs 版坏槽构造(解包 fsck.erofs --extract + 改树 + mkfs.erofs 重打包,或改成破坏 UKI)
-# 还没实现 —— 见 docs/roadmap.md §2.9 的遗留项。注意 `fsck.erofs --extract` 会**丢 setuid 位**,
-# 直接重打包会把 sudo 之类也弄坏,所以这件事要单独设计,不是加两行就行。
-bad_magic=$(od -An -tx1 -j 1024 -N 4 "$BAD_IMG" 2>/dev/null | tr -d ' \n' || true)
-case "$bad_magic" in
-e2e1f5e0)
-    echo "  错误:槽载荷是 erofs,而演练的坏槽构造还在用 debugfs(ext4 专用)。" >&2
-    echo "        debugfs 打不开 erofs 却返回 0(坑 #47)⇒ 会产出'假坏载荷',回滚演练假绿。" >&2
-    echo "        这里选择明确失败。erofs 版坏槽构造是 v1.1 的遗留项,见 docs/roadmap.md §2.9。" >&2
+# ── 坏槽构造必须按**文件系统**选工具(v1.1:槽根已从 ext4 换成 erofs)────────────
+# 认文件系统:erofs 的超级块在 offset 1024,小端魔数 0xE0F5E1E2(字节 e2 e1 f5 e0);
+# ext4 的主超级块也在 1024,但它的魔数 0xEF53 在超级块内偏移 0x38(= 文件偏移 1080)。
+# 认不出来就**明确失败** —— 猜错的代价是"产出一个根本没坏的载荷,回滚演练变假绿",
+# 比直接失败坏得多(debugfs 打不开 erofs 也返回 0,坑 #47)。
+fs_kind() {
+    local magic
+    magic=$(od -An -tx1 -j 1024 -N 4 "$1" 2>/dev/null | tr -d ' \n' || true)
+    [ "$magic" = "e2e1f5e0" ] && { printf 'erofs'; return 0; }
+    magic=$(od -An -tx1 -j 1080 -N 2 "$1" 2>/dev/null | tr -d ' \n' || true)
+    [ "$magic" = "53ef" ] && { printf 'ext4'; return 0; }
+    printf 'unknown'
+}
+
+# 缺什么装什么(容器路径下这些工具不一定在;做法与原来只装 e2fsprogs 一致)
+install_if_missing() {
+    command -v "$1" >/dev/null 2>&1 && return 0
+    apt-get update -qq
+    apt-get install -y -qq --no-install-recommends "$2" >/dev/null 2>&1 || true
+    command -v "$1" >/dev/null 2>&1
+}
+
+# ── ext4 路线:debugfs 就地改(历史路径,老载荷仍然走它)──────────────────────
+sabotage_ext4() {
+    install_if_missing debugfs e2fsprogs ||
+        { echo "   错误:装不上 e2fsprogs(debugfs)" >&2; exit 1; }
+    if [ "$SABOTAGE" = initrd ]; then
+        for target in /usr/lib/systemd/systemd /usr/bin/dash /usr/bin/bash; do
+            # 注意:**不要**只看 debugfs 的退出码 —— 它干什么都返回 0(坑 #47 实测)
+            debugfs -w -R "rm $target" "$BAD_IMG" >/dev/null 2>&1 || true
+        done
+        # 回读确认真的删掉了:判据只能是**输出文本**(`File not found by ext2_lookup`),
+        # 因为 `debugfs -R "stat …"` 对不存在的路径同样返回 0(实测)。
+        for target in /usr/lib/systemd/systemd /usr/bin/dash /usr/bin/bash; do
+            if debugfs -R "stat $target" "$BAD_IMG" 2>&1 | grep -q 'File not found'; then
+                echo "   已确认删掉:$target"
+            else
+                echo "   错误:坏载荷里 $target 还在(或 debugfs 读不出来)⇒ 演练没有意义" >&2
+                debugfs -R "stat $target" "$BAD_IMG" 2>&1 | tail -2 >&2
+                exit 1
+            fi
+        done
+    else
+        # userspace:把 default.target 换成悬空符号链接(先删再建,保证内容是我们写的)
+        debugfs -w -R "rm /etc/systemd/system/default.target" "$BAD_IMG" >/dev/null 2>&1 || true
+        debugfs -w -R "symlink /etc/systemd/system/default.target /nonexistent-keel.target" "$BAD_IMG" >/dev/null 2>&1 || true
+        # 回读:符号链接的目标必须是 /nonexistent-keel.target(同样只看输出,不看退出码)
+        if debugfs -R "stat /etc/systemd/system/default.target" "$BAD_IMG" 2>&1 |
+            grep -q 'nonexistent-keel.target'; then
+            echo "   已确认:default.target -> /nonexistent-keel.target(用户态起不来)"
+        else
+            echo "   错误:坏载荷的 default.target 没换成悬空链接" >&2
+            debugfs -R "stat /etc/systemd/system/default.target" "$BAD_IMG" 2>&1 | tail -3 >&2
+            exit 1
+        fi
+    fi
+}
+
+# ── erofs 路线:解包 → 改树 → 重打包(2026-09 实测)────────────────────────────
+# 为什么这么绕:erofs 是只读压缩镜像,没有 debugfs 那样的"就地改"工具。
+# 这条路线**只用 erofs-utils,不需要 mount / loop**,所以容器路径也能跑(坑 #17 的教训:
+# 别让校验/演练依赖 loop 设备)。
+#
+# 实测数据(2026-09-26,载荷 401 MiB):
+#   fsck.erofs --extract  2.6 s,解出 440 MiB 的树;mkfs.erofs 重打包 0.5 s;
+#   重打包后大小与原件相同(420,880,384 B),blkid 仍报 erofs,能正常挂载。
+# 保真度:`fsck.erofs --extract` 对 root **保留 owner 与权限(含 setuid)** ——
+#   实测解出来的 /usr/bin/sudo 是 -rwsr-xr-x。(早期笔记说"会丢 setuid"是错的:
+#   那次是我自己在解包后又 chown,而 chown 本来就会清 setuid。)
+#   xattr 默认不搬;坏载荷不需要文件能力(security.capability),所以刻意不加 --xattrs。
+sabotage_erofs() {
+    install_if_missing fsck.erofs erofs-utils ||
+        { echo "   错误:装不上 erofs-utils(fsck.erofs / mkfs.erofs)" >&2; exit 1; }
+    install_if_missing mkfs.erofs erofs-utils ||
+        { echo "   错误:装不上 erofs-utils(mkfs.erofs)" >&2; exit 1; }
+
+    local work tree check
+    work=$(mktemp -d "${TMPDIR:-/tmp}/drill-erofs.XXXXXX")
+    tree="$work/root"
+    check="$work/check"
+    mkdir -p "$tree"
+
+    echo "   解包 erofs(不用 mount/loop)→ $tree"
+    fsck.erofs --extract="$tree" "$BAD_IMG" >/dev/null 2>&1 ||
+        { echo "   错误:fsck.erofs --extract 失败" >&2; rm -rf "$work"; exit 1; }
+
+    if [ "$SABOTAGE" = initrd ]; then
+        for t in usr/lib/systemd/systemd usr/bin/dash usr/bin/bash; do
+            rm -f "$tree/$t"
+            [ -e "$tree/$t" ] && { echo "   错误:$t 没删掉" >&2; rm -rf "$work"; exit 1; }
+            echo "   已确认删掉:/$t"
+        done
+    else
+        rm -f "$tree/etc/systemd/system/default.target"
+        ln -s /nonexistent-keel.target "$tree/etc/systemd/system/default.target"
+        if [ "$(readlink "$tree/etc/systemd/system/default.target")" = "/nonexistent-keel.target" ]; then
+            echo "   已确认:default.target -> /nonexistent-keel.target(用户态起不来)"
+        else
+            echo "   错误:default.target 没换成悬空链接" >&2; rm -rf "$work"; exit 1
+        fi
+    fi
+
+    echo "   重打包 mkfs.erofs"
+    mkfs.erofs "$BAD_IMG" "$tree" >/dev/null 2>&1 ||
+        { echo "   错误:mkfs.erofs 重打包失败" >&2; rm -rf "$work"; exit 1; }
+
+    # 回读:重新解包**产物镜像**,确认破坏真的落在镜像里(而不是只落在临时树上)。
+    mkdir -p "$check"
+    fsck.erofs --extract="$check" "$BAD_IMG" >/dev/null 2>&1 ||
+        { echo "   错误:坏镜像解不开(重打包坏了)⇒ 演练没有意义" >&2; rm -rf "$work"; exit 1; }
+    if [ "$SABOTAGE" = initrd ]; then
+        for t in usr/lib/systemd/systemd usr/bin/dash usr/bin/bash; do
+            [ -e "$check/$t" ] && { echo "   错误:坏镜像里 $t 还在" >&2; rm -rf "$work"; exit 1; }
+        done
+        echo "   回读确认:坏镜像里 PID1 与 init 兜底都已不存在"
+    else
+        [ "$(readlink "$check/etc/systemd/system/default.target")" = "/nonexistent-keel.target" ] ||
+            { echo "   错误:坏镜像里的 default.target 不是悬空链接" >&2; rm -rf "$work"; exit 1; }
+        echo "   回读确认:坏镜像里 default.target -> /nonexistent-keel.target"
+    fi
+    rm -rf "$work"
+}
+
+FS_KIND="$(fs_kind "$BAD_IMG")"
+echo "   槽载荷的文件系统:$FS_KIND"
+case "$FS_KIND" in
+erofs) sabotage_erofs ;;
+ext4)  sabotage_ext4 ;;
+*)
+    echo "   错误:认不出槽载荷的文件系统(既不是 erofs 也不是 ext4)⇒ 拒绝猜。" >&2
+    echo "        猜错会产出一个'根本没坏'的载荷,回滚演练就成了假绿。看上面 fs_kind 的判据。" >&2
     exit 1
     ;;
 esac
-
-if [ "$SABOTAGE" = initrd ]; then
-    for target in /usr/lib/systemd/systemd /usr/bin/dash /usr/bin/bash; do
-        # 注意:**不要**只看 debugfs 的退出码 —— 它干什么都返回 0(坑 #47 实测)
-        debugfs -w -R "rm $target" "$BAD_IMG" >/dev/null 2>&1 || true
-    done
-    # 回读确认真的删掉了:判据只能是**输出文本**(`File not found by ext2_lookup`),
-    # 因为 `debugfs -R "stat …"` 对不存在的路径同样返回 0(实测)。
-    for target in /usr/lib/systemd/systemd /usr/bin/dash /usr/bin/bash; do
-        if debugfs -R "stat $target" "$BAD_IMG" 2>&1 | grep -q 'File not found'; then
-            echo "   已确认删掉:$target"
-        else
-            echo "   错误:坏载荷里 $target 还在(或 debugfs 读不出来)⇒ 演练没有意义" >&2
-            debugfs -R "stat $target" "$BAD_IMG" 2>&1 | tail -2 >&2
-            exit 1
-        fi
-    done
-else
-    # userspace:把 default.target 换成悬空符号链接(先删再建,保证内容是我们写的)
-    debugfs -w -R "rm /etc/systemd/system/default.target" "$BAD_IMG" >/dev/null 2>&1 || true
-    debugfs -w -R "symlink /etc/systemd/system/default.target /nonexistent-keel.target" "$BAD_IMG" >/dev/null 2>&1 || true
-    # 回读:符号链接的目标必须是 /nonexistent-keel.target(同样只看输出,不看退出码)
-    if debugfs -R "stat /etc/systemd/system/default.target" "$BAD_IMG" 2>&1 |
-        grep -q 'nonexistent-keel.target'; then
-        echo "   已确认:default.target -> /nonexistent-keel.target(用户态起不来)"
-    else
-        echo "   错误:坏载荷的 default.target 没换成悬空链接" >&2
-        debugfs -R "stat /etc/systemd/system/default.target" "$BAD_IMG" 2>&1 | tail -3 >&2
-        exit 1
-    fi
-fi
 echo "   已把 slot-$BAD_SLOT.root.raw 做成起不来的(破坏方式:$SABOTAGE,回读已确认)"
 # manifest:版本比好载荷再高一档(否则 stage 会说"不比当前新"),并把被改过的那个产物的
 # sha256 换成新值 —— 其余行为原样复制(其余产物是符号链接,内容没变)
