@@ -220,6 +220,16 @@ install -d -m 0755 "$R/efi" "$R/boot"
 # dd 根分区、mkfs data 分区、复制 ESP 内容,这些 CopyFiles 在运行时既没用又有害)。
 # 分区名/类型/尺寸全部保留 ⇒ 建出来的分区表与构建时完全一致
 # (tools/verify.sh 会把两份定义各 dry-run 一次做对比)。
+#
+# v1.1 追加:同时删掉 `Format=erofs`。理由和 CopyFiles= 是同一类:
+#   systemd-repart 拒绝在**没有源文件**的情况下格式化 erofs
+#     Cannot format erofs filesystem without source files, refusing.
+#   而运行时的定义恰恰没有 CopyFiles(上面那条)⇒ 留着 Format=erofs
+#   会让 os-install 的建表**直接失败**。
+#   这里也**不需要**任何文件系统:
+#     - root-a:os-install 紧接着把 live 根(erofs 镜像)整块 dd 进去;
+#     - root-b:空槽,第一次 os-update 才把 erofs 镜像 dd 进来。
+#   esp(vfat)与 data(ext4)的 Format= **保留** —— repart 必须真的建出这两个文件系统。
 # ---------------------------------------------------------------------------
 install -d -m 0755 "$R/usr/lib/keel/repart-install.d"
 if [ -n "${SRCDIR:-}" ] && [ -d "${SRCDIR}/repart/install" ]; then
@@ -227,14 +237,15 @@ if [ -n "${SRCDIR:-}" ] && [ -d "${SRCDIR}/repart/install" ]; then
     for f in "$SRCDIR"/repart/install/*.conf; do
         [ -f "$f" ] || continue
         # 用 sed 而不是 grep -v:grep 在"一行都没输出"时返回 1,配上 set -e 会误杀构建
-        sed '/^[[:space:]]*CopyFiles=/d' "$f" >"$R/usr/lib/keel/repart-install.d/$(basename "$f")"
+        sed -e '/^[[:space:]]*CopyFiles=/d' -e '/^[[:space:]]*Format=erofs[[:space:]]*$/d' \
+            "$f" >"$R/usr/lib/keel/repart-install.d/$(basename "$f")"
         n_defs=$((n_defs + 1))
     done
     if [ "$n_defs" -lt 4 ]; then
         log "致命:$SRCDIR/repart/install 里只有 $n_defs 个 .conf,os-install 需要完整的四分区定义"
         exit 1
     fi
-    log "已装 repart 安装定义($n_defs 个,去掉 CopyFiles=)→ $R/usr/lib/keel/repart-install.d"
+    log "已装 repart 安装定义($n_defs 个,去掉 CopyFiles= 与 Format=erofs)→ $R/usr/lib/keel/repart-install.d"
 else
     # 少了它装出来的 U 盘根本装不了机,而且要到目标机上手敲 os-install 才会发现 ⇒ 直接失败
     log "致命:找不到 \${SRCDIR}/repart/install(当前 SRCDIR='${SRCDIR:-}')"

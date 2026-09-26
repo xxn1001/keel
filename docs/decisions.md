@@ -19,9 +19,25 @@
 
 ## D2 只读根的实现
 
-- **决策**:v1 用 `ext4` + cmdline `ro`。
-- **理由**:先要一个能跑通的系统。`ext4` 在 Debian 内核里是内建的,不依赖 initrd 里的模块,失败模式最少。
-- **后续**:v2 考虑 `erofs`(从根上不可写、压缩更小)或 `dm-verity`(可篡改检测 + Secure Boot 链条)。
+- **决策(v1.1,2026-09 修订)**:根用 **erofs**(结构上不可写 + 压缩),分区尺寸仍钉死 6 GiB;
+  **载荷侧**改用 `Minimize=yes`、不再写 `SizeMaxBytes` ⇒ 载荷只占内容大小(见 roadmap §2.9)。
+  v1 是 `ext4` + cmdline `ro`。
+- **v1 的原决策与理由**:`ext4` + `ro`,理由是"先要一个能跑通的系统,ext4 在 Debian 内核里是
+  内建的、不依赖 initrd 里的模块,失败模式最少"。
+  ⚠ **2026-09 实测更正**:Debian 的 `CONFIG_EXT4_FS=m`,**不是**内建。v1 能启动是因为
+  mkosi 的默认 initrd 里带了 `ext4.ko.xz`(initrd 的第二个 zstd 帧,共 4229 个模块)。
+  同一个 initrd 里**也带 `erofs.ko.xz`** ⇒ "换 erofs 要先把模块塞进 initrd"这条前置是现成的。
+- **为什么 v1.1 换 erofs**:结构上不可写比"策略只读(`ro` 挂载)"强;而且压缩一次压三处
+  (槽载荷 6 GiB → 约 1.5–2 GiB、`dist/`、演练里 qcow2 的增长)。见 roadmap §0 的排序理由。
+- **erofs 带来的两个硬约束(2026-09 实测,别再踩)**:
+  1. **空文件系统造不出来**:systemd-repart 拒绝"没有源文件的 erofs"
+     (`Cannot format erofs filesystem without source files, refusing.`)。
+     所以安装镜像里的**空槽 root-b 保持未格式化**(v1 是空 ext4 —— 那条路在 erofs 上不通),
+     而**运行时的 repart 定义必须去掉 `Format=erofs`**(它们本来就去掉了 `CopyFiles=`,见坑 #31;
+     root-a 随后由 os-install 从 live 根整块 dd 覆盖,root-b 等第一次更新)。
+  2. **cmdline 里不要 `rootfstype=` 也能挂**:已实测 mkosi 默认 initrd 带 `erofs.ko` ⇒
+     `root=PARTLABEL=root-<x>` 靠内核按魔数探测即可(`mkfs.erofs 1.8.6` / systemd 257)。
+- **后续**:v2 考虑 `dm-verity`(可篡改检测 + Secure Boot 链条)。
   注意 dm-verity 与"两个 root 分区"组合时,roothash 归属需要专门设计(见 D11)。
 
 ## D3 目录挂载方式

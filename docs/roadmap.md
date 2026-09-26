@@ -72,23 +72,50 @@
 
 **要动的地方(已经想清楚的清单)**:
 
-| # | 事项 | 说明/风险 |
+| # | 事项 | 状态 / 说明 |
 |---|---|---|
-| 1 | **载荷**侧(`repart/slot-*/10-root-a.conf`)的 `Format=ext4` → `Format=erofs`,并且**解除尺寸钉死**:现在它和 install 侧一样写着 `SizeMinBytes=SizeMaxBytes=6G` ⇒ 产物必然 6 GiB。改成 `Minimize=yes` + 一个小的 `SizeMinBytes`(不再写 `SizeMaxBytes`),让产物只占内容大小 | ⚠ 这是"载荷变小"的关键;`SplitName`/`Label`/`Type=` 不动 |
-| 1b | **安装布局**侧(`repart/install/10-root-a.conf`、`20-root-b.conf`)保持 `SizeMin=SizeMax=6G`,只把格式换成 erofs | 槽位尺寸是布局常量(不变量 9):已装机的老机器不能改。**老机器照样能吃更小的载荷**(erofs 文件系统自带大小,分区比它大没问题) |
-| 2 | 构建侧要有 `mkfs.erofs` | systemd-repart 调它;`ToolsTree=default` 下要确认 `erofs-utils` 在工具树里(可能要显式加 `ToolsTreePackages=`) |
-| 3 | **initrd 必须能挂 erofs** | 模块或内建;`root=PARTLABEL=…` 不带 `rootfstype=` ⇒ 依赖内核自动识别,必须实测(否则候选槽直接起不来) |
-| 4 | `keel-check` / `os-status` / `os-update` 里对根文件系统的假设 | 目前基本是 `df`/`findmnt`,预计不受影响;`keel-check` 的"分区与文件系统尺寸一致"那条要按只读压缩文件系统重新解读 |
-| 5 | slot 尺寸常量 | **本次不动**;等 erofs 落地后再单独讨论"新机器是否改小"(见 §0 硬约束 3) |
-| 6 | 文档 | `architecture.md` 的分区/文件系统一节、`decisions.md` 里 D2 的状态、`AGENTS.md` 不变量 1 的措辞(只读从"策略"变"结构") |
+| 1 | **载荷**侧(`repart/slot-{a,b}/10-root-*.conf`):`Format=ext4` → `Format=erofs` + 解除尺寸钉死 | ✅ **已做**:`Format=erofs` + `Minimize=yes` + `SizeMinBytes=64M`,**不写 `SizeMaxBytes`**。`SplitName`/`Label`/`Type=` 未动 |
+| 1b | **安装布局**侧(`repart/install/10-root-a.conf`、`20-root-b.conf`)保持 `SizeMin=SizeMax=6G` | ⚠ **比原计划多一个约束**:`10-root-a.conf` 换成 `Format=erofs`(装出来的根才是 erofs);但 `20-root-b.conf` **不能写 Format=** —— systemd-repart 拒绝格式化没有源文件的 erofs:`Cannot format erofs filesystem without source files, refusing.`(空槽没有 `CopyFiles=`)。所以空槽**留未格式化**。这反而更好:第一次更新写 erofs 时分区里没有旧签名 |
+| 1c | **运行时 repart 定义**(`mkosi.postinst` 装进镜像的那份) | ⚠ **新发现的硬约束**:它按坑 #31 去掉了 `CopyFiles=`,于是 root-a 的 `Format=erofs` 会让 **`os-install` 建表直接失败**。⇒ postinst 生成时**同时去掉 `Format=erofs`**;`tools/verify.sh` 的运行时模拟必须与 postinst 逐字同源,并断言两边一致(否则 verify 全绿、真实装机失败)。槽根不需要在这里格式化:root-a 被 live 根 dd 覆盖,root-b 等首次更新 |
+| 2 | 构建侧要有 `mkfs.erofs` | ✅ 已确认:mkosi 的 Debian **tools tree 自带 `erofs-utils`**(构建期不用额外配置)。**但镜像里必须显式加 `erofs-utils`** —— 格式化发生在运行时的 `os-install`,与坑 #32(dosfstools)同一个形状。已加进 `mkosi.conf.d/20-packages.conf` + verify 断言 |
+| 3 | **initrd 必须能挂 erofs** | ✅ **已实测确认**(不用起 VM):mkosi 默认 initrd 里带 `erofs.ko.xz`。方法见坑 #63:`objcopy --only-section=.initrd` + 按 zstd 魔数切帧(`.initrd` 是**多帧**的,`zstd -dc` 只解第一帧)+ `cpio -it`。另外 `docs/decisions.md` D2 里"ext4 是内核内建"的说法**是错的**(`CONFIG_EXT4_FS=m`,v1 靠 initrd 里的 `ext4.ko` 才起来),已更正 |
+| 4 | `keel-check` / `os-status` / `os-update` 里对根文件系统的假设 | ✅ 已审计:唯一的"分区 vs 文件系统尺寸"比较是 **`/data`**(仍 ext4,不变);根只有一条"挂载选项含 `ro`"的断言,erofs 天然通过。**顺带**:`os-update fetch` 的空间预算原本按 13 GiB 写(两个 6 GiB 根镜像),已改成 erofs 的保守上限(硬下限 6 GiB / 警告线下 10 GiB) |
+| 5 | slot 尺寸常量 | **本次不动**(不变量 9);等 erofs 落地后再讨论"新机器是否改小"(见 §0 硬约束 3) |
+| 6 | 文档 | ✅ `architecture.md` §3.1/§3.2/§3.3、`decisions.md` D2(含"ext4 内建"更正)、`AGENTS.md` 不变量 1、`docs/install.md`、`docs/update.md`、`docs/traps.md` 坑 #63 |
+| 7 | **遗留**:OTA 演练(`--drill`)的**坏槽构造** | ⚠ **未做**。它用 `debugfs` 删 PID1 / 改 `default.target`,而 `debugfs` 是 ext4 专用、对 erofs 打不开 —— 且它**对打不开的文件也返回 0**(坑 #47),会"成功"产出**根本没坏**的载荷 ⇒ 回滚演练变假绿。现在加了**守卫**:认到 erofs 超级块魔数(`e2e1f5e0`)就明确失败,不去猜。erofs 版坏槽构造要单独设计(提取/重打包会**丢 setuid 位**,不是加两行就行) |
 
-**验证计划(必须全过才算完成)**:
+**验证计划与结果(2026-09-26 全部实测通过;Debian 13 构建机 + libvirt 40 GiB 目标盘)**:
 
-1. libvirt 整盘装机 → 首启 → `sudo ~/keel-check` 全绿(重点看根分区挂载类型与 `/etc` overlay);
-2. `os-update` 一轮:stage 写候选槽(erofs 镜像)→ 重启进新槽 → 确认 + bless;
-3. **老机器迁移实测**:在一台"根还是 ext4"的机器上更新,验证"换 UKI + dd erofs 镜像进同一个分区"
-   就能切过去(这是本次最大的收益点,也是最大的不确定点);
-4. 记录载荷/产物体积的前后对比(预期:slot 载荷 6 GiB → 约 1.5–2 GiB)。
+| # | 验证 | 结果 |
+|---|---|---|
+| 0 | **基线**(改前的 ext4 树) | `slot-{a,b}.root.raw` = **6,442,450,944 B = 6 GiB**(被 `SizeMaxBytes=6G` 钉死);一份载荷(2 根 + 2 UKI)= **13.2 GiB** |
+| 1 | libvirt 整盘装机 → 首启 → `sudo ~/keel-check` | ✅ **49 通过 / 0 失败 / 1 警告 / 4 跳过**。`findmnt /` = `/dev/vda2 erofs ro,relatime,user_xattr,acl,cache_strategy=readaround`;ESP、`/etc` overlay、`/data`、失败单元为空全部照旧。那 1 条警告是"admin 家目录没有 authorized_keys"(构建用了 `-p`,与 erofs 无关) |
+| 2 | `os-update` 一轮(含回滚) | ✅ `check`(0839 > 0826)→ `fetch` **1.1 GiB / sha256 全对** → `stage`(**401 MiB dd / 5.2 s** 进此前**未格式化**的槽 b)→ 重启进槽 b:`/dev/vda3 **erofs**`、`last_result=success`、`keel-b+3.efi` 被 bless 成 `keel-b.efi` → `rollback` → 重启回槽 a(版本回退、`last_result=failed`) |
+| 3 | **老机器 ext4 → erofs 迁移** | ✅ 见 §2.9.1 |
+| 4 | 体积前后对比 | ✅ `slot-<x>.root.raw`:**6 GiB → 401 MiB**(约 **15×** 小);一份载荷 **13.2 GiB → 1.1 GiB**;`os-update fetch` 实测从 13 GiB 降到 **1.1 GiB** |
+| 5 | initrd 能挂 erofs(`root=` **不带** `rootfstype=`) | ✅ 两层证据:① 拆 UKI 的 `.initrd` 确认里面有 **`erofs.ko.xz`**(方法见坑 #63);② live 与装好后的系统都实测 `findmnt /` = `erofs`,cmdline 是 `root=PARTLABEL=root-{a,b}`,`grep -c rootfstype /proc/cmdline` = **0** |
+
+### 2.9.1 迁移实测详情(本次最大的不确定点)
+
+**担心的是什么**:`os-update stage` 是 `dd` 镜像进分区,只覆盖前 401 MiB;老机器那个 6 GiB 分区里
+**残留着 ext4 的备份超级块**(块组边界,128 MiB 一个;镜像盖不到的那些还在)。
+如果 udev/libblkid 按备份超级块把它认成 ext4,候选槽就挂不起来 ⇒ 迁移失败。
+
+**实测分两步**:
+
+1. **离线试验**(在构建机上,不用 VM):6 GiB 文件 `mkfs.ext4` → 上面 `dd` 一个只有 **200 MiB** 的
+   erofs(远小于真实载荷 ⇒ 留下**更多** ext4 备份超级块,比实际情况更苛刻)⇒
+   `blkid -p -o value -s TYPE` 报 **`erofs`**;`wipefs` 也只看到 `0x400 erofs`。
+2. **端到端**:造一台**根还是 ext4** 的老机器(Build A / v1,版本 0755,`root-a` 与 `root-b`
+   **都是 ext4**)⇒ 在它上面用**它自带的那份 v1 `os-update`**(`grep -c erofs /usr/bin/os-update` = 0,
+   确认没有偷换新代码)`fetch` + `stage --reboot`,把 erofs 载荷写进 ext4 的 `root-b` ⇒
+   重启后 `findmnt /` = **`/dev/vda3 erofs ro`**、cmdline `root=PARTLABEL=root-b`、版本 0839、
+   `last_result=success`、`keel-b.efi` 已 bless。**`root-a` 仍是 ext4(没被碰),`root-b` 变成 erofs。**
+
+**结论**:**不需要**给 cmdline 加 `rootfstype=erofs` —— 内核按魔数探测就够(erofs 的超级块在
+offset 1024,正好覆盖掉 ext4 的**主**超级块;主块没了,ext4 的探测就失败)。
+**同名(`Label=`)、尺寸更小的 erofs 载荷,老机器可以直接吃下去。**
+
 
 ## 3. 顺手要还的技术债
 

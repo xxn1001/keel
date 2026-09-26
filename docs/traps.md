@@ -1,4 +1,4 @@
-# keel 已知的坑(43 条,都是真踩过的)
+# keel 已知的坑(63 条,都是真踩过的)
 
 > 这份清单原来在 `AGENTS.md` §3。2026-09 拆出来,是因为 `AGENTS.md` 长到 65 KB 之后
 > **超出"工作区指令"的加载预算、末尾会被静默截断**(实测被砍掉过"下一步要验证的事"那一段),
@@ -423,7 +423,9 @@
     注意**分区表本身是对的**(日志上方那张 `esp 1G / root-a 6G / root-b 6G / data 剩余` 的表
     与设计一致),失败的只是"把 ESP 格式化成 vfat"这一步 —— `mkfs.vfat` 在 Debian 里属于
     **dosfstools**,而我们只装了提供 `mkfs.ext4`/`resize2fs` 的 e2fsprogs。
-    ⇒ 包清单里补 `dosfstools`;`tools/verify.sh` 现在成对断言 `dosfstools` + `e2fsprogs`。
+    ⇒ 包清单里补 `dosfstools`;`tools/verify.sh` 现在断言 `dosfstools` + `e2fsprogs` + `erofs-utils`。
+    (**v1.1 续集**:根换成 erofs 之后同一个坑又出现一次 —— 缺 `erofs-utils`/`mkfs.erofs`。
+    那次是**提前按这条规律核对**发现的,不是装机时炸出来的:见坑 #63。)
     **通用做法:凡是"只在运行时才被调用"的工具(格式化 / 挂载 / dd / 压缩 …),都要拿运行时
     脚本里实际用到的命令去核对镜像里到底有没有。** 最省事的核对入口是 mkosi 写出的 manifest:
     ```bash
@@ -1177,3 +1179,31 @@
     ② 静默忽略参数比报错危险得多:`-p` 被忽略不会报错,只会让你在装完机之后发现登不进去;
     ③ 审计要**看代码怎么读参数**,不能只看 `-h` 里写了什么(容器有 `-h`,原生连 `-h` 都没有,
     而文档把两者写得一样)。
+
+63. **空文件系统 + erofs:systemd-repart 拒绝"没有源文件的 erofs",而且"ext4 是内核内建"是个假前提(2026-09,v1.1 erofs 改动)。**
+    两件事一起记,因为它们是同一轮里挖出来的:
+    **(a) 空 erofs 造不出来。** 把安装侧 `repart/install/20-root-b.conf`(空 B 槽)的
+    `Format=ext4` 直接换成 `Format=erofs`,`tools/verify.sh` 立刻红:
+    ```
+    repart/install/20-root-b.conf:1: Cannot format erofs filesystem without source files, refusing.
+    ```
+    v1 能写 `Format=ext4` 是因为**空 ext4 合法**;erofs 需要一个源目录,空槽没有 `CopyFiles=`。
+    更隐蔽的是**运行时那份定义**:`mkosi.postinst` 按坑 #31 把 `CopyFiles=` 全删掉再装进镜像,
+    于是 root-a 的 `Format=erofs` 也会让 `os-install` 建表**直接失败** ——
+    而构建期那次 repart 有源文件,照样全绿。
+    ⇒ 三处一起改:① 空槽 root-b **不写 Format=**(留未格式化,反而给首次更新一个没有旧签名的干净起点);
+    ② `mkosi.postinst` 生成运行时定义时**同时删 `Format=erofs`**;③ `tools/verify.sh` 的运行时
+    模拟必须与 postinst **逐字同源**(去 `CopyFiles=` + 去 `Format=erofs`),并断言两边一致 ——
+    否则会出现最坏的一种:verify 全绿、真实 `os-install` 建表失败。
+    **(b) "ext4 在 Debian 内核里是内建的"是错的。** 决策 D2 从 v1 起就这么写着(`CONFIG_EXT4_FS=m`),
+    v1 之所以能启动,是因为 mkosi 的默认 initrd 里带了 `ext4.ko.xz`。实测方法(不用起 VM):
+    ```bash
+    ukify inspect mkosi.output/keel-slot-a.efi      # 看 .initrd 的大小
+    objcopy -O binary --only-section=.initrd keel-slot-a.efi /tmp/i.bin
+    # ⚠ .initrd 是**多个 zstd 帧串起来的**(基础 initrd + 模块 initrd),`zstd -dc` 只解第一帧就报错;
+    #   要按魔数 28 b5 2f fd 切帧逐个解,再 `cpio -it` 找 .ko
+    ```
+    结论:同一个 initrd 里**也带 `erofs.ko.xz`** ⇒ "换 erofs 要先改 initrd"这条前置其实是现成的
+    (initrd 第二个帧共 4229 个模块)。**教训**:① "内核内建"这类断言要拿 `CONFIG_*` 与产物**实测**核对,
+    不能靠"能启动"反推;② 同一个改动要同时检查"构建期路径"和"运行期路径"——
+    它们对同一个设置的要求可能**正好相反**(这里就是:构建期必须有 `Format=erofs`,运行期必须没有)。

@@ -237,6 +237,9 @@ keel_log "目标分区:root-a=${part_root_a} data=${part_data} esp=${part_esp}"
 # 根分区以 ro 挂载(不变量 1),读它没问题。dd 复制的是整个块设备,
 # 目标分区不小于当前根分区是 repart 定义的硬要求(两边都是同一个布局)。
 #
+# v1.1:根文件系统是 **erofs**,两边都还是 6 GiB 的定长分区,所以这条 dd 不受影响;
+#   erofs 的"文件系统大小"写在超级块里、可以远小于分区,分区尾部不会再有数据。
+#
 # TODO(待验证):根文件系统的实际占用大于目标分区时会截断。装机镜像里 root-a 是
 #   6 GiB 常量,但 live 环境长期使用后 /etc 的 overlay upper 会变大 —— 而 upper 在
 #   /data 上,不在根分区里,所以正常情况下根分区不会增长。真机上仍应确认
@@ -361,7 +364,7 @@ else
     keel_log "警告:目标 ESP 上没有 keel-${CURRENT_SLOT}.efi 或它的带计数条目;装完可能起不来(先检查 live ESP 里到底有什么:ls -l ${KEEL_UKI_DIR})"
 fi
 
-# 注意:目标盘的 B 槽保持空 ext4,没有可引导条目 —— 见上面 --seed-b 的说明。
+# 注意:目标盘的 B 槽保持空 erofs,没有可引导条目 —— 见上面 --seed-b 的说明。
 # 首启后要填 B 槽,用 sudo os-update stage --force(它会用真正 root=PARTLABEL=root-b
 # 的 UKI 载荷)。
 

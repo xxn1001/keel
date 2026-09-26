@@ -137,7 +137,7 @@ p2)
     else
         log "判定:**与预期不符**(本该在槽 a)—— 对照快照"
     fi
-    log "清掉 /data/ota 里已下载的载荷(腾出 ~13 GiB;已装进槽的内容不受影响)"
+    log "清掉 /data/ota 里已下载的载荷(腾出 ~4 GiB;已装进槽的内容不受影响)"
     rm -rf "${KEEL_OTA:?}"/*
     # v1 **没有** schema 迁移执行器 ⇒ 带 migrate= 的载荷必须在 fetch 阶段被拒绝(而不是装上)
     if wait_source "$SRC_MIG"; then
@@ -164,7 +164,7 @@ p2)
         exit 0
     fi
     log "坏载荷源可达:$SRC_BAD"
-    # 先腾空间:一份载荷就是 13 GiB(两个 6 GiB 根镜像 + 两个 163 MB UKI),而 /data 只有 27 GiB
+    # 先腾空间:一份载荷约 4 GiB(两个 erofs 根镜像 + 两个 156 MiB UKI),而 /data 只有 27 GiB
     # —— 留着上一份的话第二份下不下来(第一次演练就栽在这里:curl ENOSPC,报的却是"下载失败")。
     # 已经装进槽里的版本不受影响,删的只是下载缓存。
     set_source "$SRC_BAD"

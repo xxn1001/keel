@@ -40,7 +40,8 @@
 改动代码前先确认没有违反下面任何一条。每一条都是有意为之,违反后会在某个不显眼的时刻炸掉。
 
 1. **基础系统只读,状态全在 `/data`。**
-   根分区以 `ro` 挂载;`/var`、`/root` 是指向 `/data` 的符号链接;
+   根分区是 **erofs 镜像**(v1.1 起;结构上不可写 + 压缩),cmdline 里带 `ro`;
+   `/var`、`/root` 是指向 `/data` 的符号链接;
    **`/home` 与 `/nix` 是真目录 + bind mount**(由 `keel-mounts` 在启动早期挂上)。
    这两个为什么不能是符号链接:
    - `/home`:符号链接会破坏 `ProtectHome=` 之类的沙箱语义(服务仍能经 `/data/home` 摸到用户数据);
@@ -190,15 +191,17 @@ cat /etc/os-release        # 看 ID / ID_LIKE —— 判的是**构建宿主**,�
 
 **这台机器上的三条纪律**(`/` 总共只有 100 GB,装完系统大约剩 80 GB 可用):
 
-1. **一次只跑一件重活**:一次完整构建(3 个 mkosi profile)大概 20–35 分钟,期间不要同时起 VM
-   (8 GiB 内存要同时装下构建进程与 2 GiB 的 guest,并行会先把盘写满再互相拖慢)。
-2. **产物要勤清**:一次构建会产出 `mkosi.output/`(约 60 GiB **逻辑**,稀疏文件实占小得多)和
-   `dist/keel-<版本>/`(约 27 GiB 逻辑)。规矩是:**只留一份 `dist/`**,复制完 dist 后
+1. **一次只跑一件重活**:一次完整构建(3 个 mkosi profile)大概 20–35 分钟(有缓存后 ~7 分钟),
+   期间不要同时起 VM(8 GiB 内存要同时装下构建进程与 2 GiB 的 guest,并行会先把盘写满再互相拖慢)。
+   **注意 `tools/verify.sh` 会写 15 GiB 的逻辑镜像**:本机 `/tmp` 是 **tmpfs**,同时跑两份 verify
+   (或边构建边 verify)会把内存/IO 拖死 —— 构建期的 verify 只跑一次,别手动叠一份。
+2. **产物要勤清**:一次构建会产出 `mkosi.output/`(逻辑几十 GiB,稀疏文件实占小得多)和
+   `dist/keel-<版本>/`(v1.1 起约 15 GiB **逻辑**,其中 14 GiB 是安装镜像 `keel.raw`;
+   真正的更新载荷只有 **~401 MiB/槽**)。规矩是:**只留一份 `dist/`**,复制完 dist 后
    `rm -f mkosi.output/keel-slot-*`(保留 `keel.raw` 给 `mkosi vm` 用),`mkosi.cache/`、
    `mkosi.pkgcache/`、`mkosi.tools/` 不要删(它们省时间)。
-3. **演练前先腾地方**:演练会让 guest 真写真占 13 GiB 载荷(现形态)⇒ 先清旧 `dist/` 与
-   旧 libvirt 镜像(`mkosi.output/libvirt/`)再跑。等 **v1.1 的 erofs** 落地后要求会宽很多
-   (载荷预计降到 1.5–2 GiB)。
+3. **演练前先腾地方**:v1.1 起载荷是 **erofs**、一份只要 **1.1 GiB**(v1 是 13 GiB),要求已经宽很多;
+   但演练仍会让 guest 真的写盘 ⇒ 先清旧 `dist/` 与旧 libvirt 镜像(`mkosi.output/libvirt/`)再跑。
 
 **这不改变任何不变量**:这台机器只是"构建机",keel 仍然只跑在目标机(将来的服务器 /
 现在的笔记本)上。
@@ -368,6 +371,14 @@ sudo tools/burn.sh /dev/nvme0n1
       **直接装 Debian 13**(不再套 incus VM、不做嵌套虚拟化),agent 直接 SSH 进去构建与验证,
       代码走 GitHub(见 §2 那一节)。**v1.1 第一件任务是 erofs 只读根**(理由:磁盘最紧,
       erofs 一次压三处,见 `docs/roadmap.md` §0/§2.9)
+- [x] **v1.1 第一件:erofs 只读根(2026-09-26 实测全过)** —— 载荷侧 `Format=erofs` + `Minimize=yes`
+      并**解除 `SizeMaxBytes=6G` 的钉死**;安装侧仍钉死 6 GiB(不变量 9)。
+      **一份载荷 6 GiB → 401 MiB**,`os-update fetch` 从 **13 GiB → 1.1 GiB**。三条验证全过:
+      ① libvirt 整盘装机 → 首启 → `keel-check` **49 ✓ / 0 ✗**;② `os-update` 一轮含 `rollback`
+      (a→b:erofs + bless + `success` → 回 a:`failed`);③ **老机器迁移** —— 一台根还是 ext4 的
+      v1 机器,用**它自带的那份 v1 `os-update`** 更新后重启即进 erofs 槽(`findmnt /` = `/dev/vda3 erofs`)。
+      途中挖出坑 #63(空 erofs **造不出来** / 运行时 repart 定义必须去掉 `Format=erofs` /
+      "ext4 是内核内建"是个假前提)。完整证据见 `docs/roadmap.md` §2.9 与 §2.9.1
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 

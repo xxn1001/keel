@@ -47,8 +47,8 @@
 | # | PARTLABEL | GPT 类型 | 文件系统 | 大小 | 挂载 | 内容 |
 |---|---|---|---|---|---|---|
 | 1 | `esp` | `esp` | vfat | 1 GiB | `/efi`(ro) | systemd-boot + `EFI/Linux/keel-a.efi` |
-| 2 | `root-a` | `root-x86-64` | ext4 | **6 GiB** | `/`(ro) | 系统树 + 符号链接 |
-| 3 | `root-b` | `linux-generic` | ext4 | **6 GiB** | — | 空槽,首次更新写入 |
+| 2 | `root-a` | `root-x86-64` | **erofs** | **6 GiB** | `/`(ro) | 系统树 + 符号链接(v1.1 起 erofs) |
+| 3 | `root-b` | `linux-generic` | **未格式化** | **6 GiB** | — | 空槽,首次更新写入 erofs |
 | 4 | `data` | 项目私有 UUID | ext4 | 剩余全部 | `/data`(rw) | 全部可写状态 |
 
 镜像总大小 ≈ 14 GiB + data 分区最小尺寸;`mkosi burn` / `os-install` 会按目标盘容量修正 GPT 并把
@@ -60,8 +60,12 @@
   **第一次装机前**就按"这台机器将来可能跑的最大变体"留足 —— 改这个数字意味着重装。
   main 自身大约只用 1.5–2 GB;6 GiB 的余量是留给 `desktop` profile(固件 + mesa + 音频 + 轻量会话)
   和未来增长的。**如果将来决定把完整 GNOME/KDE 塞进基底,需要重新评估这个数字。**
-- **B 槽在安装镜像里就存在(空 ext4)。** 代价是镜像大 6 GiB(全零,压缩后几乎不占空间),
+- **B 槽在安装镜像里就存在(空槽,未格式化)。** 代价是镜像大 6 GiB(全零,压缩后几乎不占空间),
   换来的是:首次开机后**不需要任何分区手术**就能立刻测试槽切换。
+  **为什么不像 v1 那样写成 `Format=ext4`**:v1.1 起槽根是 erofs,而 systemd-repart
+  **拒绝在没有源文件时格式化 erofs**(`Cannot format erofs filesystem without source files,
+  refusing.`)—— 空槽没有 `CopyFiles=`,所以只能留未格式化。这反而更好:第一次
+  `os-update` 把 erofs 镜像 dd 进来时,分区里没有任何旧文件系统签名,探测不会有歧义。
   (systemd-repart 官方支持"装机时只有 A 槽、首启自动创建 B 槽"这个模式,可以省 6 GiB 镜像体积,
   但需要给 B 预留空隙 + 首启跑 repart,多一个失败点。留作将来的优化项。)
 
@@ -73,6 +77,17 @@
 | `slot-<x>.uki.efi` | 该槽的完整 UKI(`root=PARTLABEL=root-<x>`,含内核 + initrd + 微码) |
 
 同一个 profile 也产出完整 `.raw`(用于验证),但发版只发上面两个文件。
+
+**v1.1 起载荷是 erofs,而且比目标分区小**:`repart/slot-*/10-root-*.conf` 用
+`Format=erofs` + `Minimize=yes` 且**不写 `SizeMaxBytes`** ⇒ `slot-<x>.root.raw` 只占
+内容大小(v1 被 `SizeMaxBytes=6G` 钉成 6 GiB)。`os-update stage` 把它 dd 进装机时建好的
+6 GiB 分区 —— **只有 `Label=` 必须相同,尺寸不必相同**(erofs 的大小写在超级块里,
+分区尾部的旧字节不会被读)。安装侧则保持 `SizeMin=SizeMax=6G` 不变:槽位尺寸是布局常量
+(不变量 9),老机器不能改。
+
+**实测(2026-09-26)**:`slot-<x>.root.raw` **6 GiB → 401 MiB**;一份载荷(2 根 + 2 UKI)
+**13.2 GiB → 1.1 GiB**。三条端到端验证(libvirt 装机 / 更新+回滚 / 老机器 ext4→erofs 迁移)
+与证据见 `docs/roadmap.md` §2.9。
 
 ---
 

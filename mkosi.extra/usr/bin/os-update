@@ -171,19 +171,25 @@ cmd_check() {
 # 这一步不写任何槽,所以失败可以直接重来。三道闸:sha256、签名(可选)、schema。
 # ---------------------------------------------------------------------------
 cmd_fetch() {
-    local rv rs schema h actual a fb mig
+    local rv rs schema h actual a fb mig need_hard need_warn
     [ -e "$LOCAL_SRC/$MANIFEST" ] || [ "$REMOTE" -eq 1 ] || keel_die "更新源里找不到 $MANIFEST:${LOCAL_SRC}"
 
     install -d -m 0755 "$KEEL_OTA"
-    # 下载之前先问空间(决策 D23)。4 个产物约 13 GiB(slot-a/b 的根原始镜像各 6 GiB
-    # + 两个 163 MB 的 UKI),下到一半 ENOSPC 只会留下半个载荷;更糟的是把 /data 填满
-    # 会连带 /etc 也写不进去(坑 #37),那会连累 machine-id 固化与 SSH 主机密钥。
+    # 下载之前先问空间(决策 D23)。v1.1 起根载荷是 **erofs**(不再是钉死的 6 GiB):
+    # 一份载荷 = slot-a/b 两个根镜像 + 两个 ~156 MiB 的 UKI,erofs 只占内容大小
+    # (实测 ~1.5–2 GiB/槽,见 docs/roadmap.md §2.9)。manifest 里只有 sha256、**没有尺寸**,
+    # 所以下载前拿不到真实字节数 —— 这里用的是"两个槽 + 两个 UKI"的**保守上限**,
+    # 宁可早拒,不要下到一半 ENOSPC 留下半个载荷;更糟的是把 /data 填满会连带
+    # /etc 也写不进去(坑 #37),那会连累 machine-id 固化与 SSH 主机密钥。
+    # (v1 时这个预算是 13 GiB —— 两个 6 GiB 根镜像;erofs 之后跟着下调。)
     fb="$(free_bytes)"
-    if [ "$fb" -lt $((2 * 1024 * 1024 * 1024)) ]; then
-        keel_die "/data 可用空间只有 $((fb / 1048576)) MiB,放不下更新载荷(4 个产物约 13 GiB)。先跑 os-update gc,或删掉 /data/ota 下的旧版本。"
+    need_hard=$((6 * 1024 * 1024 * 1024))
+    need_warn=$((10 * 1024 * 1024 * 1024))
+    if [ "$fb" -lt "$need_hard" ]; then
+        keel_die "/data 可用空间只有 $((fb / 1048576)) MiB,放不下更新载荷(两个 erofs 根镜像 + 两个 UKI,预算 $((need_hard / 1073741824)) GiB)。先跑 os-update gc,或删掉 /data/ota 下的旧版本。"
     fi
-    if [ "$fb" -lt $((16 * 1024 * 1024 * 1024)) ]; then
-        keel_log "警告:/data 可用空间只有 $((fb / 1048576)) MiB,而这次要下约 13 GiB —— 下完可能就满了;建议先 os-update gc"
+    if [ "$fb" -lt "$need_warn" ]; then
+        keel_log "警告:/data 可用空间只有 $((fb / 1048576)) MiB,而这次要下的载荷预算约 $((need_hard / 1073741824)) GiB —— 下完可能就满了;建议先 os-update gc"
     fi
     DEST="$(mktemp -d "$KEEL_OTA/.fetch.XXXXXX")"
     # 任何提前退出都清掉半成品目录;成功路径最后把 DEST 改名成正式目录并摘掉 trap。
@@ -203,7 +209,8 @@ cmd_fetch() {
     keel_log "远端版本:${rv}"
 
     # ⚠ 这两项检查(迁移、schema)刻意放在**下载之前**:它们只需要 manifest,
-    # 而一次下载是 13 GiB —— 先下载再拒绝,既浪费带宽也可能先撞上 /data 满
+    # 而一次下载是 GiB 级(erofs 之后约 4 GiB,见 docs/roadmap.md §2.9)——
+    # 先下载再拒绝,既浪费带宽也可能先撞上 /data 满
     # (2026-09 演练实测:检查写在下载后面,结果 curl 先 ENOSPC,"拒绝"压根没发生)。
     # 规矩:**便宜的检查放在动大钱之前**。
     # --- /data 迁移(v1 明确不支持)----------------------------------------
@@ -241,7 +248,7 @@ cmd_fetch() {
             fb2="$(free_bytes)"
             if [ "$fb2" -lt $((3 * 1024 * 1024 * 1024)) ]; then
                 keel_die "下载失败:${SRC}/${a}
-       /data 只剩 $((fb2 / 1048576)) MiB,大概是空间不够(一份载荷约 13 GiB)。先跑 os-update gc
+       /data 只剩 $((fb2 / 1048576)) MiB,大概是空间不够(一份载荷是 GiB 级;erofs 之后约 2 GiB/槽)。先跑 os-update gc
        或删掉 /data/ota 下的旧版本(已经装进槽里的内容不受影响),再重试。"
             fi
             keel_die "下载失败:${SRC}/${a}"

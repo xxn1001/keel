@@ -130,16 +130,19 @@ sudo os-install /dev/nvme0n1
 格式化 `data` 分区并用镜像里的骨架初始化。
 
 > **live 镜像里必须有 `/usr/lib/keel/repart-install.d`**:那是 `os-install` 建表用的分区定义,
-> 由 `mkosi.postinst` 在构建时从仓库的 `repart/install/` 拷进去(并去掉 `CopyFiles=`,
-> 原因见 `docs/traps.md` 坑 #31)。早于这个改动的产物没有它,敲 `os-install` 会直接报
-> 「找不到 repart 定义目录」—— 重新构建即可。
+> 由 `mkosi.postinst` 在构建时从仓库的 `repart/install/` 拷进去(并去掉 `CopyFiles=`,见
+> `docs/traps.md` 坑 #31;v1.1 起**还去掉 `Format=erofs`** —— erofs 需要源文件,而运行时
+> 定义没有 `CopyFiles=`,留着它 repart 会拒绝:`Cannot format erofs filesystem without
+> source files`。槽根不需要在这里格式化:root-a 接着被 live 根 dd 覆盖,root-b 等首次更新)。
+> 早于这个改动的产物没有它,敲 `os-install` 会直接报「找不到 repart 定义目录」—— 重新构建即可。
 >
-> live 镜像里还必须带上格式化工具:`dosfstools`(`mkfs.vfat`,repart 格式化 ESP 用)与
-> `e2fsprogs`(`mkfs.ext4`,repart 与 `os-install` 都用)—— 它们只在建表那一刻才被调用,
-> 少了不会在构建期报错(见 `docs/traps.md` 坑 #32)。
+> live 镜像里还必须带上格式化工具:`dosfstools`(`mkfs.vfat`,repart 格式化 ESP 用)、
+> `e2fsprogs`(`mkfs.ext4`,给 `/data`;首启 resize2fs 也靠它)与 `erofs-utils`
+> (`mkfs.erofs`,给槽根)—— 它们只在建表那一刻才被调用,少了不会在构建期报错
+> (见 `docs/traps.md` 坑 #32)。
 >
-> 这条路径 **尚未在真机/虚拟机上走通过**:2026-09 第一次在 VM 里演练,先后卡在上面那个缺目录、
-> 以及镜像缺 `dosfstools` 两处(都已修),完整流程还需要再跑一遍(见 `AGENTS.md` §5 的待验证清单)。
+> 这条路径已在 libvirt 里走通(2026-09-25:构建 → live → `os-install --yes` → 只挂目标盘首启
+> → `keel-check` 50 ✓ / 0 ✗;证据见 `docs/update.md` §9.1)。
 
 > **没有 `--seed-b`**:live 手上只有 A 槽的 UKI,它的 cmdline 写死了 `root=PARTLABEL=root-a`,
 > 复制一份改名成 `keel-b.efi` 会造出"B 的内核 + A 的根"的坏槽(违反不变量 3)。

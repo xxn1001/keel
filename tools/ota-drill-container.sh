@@ -13,7 +13,7 @@
 #   1. 静态校验
 #   2. tools/build.sh → 新版本载荷 dist/keel-<时间戳>/
 #   3. 用**显式更旧的版本号**构建引导镜像(否则 os-update check 会说"已经是最新")
-#   4. 把安装镜像 truncate 到 40G(载荷 4 个产物约 13 GiB,而 live 镜像的 /data 只有 1 GiB)
+#   4. 把安装镜像 truncate 到 40G(载荷 4 个产物约 4 GiB(erofs),而 live 镜像的 /data 只有 1 GiB)
 #   5. 起本地 HTTP 源(见下面"为什么必须在容器里起")
 #   6. 起 VM:guest 里的 keel-ota-drill.service 会自己跑完 check/fetch/stage/重启/确认/回滚
 #
@@ -83,7 +83,7 @@ step "6/7 准备**坏载荷**(让某个槽真的起不来,验自动回滚)"
 # ⇒ 下次启动回到持久默认(旧槽),keel-confirm 于是能判定"更新失败已回滚"。
 #
 # 演练里"目标槽"总是**另一个槽**:p2 阶段跑在槽 a 上,所以要用 slot-b 的产物。
-# 大的根镜像用 cp --reflink(不行就普通复制);其余文件用符号链接,省 13 GiB 的拷贝。
+# 大的根镜像用 cp --reflink(不行就普通复制);其余文件用符号链接,省 ~4 GiB 的拷贝。
 BAD_SLOT=${KEEL_DRILL_BAD_SLOT:-b}
 # 破坏方式(2026-09 实测两种,决策 D25 / 坑 #50):
 #   userspace(默认)= 把根里的 default.target 换成**悬空符号链接** ⇒ 根里的 systemd 起来后
@@ -108,6 +108,25 @@ done
 cp --reflink=auto --sparse=always "$REPO/$DRILL_PAYLOAD/slot-$BAD_SLOT.root.raw" \
    "/tmp/drill-serve/bad/slot-$BAD_SLOT.root.raw"
 BAD_IMG=/tmp/drill-serve/bad/slot-$BAD_SLOT.root.raw
+
+# ── v1.1 守卫:载荷已经是 erofs,而下面的破坏手段是 debugfs(ext4 专用)────────
+# debugfs 打不开 erofs 镜像,然而它**对打不开的文件也返回 0**(坑 #47),于是它会"成功"
+# 地产出一个**根本没坏**的载荷 ⇒ 回滚演练变成假绿(比直接失败更坏)。
+# 这里认 erofs 的超级块魔数(offset 1024,小端 E0F5E1E2 ⇒ 字节 e2 e1 f5 e0),
+# 认出来就**明确拒绝**,不去猜。
+# erofs 版坏槽构造(解包 fsck.erofs --extract + 改树 + mkfs.erofs 重打包,或改成破坏 UKI)
+# 还没实现 —— 见 docs/roadmap.md §2.9 的遗留项。注意 `fsck.erofs --extract` 会**丢 setuid 位**,
+# 直接重打包会把 sudo 之类也弄坏,所以这件事要单独设计,不是加两行就行。
+bad_magic=$(od -An -tx1 -j 1024 -N 4 "$BAD_IMG" 2>/dev/null | tr -d ' \n' || true)
+case "$bad_magic" in
+e2e1f5e0)
+    echo "  错误:槽载荷是 erofs,而演练的坏槽构造还在用 debugfs(ext4 专用)。" >&2
+    echo "        debugfs 打不开 erofs 却返回 0(坑 #47)⇒ 会产出'假坏载荷',回滚演练假绿。" >&2
+    echo "        这里选择明确失败。erofs 版坏槽构造是 v1.1 的遗留项,见 docs/roadmap.md §2.9。" >&2
+    exit 1
+    ;;
+esac
+
 if [ "$SABOTAGE" = initrd ]; then
     for target in /usr/lib/systemd/systemd /usr/bin/dash /usr/bin/bash; do
         # 注意:**不要**只看 debugfs 的退出码 —— 它干什么都返回 0(坑 #47 实测)

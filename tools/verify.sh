@@ -170,8 +170,13 @@ else
     : >"$tree/boot/EFI/Linux/keel-a.efi"
     echo 1 >"$tree/usr/share/keel/data-skeleton/keel/schema-version"
 
+    # ⚠ 产物镜像必须放在 $tree **外面**:`--copy-source=$tree` 配合 `CopyFiles=/` 会把
+    # $tree 整个拷进根分区 —— 如果 out.raw 放在 $tree 里,那就是"把正在写的镜像拷进它自己"。
+    # v1(ext4)侥幸没炸,是因为 mke2fs 会跳过稀疏文件的空洞;erofs 老老实实读满 15 GiB,
+    # 于是卡死在这里(2026-09 换 erofs 时实测:repart 的临时源目录里出现了 16 GB 的 out.raw)。
+    outdir=$(tmpd)
     for d in repart/install repart/slot-a repart/slot-b; do
-        img="$tree/out.raw"; rm -f "$img"
+        img="$outdir/out.raw"; rm -f "$img"
         # --offline=yes 是必须的:systemd-repart 自己的默认是 --offline=auto,
         # 意思是"能建 loop 设备就用 loop"。在容器里(尤其 --privileged 把宿主机的
         # /dev 暴露进来时)loop 设备看得见但用不了,repart 不会回退到 offline,
@@ -212,6 +217,38 @@ else
         esac
     done
 
+    # ── v1.1 erofs 只读根:载荷侧解钉死 / 安装侧钉死 ──────────────────────
+    # 这两条互为反证,只改一边(或两边一起改)都会在某处炸:
+    #   - 载荷侧留着 SizeMaxBytes=6G ⇒ 一份载荷又变成 6 GiB(本次改动白做);
+    #   - 安装侧去掉 6 GiB          ⇒ 分区表变了,老机器/不变量 9 直接废掉。
+    # 也守 Minimize=yes:它是"只占内容大小"的开关,不写就默认 off。
+    payload_bad=""
+    for f in repart/slot-a/10-root-a.conf repart/slot-b/10-root-b.conf; do
+        grep -qE '^[[:space:]]*Format=erofs[[:space:]]*$'  "$f" || payload_bad="$payload_bad $f:非erofs"
+        grep -qE '^[[:space:]]*Minimize=yes[[:space:]]*$' "$f" || payload_bad="$payload_bad $f:缺Minimize"
+        grep -qE '^[[:space:]]*SizeMaxBytes='              "$f" && payload_bad="$payload_bad $f:还钉着尺寸"
+    done
+    if [ -z "$payload_bad" ]; then
+        ok "槽载荷 = erofs + Minimize=yes 且没有 SizeMaxBytes ⇒ 不再被钉到 6 GiB"
+    else
+        no "槽载荷的 erofs/解钉死没做全:$payload_bad"
+    fi
+    if grep -qE '^[[:space:]]*Format=erofs[[:space:]]*$' repart/install/10-root-a.conf &&
+       grep -qE '^[[:space:]]*SizeMinBytes=6G[[:space:]]*$' repart/install/10-root-a.conf &&
+       grep -qE '^[[:space:]]*SizeMaxBytes=6G[[:space:]]*$' repart/install/10-root-a.conf; then
+        ok "安装侧 root-a = erofs 且尺寸仍钉死 6 GiB(槽位是布局常量,不变量 9)"
+    else
+        no "安装侧 root-a 不是「erofs + 6 GiB」—— 装出来的根格式或分区表会不对"
+    fi
+    # 空槽不能写 Format=:repart 拒绝格式化没有源文件的 erofs
+    #   Cannot format erofs filesystem without source files, refusing.
+    # v1 的 `Format=ext4`(空 ext4 合法)在这里正好是个陷阱。
+    if grep -qE '^[[:space:]]*Format=' repart/install/20-root-b.conf; then
+        no "安装侧 root-b 写了 Format= —— 空槽格式化 erofs 会被 repart 拒绝(只能保持未格式化)"
+    else
+        ok "安装侧 root-b 保持未格式化(空槽:repart 拒绝空 erofs;未格式化也给首次更新干净的起点)"
+    fi
+
     # os-install 在目标机上跑的是**镜像里那份**定义(mkosi.postinst 装进
     # /usr/lib/keel/repart-install.d),它是 repart/install 去掉 CopyFiles= 的版本。
     # 这里按同样的方式生成一份并真跑一遍:既证明它本身是合法定义,也证明分区表
@@ -219,14 +256,31 @@ else
     rt="$tree/repart-runtime"
     mkdir -p "$rt"
     for f in repart/install/*.conf; do
-        sed '/^[[:space:]]*CopyFiles=/d' "$f" >"$rt/$(basename "$f")"
+        # 必须与 mkosi.postinst **逐字同源**:两条 sed 表达式(去 CopyFiles=、去 Format=erofs)。
+        # Format=erofs 也得去掉:erofs 需要源文件,而运行时定义没有 CopyFiles ⇒ repart 拒绝
+        #   Cannot format erofs filesystem without source files, refusing.
+        # ⇒ os-install 的建表直接失败。root-a 随后被 live 根 dd 覆盖,root-b 等首次更新。
+        sed -e '/^[[:space:]]*CopyFiles=/d' -e '/^[[:space:]]*Format=erofs[[:space:]]*$/d' \
+            "$f" >"$rt/$(basename "$f")"
     done
     if grep -q 'CopyFiles' "$rt"/*.conf; then
         no "运行时定义里还留着 CopyFiles= —— repart 会去拷宿主机的 /proc、/data"
     else
         ok "运行时 repart 定义没有 CopyFiles=(不会去拷宿主机的 /proc、/data)"
     fi
-    rtimg="$tree/rt.raw"; rm -f "$rtimg"
+    if grep -q 'Format=erofs' "$rt"/*.conf; then
+        no "运行时定义里还留着 Format=erofs ⇒ os-install 建表会失败(erofs 需要源文件;坑 #32 的同类)"
+    else
+        ok "运行时 repart 定义没有 Format=erofs(装机不格式化槽根:a 靠 dd、b 等首次更新)"
+    fi
+    # 上面那份是 verify 自己 sed 的;真正装进镜像的是 mkosi.postinst 那段 —— 断言两者同源,
+    # 否则会出现最坏的一种:verify 全绿、真实 os-install 却建表失败。
+    if grep -q 'Format=erofs\[\[:space:\]\]' mkosi.postinst; then
+        ok "mkosi.postinst 也去掉了 Format=erofs(verify 的模拟与真实装机定义同源)"
+    else
+        no "mkosi.postinst 没有去掉 Format=erofs ⇒ 真实 os-install 会建表失败(verify 却全绿)"
+    fi
+    rtimg="$outdir/rt.raw"; rm -f "$rtimg"
     if systemd-repart --offline=yes --empty=create --size=15G --definitions="$rt" \
             "$rtimg" >"$tree/rt.log" 2>&1; then
         rnames=$(sfdisk --dump "$rtimg" 2>/dev/null | sed -n 's/.*name="\([^"]*\)".*/\1/p' | tr '\n' ' ')
@@ -593,13 +647,13 @@ fi
 # 构建时那次 repart 用的是 mkosi 的 tools tree(里面两个都有),所以镜像里缺了不会报错,
 # 只有真机装机、repart 真的去格式化那一刻才炸(坑 #32)。
 missing_fmt=0
-for pkg in dosfstools e2fsprogs; do
+for pkg in dosfstools e2fsprogs erofs-utils; do
     if grep -qE "^[[:space:]]*${pkg}[[:space:]]*$" mkosi.conf.d/20-packages.conf; then :; else
         no "包清单缺 $pkg —— repart 在目标盘上格式化分区时要用它(坑 #32)"
         missing_fmt=1
     fi
 done
-[ "$missing_fmt" = 0 ] && ok "包清单包含 dosfstools + e2fsprogs(repart 在目标盘上格式化 ESP / ext4 要用)"
+[ "$missing_fmt" = 0 ] && ok "包清单包含 dosfstools + e2fsprogs + erofs-utils(repart 在目标盘上格式化 ESP / data / erofs 根要用;v1.1 起根是 erofs)"
 
 # os-install 在**运行时**要调 systemd-repart(不是构建时那棵 tools tree 里的),
 # 所以它必须在包清单里;少了它 U 盘里敲 os-install 会报 "command not found"。
@@ -876,6 +930,15 @@ if grep -q 'debugfs' tools/ota-drill-container.sh &&
 else
     no "drill 模式缺少坏载荷的准备(破坏性回滚验不了)"
 fi
+# v1.1:槽载荷换成 erofs 之后,debugfs(ext4 专用)打不开它。做法是**认出来就明确拒绝**,
+# 而不是让它去 produce 一个"看起来坏了其实没坏"的载荷 —— 后者会让回滚演练变成假绿。
+# erofs 版的坏槽构造(解包/重打包)是 v1.1 的遗留项,记在 docs/roadmap.md §2.9。
+if grep -q 'e2e1f5e0' tools/ota-drill-container.sh &&
+   grep -q 'erofs' tools/ota-drill-container.sh; then
+    ok "演练会先认 erofs 载荷并明确拒绝(不让 debugfs 静默产出'假坏载荷';erofs 版坏槽待做)"
+else
+    no "drill 没有识别 erofs 载荷的守卫 ⇒ 载荷换成 erofs 后会静默产出假坏载荷,回滚演练变成假绿"
+fi
 
 # v1 不支持 /data 迁移:带 migrate= 的载荷必须在 fetch 阶段被拒(而不是装上)
 if grep -q 'migrate=' mkosi.extra/usr/bin/os-update &&
@@ -1106,14 +1169,14 @@ else
     skip "没装 setpriv(util-linux),跳过「非 root 实跑 keel-check」这条"
 fi
 
-# 便宜的检查必须在下载之前(坑 #51):迁移与 schema 检查只看 manifest,而下载是 13 GiB
+# 便宜的检查必须在下载之前(坑 #51):迁移与 schema 检查只看 manifest,而下载是 GiB 级(erofs 后约 4 GiB)
 OU=mkosi.extra/usr/bin/os-update
 n_mig=$(grep -n '没有迁移执行器' "$OU" | head -1 | cut -d: -f1)
 n_dl=$(grep -n 'for a in "${ARTIFACTS\[@\]}"' "$OU" | head -1 | cut -d: -f1)
 if [ -n "$n_mig" ] && [ -n "$n_dl" ] && [ "$n_mig" -lt "$n_dl" ]; then
     ok "os-update fetch 先做迁移/schema 检查再下载(第 $n_mig 行 vs 第 $n_dl 行)"
 else
-    no "迁移/schema 检查在下载之后(第 ${n_mig:-?} 行 vs 第 ${n_dl:-?} 行)⇒ 会先下 13 GiB 才拒绝"
+    no "迁移/schema 检查在下载之后(第 ${n_mig:-?} 行 vs 第 ${n_dl:-?} 行)⇒ 会先下完整载荷才拒绝"
 fi
 
 head1 "7. 账号模型(决策 D21:admin 是唯一交互账号,root 锁定)"
@@ -1363,7 +1426,7 @@ else
     no "mounts 里没有清理旧 etc.bak-* 的逻辑"
 fi
 if grep -q 'free_bytes' mkosi.extra/usr/bin/os-update && grep -q 'os-update gc' mkosi.extra/usr/bin/os-update; then
-    ok "os-update fetch 先查 /data 空间(4 个产物约 13 GiB)"
+    ok "os-update fetch 先查 /data 空间(载荷预算:两个 erofs 根镜像 + 两个 UKI,上限 6 GiB)"
 else
     no "os-update fetch 没有检查 /data 可用空间"
 fi

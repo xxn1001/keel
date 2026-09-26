@@ -34,7 +34,7 @@ sudo os-update stage --reboot  # 同上,并立即重启
 | `os-update fetch` | 下载到 `/data/ota/<ver>/`,校验 sha256、签名(v1 只留接口)、schema 兼容性(§8) | 什么都没写进槽,重试即可 |
 | `os-update stage` | §5.3 的 ①–⑦(见下表) | 写分区阶段失败只是白写了一遍非活动槽,当前系统不受影响 |
 | `os-update stage` 装的是哪一版 | **`/data/ota/` 下版本号最大**的那份已下载载荷(和 `gc` 的保留策略一致)。所以 `fetch` 失败时**不要**接着 `stage` —— 它不会报错,而是装回更旧的那一份(2026-09 演练踩到过:坏载荷 ENOSPC 没下下来,`stage` 静默装回了上一版好载荷) |
-| 空间账 | 一份载荷约 **13 GiB**(两个 6 GiB 根镜像 + 两个 163 MB UKI)。`/data` 是整盘剩余空间的话通常放得下两份;只有 27 GiB 的实验盘就只能留一份 —— `fetch` 前先 `os-update gc`,或删掉 `/data/ota` 下的旧版本(已装进槽的内容不受影响) |
+| 空间账 | 一份载荷是 **erofs**,只占内容大小(v1.1 起约 1.5–2 GiB/槽 + 两个 ~156 MiB UKI)。v1 时是 13 GiB(两个 6 GiB 根镜像)—— erofs 之后 `/data` 的余量宽松了很多。`fetch` 前先 `os-update gc`,或删掉 `/data/ota` 下的旧版本(已装进槽的内容不受影响) |
 | 重启 | systemd-boot 用 one-shot 启动候选条目,文件名从 `keel-<目标>+3.efi` 退化为 `keel-<目标>+2-1.efi`;到达 `boot-complete.target` 后 `systemd-bless-boot` 把它改名成 `keel-<目标>.efi`,`keel-confirm.service` 把它设成**持久默认**、记 success、清 pending(§5.3 ⑧⑨) | 见 §3 |
 
 `os-update stage` 内部按顺序做这些事(§5.3 ①–⑦):
