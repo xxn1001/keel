@@ -11,7 +11,7 @@
 
 | 版本 | 主题 | 内容(对应下面的条目) | 粗估 |
 |---|---|---|---|
-| **v1.1** | 功能与运维 | **① ✅ erofs 只读根(2.9,已完成:载荷 6 GiB → 401 MiB,`dist/`、演练 qcow2 增长一起变小)** → **② ✅ ESP 余量 + `.failed` 清理(stage 动分区前先查 ESP 空间 + 自动清墓碑 + `os-rescue --clean-esp` 显式入口)** → ③ 更新**检查**(默认只 check + 通知,**不自动装**)→ ④ `os-install` 两个 TODO(2.7)→ ⑤ 演练/开发的磁盘占用收紧(live 镜像 truncate 尺寸可配)→ ⑥ 原生 ✅ 已实测 / **rootless 待做**,并写进文档 | 不赶时间,分多次 |
+| **v1.1** | 功能与运维 | **① ✅ erofs 只读根(2.9,已完成:载荷 6 GiB → 401 MiB,`dist/`、演练 qcow2 增长一起变小)** → **② ✅ ESP 余量 + `.failed` 清理(stage 动分区前先查 ESP 空间 + 自动清墓碑 + `os-rescue --clean-esp` 显式入口)** → **③ ✅ 更新检查(`keel-update-check.timer`:只 check + 通知;绝不 fetch/stage)** → ④ `os-install` 两个 TODO(2.7)→ ⑤ 演练/开发的磁盘占用收紧(live 镜像 truncate 尺寸可配)→ ⑥ 原生 ✅ 已实测 / **rootless 待做**,并写进文档 | 不赶时间,分多次 |
 | **v1.2** | 安全 | **更新签名**(1.1)→ **Secure Boot**(1.2,含 UKI 签名、自己的密钥库、解封 `pcrlock`);initrd 冻结修复(3.0) | —— |
 | **v2.0** | 结构与可信 | **迁移执行器**(2.8,先做,它是下面一切的前提)→ **`/data` 加密 + TPM 封印**(1.3)+ **dm-verity**(1.4)+ **早期启动重排**(把 `/etc` overlay 提到 initrd,见 D19 方案 A —— **它才是 #24/#29/#37/#61 四条的真正解法**)→ 可选:`systemd-sysupdate` 底层(2.5)、`cache` 分区(2.4)、`server` profile(2.2) | —— |
 | 不排期 | 等上游 / 可选 | "连续三次"试用语义(2.5b,等 Debian 的 systemd ≥ 261)、`desktop` profile(2.1)、`/usr/lib/modules` 外置(2.3)、`machines/`(3.4) | —— |
@@ -51,7 +51,7 @@
 | 2.4 | **`cache` 分区** | 把"可丢弃的缓存"(`/nix` store、journal)与"不可丢的状态"(`/home`、`/etc` upper、`/data/keel`)物理分开。只增分区即可(不变量 6 允许);决策 D23 里先做了预算 + 看门人,等真机用一段时间看清增长曲线再定 |
 | 2.5 | **`systemd-sysupdate` 换掉"直接写盘"** | `os-update` 是门面,底层可替换(决策 D8)。要先验证 `Type=partition` 对双槽布局的匹配语义,再换 |
 | 2.5b | **恢复"连续三次"的试用语义** | 原设计用 `bootctl set-preferred`(感知 boot assessment),但 Debian trixie 的 systemd 257 没有这个动词,现在用 `set-oneshot` **只试一次**(坑 #43)。等基底 systemd ≥ 261(或 Debian 把补丁回移)再换回去:改 `lib.sh` 的 `keel_boot_candidate()`,并在 VM 里复验"连续失败三次才回退" |
-| 2.6 | **自动更新定时器** | v1 刻意手动触发(`docs/update.md` §8),便于在笔记本上边用边观察;之后可以按"检查频率 + 只下载不安装"的保守策略加 |
+| 2.6 | **自动更新定时器** | **v1.1 ③ 已做"检查"那一半**:`keel-update-check.timer` 只跑只读的 `os-update check` + 写结论 + 通知(`docs/update.md` §8)。**真正的"自动 fetch / 自动 stage"仍不做** —— 硬约束 1:要等 v1.2 的更新签名。到那时再按"检查频率 + 按窗口下载"的保守策略加,并且记得把 `tools/verify.sh` 里"update-check 里每一处 os-update 都必须是 check"的反向断言一起改掉 |
 | 2.7 | **`os-install` 的两个 TODO** | ① 根文件系统实际占用超过目标分区尺寸时的截断检查;② `keel-confirm` 的 pending/running_slot 边界 |
 | 2.8 | **`/data` schema 迁移执行器**(v1 明确不做) | v1 的行为是:带 `migrate=` 的载荷被 `fetch` **拒绝**(坑 #48),布局冻结在 schema 1。要做的时候:① 定义 manifest 的迁移语法(只增不破的 mkdir/权限/文件);② 想清楚 `schema`(载荷要求的布局版本)与 `schema_min`(载荷还能读的最低版本)的区别 —— 现在 `fetch` 那句 `schema > 本机 ⇒ 拒绝` 与"由旧系统迁移"的语义是**互相矛盾**的,得先理顺;③ 在 VM 里按 §4 演练(含**回滚**到旧版本后旧系统仍能读 /data);④ 第一次真实迁移前不要动布局 |
 

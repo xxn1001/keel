@@ -153,12 +153,17 @@ cmd_check() {
     echo "远端版本     : ${rv}(schema ${rs:-未声明})"
     echo "当前版本     : ${CURRENT_VERSION}(槽 ${CURRENT_SLOT:-未知})"
 
+    # 顺手把结论写进 /data/keel/update-check.state(v1.1 ③):手动 check 也刷新状态,
+    # 定时器(keel-update-check.timer)走的是同一条路径 —— 只有一个写入点,不会两处漂移。
     if version_is_newer "$rv" "$CURRENT_VERSION"; then
         echo "结论         : 有新版本可用 → sudo os-update fetch"
+        keel_update_check_state update-available "$rv"
     elif [ "$rv" = "$CURRENT_VERSION" ]; then
         echo "结论         : 已经是最新版本(远端与当前相同)"
+        keel_update_check_state up-to-date "$rv"
     else
         echo "结论         : 远端版本比当前旧(检查更新源是否指错了目录)"
+        keel_update_check_state source-older "$rv"
     fi
 
     [ -n "$tmp" ] && rm -f "$tmp"

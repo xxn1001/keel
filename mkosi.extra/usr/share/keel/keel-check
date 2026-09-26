@@ -293,6 +293,21 @@ case "$last" in
 esac
 src=$(keel_conf UPDATE_SOURCE "" 2>/dev/null || true)
 printf '  %-14s %s\n' "更新源" "${src:-未配置(/data/keel/config 里的 UPDATE_SOURCE)}"
+# 上次"更新检查"的结论(v1.1 ③)。这里**只报告**,不做判断:能不能升级、要不要升级
+# 是运维决定;而"有新版本"本身不是健康问题,不该让它变成 ✗/!。
+updchk=/data/keel/update-check.state
+if [ -r "$updchk" ]; then
+    uv=$(sed -n 's/^verdict=//p' "$updchk" 2>/dev/null | tail -n1)
+    ur=$(sed -n 's/^remote_version=//p' "$updchk" 2>/dev/null | tail -n1)
+    case "$uv" in
+        update-available) printf '  %-14s %s\n' "更新检查" "有新版本 ${ur} 可用(升级见 docs/update.md §2)" ;;
+        up-to-date)       printf '  %-14s %s\n' "更新检查" "已是最新(${ur})" ;;
+        source-older)     printf '  %-14s %s\n' "更新检查" "源上的版本(${ur})比本机旧 —— 检查 UPDATE_SOURCE" ;;
+        no-source)        printf '  %-14s %s\n' "更新检查" "没有配置更新源" ;;
+        error)            printf '  %-14s %s\n' "更新检查" "上次检查失败(源不可达?)" ;;
+        *)                printf '  %-14s %s\n' "更新检查" "${uv:-未知}" ;;
+    esac
+fi
 
 # ---------------------------------------------------------------------------
 head1 "8. 硬件、固件与兜底机制"

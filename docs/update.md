@@ -1,12 +1,11 @@
 # keel 更新与回滚
 
-> **状态(2026-09)**:`os-update` 的 `check` / `fetch` / `stage` / `switch` / `rollback` / `gc`
-> 六个子命令都已实现(见 `mkosi.extra/usr/bin/os-update`),但**完整的 OTA 闭环
-> (fetch → stage → 重启 → 槽确认 → 回滚)还没有在任何环境里跑过一次** —— 这是 v1 之前
-> 必须补的那一课(见 [`roadmap.md`](roadmap.md))。本文其余部分写的是**目标行为**:
-> 实现与它不一致的地方以实际脚本为准,跑通之后会把实测结果回写到本文档与 `architecture.md` §13。
+> **状态(2026-09-26)**:`os-update` 的 `check` / `fetch` / `stage` / `switch` / `rollback` / `gc`
+> 六个子命令都已实现(见 `mkosi.extra/usr/bin/os-update`),**完整的 OTA 闭环已经实测跑通**
+> (libvirt 真装机路径 + VM 演练,证据见 §9 与 §9.1)。
 > 已知未做的两处:v1 **不验签**(`manifest.sig` 与 `/usr/share/keel/update-key.pub` 的接口留着,
-> 见 §6)、**没有自动更新定时器**(§8)。
+> 见 §6)、**没有自动更新**。v1.1 起有 `keel-update-check.timer` 定期**检查并通知**,
+> 但**不自动下载、不自动安装** —— 自动更新必须排在 v1.2 的更新签名之后(§8)。
 
 ## 1. 更新模型(一段话)
 
@@ -57,7 +56,8 @@ sudo os-update stage --reboot  # 同上,并立即重启
 
 `os-update` 是**门面**:下载/验签/版本比较/写分区交给 `systemd-sysupdate`,槽切换交给 `bootctl`,
 我们只写策略(迁移、保留、报告)(决策 D8)。
-v1 **没有自动更新定时器**(§8):手动触发,便于在真机上边用边观察。
+**升级本身始终是手动触发**:v1.1 起有定时器,但它只做只读的**检查 + 通知**(§8),
+不会自动下载或安装。
 
 ## 3. 回滚
 
@@ -175,6 +175,51 @@ SWAPFILE_SIZE=            # 可留空:默认 min(内存, 8G) 且不小于 1G
 | 5 | 上传整个目录 | 放到 `/data/keel/config` 指向的更新源;版本号由 `mkosi.version` + 构建时 `-B` 自动 bump(§6) |
 | 6 | 在真机演练 | 至少一次 `check → fetch → stage --reboot`;**有 schema 变更时必须加一次回滚演练**(§4) |
 | 7 | 回写文档 | 踩到的坑进 `AGENTS.md`;新决策进 `decisions.md`;命令或单元的行为变化同步到本文档 |
+
+## 8. 更新怎么被发现:检查定时器、保留策略与"为什么不自动装"
+
+### 8.1 更新源在哪、长什么样
+
+`UPDATE_SOURCE` 在 `/data/keel/config`(§4.2)里,三种形式:`https://…`、`file://…`、
+或一个挂载好的目录。源目录里就是 `dist/keel-<版本>/` 的内容:`manifest` + 四个产物
+(`slot-a.root.raw` / `slot-a.uki.efi` / `slot-b.root.raw` / `slot-b.uki.efi`),
+**不要**放 `keel.raw`。
+
+`os-update fetch` 把四个产物下到 `/data/ota/<版本>/`,逐个验 sha256;`manifest.sig` 存在时
+用 `/usr/share/keel/update-key.pub` 验签(公钥缺失直接报错,不做静默降级),
+不存在时打印醒目警告后继续 —— 这是 v1 的权宜策略(§6)。schema 兼容性也在这一步查(§4)。
+
+### 8.2 保留策略:`os-update gc`
+
+`/data/ota/` 只保留 **pending 的那个版本 + 版本号最大的两个**,其余删掉(载荷是可再生的,
+重新 `fetch` 即可)。`stage` 成功之后会自动清一次。
+
+### 8.3 检查定时器(v1.1 ③)
+
+| 东西 | 值 |
+|---|---|
+| 单元 | `keel-update-check.timer` → `keel-update-check.service`(`Type=oneshot`) |
+| 频率 | 开机 5 分钟后一次,之后每 6 小时;`Persistent=true`(关机期间错过的下次补) |
+| 它做什么 | 只调**只读**的 `os-update check`(拉一个 manifest;不写槽、不写 `/data/ota`) |
+| 结论写哪 | `/data/keel/update-check.state`(`verdict` / `remote_version` / `current_version` / `checked_at` / `note`) |
+| 怎么看 | `os-status` 的「更新检查」一行、`journalctl -u keel-update-check`、`keel-check` 的「更新检查」一行 |
+
+`verdict` 取值:`update-available`(有新版本)/ `up-to-date` / `source-older`(源指错了目录)/
+`no-source`(没配源)/ `error`(源不可达、manifest 读不懂)。
+**巡检失败不会让服务变红**:脚本永远 `exit 0`、只把结论写进状态文件 —— 否则 `keel-check`
+的「失败单元为空」会被巡检噪音污染。
+
+没配更新源时它**连网络都不碰**(直接记 `no-source`);`/data` 没挂上时(`ConditionPathIsMountPoint=/data`)
+什么都不写,免得写到根文件系统上。
+
+### 8.4 为什么**不**自动下载 / 自动安装
+
+roadmap §0 的硬约束 1:**自动更新必须排在签名之后**。现在源只靠 sha256(防传输损坏,
+防不住恶意替换),让机器"自动从源取货并装上去"等于把整条启动链交给一个只做完整性校验的源。
+所以 v1.1 的定时器**只检查、只通知**;等 v1.2 有了真验签,再谈"自动 fetch / 按窗口 stage"。
+
+> 这条约束是**静态断言守着的**:`tools/verify.sh` 会检查 `update-check` 脚本里出现的
+> **每一处** `os-update` 都是 `os-update check` —— 谁往里加了 fetch/stage,校验就红。
 
 ## 9. 怎么复验更新与回滚(VM 演练)
 

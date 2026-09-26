@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# 定期**检查**更新源有没有新版本 —— 只检查,不下载、不安装(v1.1 ③)。
+#
+# 为什么只能"检查":roadmap §0 硬约束 1 —— **自动更新必须排在签名之后**。
+# v1 的更新源只靠 sha256(防传输损坏,防不住恶意替换),所以定时器绝不能
+# fetch/stage;等 v1.2 有了真验签,才谈得上计划性下载。这个脚本因此**只调用
+# 只读的 `os-update check`**(它只拉一个 manifest,不写任何槽、不写 /data/ota)。
+#
+# 结论写进 /data/keel/update-check.state(写成独立文件的原因见 lib.sh 里的注释),
+# 由 `os-status` 呈现、`keel-check` 提示。
+#
+# 设计约束(**照抄 data-guard 的规矩**):
+#   * **永远 exit 0**。它是巡检:源没配、网络不通、manifest 坏了,都只影响"结论",
+#     不该让服务变红 —— keel-check 断言"systemctl --failed 为空",巡检自己变红
+#     会把这个断言变成噪音。
+#   * 没配更新源就**连网络都不碰**(no-source)。
+#   * /data 没挂上时什么都不写(那时 /data/keel 可能是根上的空目录)。
+set -uo pipefail
+
+# shellcheck source=/usr/lib/keel/lib.sh
+# shellcheck disable=SC1091
+. /usr/lib/keel/lib.sh
+
+TIMEOUT="${KEEL_UPDATE_CHECK_TIMEOUT:-120}"
+
+if ! mountpoint -q /data 2>/dev/null; then
+    keel_log "/data 没挂上,跳过更新检查(结论不写,免得写到根文件系统上)"
+    exit 0
+fi
+
+src="$(keel_conf UPDATE_SOURCE "")" || src=""
+if [ -z "$src" ]; then
+    keel_update_check_state no-source "" "没有配置更新源(见 docs/update.md §6)"
+    keel_log "没有配置更新源(UPDATE_SOURCE= 为空),跳过检查"
+    exit 0
+fi
+
+# 只读检查。`timeout` 是必需的:curl 自带 --connect-timeout,但 DNS/中间设备
+# 卡住时它仍可能拖很久,而这是个定时任务,不该占着不放。
+out="$(timeout "$TIMEOUT" os-update check 2>&1)"
+rc=$?
+
+if [ "$rc" -ne 0 ]; then
+    # 把最后一行当 note(通常是 keel/curl 的报错原文),状态文件里留个线索
+    note="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n1)"
+    [ -n "$note" ] || note="os-update check 失败(rc=$rc)"
+    case "$rc" in
+        124) note="检查超时(${TIMEOUT}s):${note}" ;;
+    esac
+    keel_update_check_state error "" "$note"
+    keel_log "警告:更新检查失败(源 ${src} 不可达?)—— ${note}"
+    exit 0
+fi
+
+# 成功时 os-update check 自己**已经**写好状态文件了(见 os-update 的 cmd_check);
+# 这里只把结论记进日志,让 journalctl 一眼能看到。
+st="$KEEL_STATE_DIR/update-check.state"
+verdict="$(sed -n 's/^verdict=//p' "$st" 2>/dev/null | tail -n1)" || verdict=""
+remote="$(sed -n 's/^remote_version=//p' "$st" 2>/dev/null | tail -n1)" || remote=""
+case "$verdict" in
+    update-available)
+        # 注意:这里**只能提"要人工升级",不能把 fetch/stage 写成命令** ——
+        # 脚本里每一处 `os-update` 都必须是 `os-update check`,verify.sh 有反向断言守着
+        # (硬约束 1:自动更新要等 v1.2 的签名)。
+        keel_log "有新版本可用:${remote}(当前 $(keel_version));升级步骤见 docs/update.md §2(手动)"
+        ;;
+    up-to-date)
+        keel_log "已是最新版本($(keel_version))"
+        ;;
+    source-older)
+        keel_log "注意:更新源上的版本(${remote})比本机($(keel_version))旧 —— 检查 UPDATE_SOURCE 是否指错目录"
+        ;;
+    *)
+        keel_log "更新检查完成(结论:${verdict:-未知})"
+        ;;
+esac
+exit 0

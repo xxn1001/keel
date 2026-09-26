@@ -1,0 +1,17 @@
+[Unit]
+Description=keel: 定期检查更新源有没有新版本(只检查 + 通知,不自动安装)
+Documentation=file:/usr/share/doc/keel/update.md
+
+[Timer]
+# 开机 5 分钟后先看一次(那时网络已经起来),之后每 6 小时一次。
+# 为什么不在开机早期跑:检查要联网,而它**不是**启动关键路径 ——
+# 失败也只是"这次没结论",下个周期还会再来。
+OnBootSec=5min
+OnUnitActiveSec=6h
+# 合并同一时间窗内的触发,别在整点互相打
+AccuracySec=26min
+# 关机期间错过的检查,下次开机补一次(状态文件里 checked_at 会显示真实时间)
+Persistent=true
+
+[Install]
+WantedBy=timers.target

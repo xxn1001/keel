@@ -1450,6 +1450,96 @@ if grep -q 'enable keel-data-guard.timer' "$PRESET" && grep -q 'enable keel-nix-
 else
     no "preset 没有启用 keel-data-guard.timer / keel-nix-gc.timer"
 fi
+
+# ---------------------------------------------------------------------------
+# 9b. 更新**检查**(v1.1 ③):只 check + 通知,**绝不** fetch/stage
+#
+# 这是 roadmap §0 硬约束 1 的静态护栏:"自动更新必须排在签名之后"。光靠"记得别写"
+# 不够,所以这里既断言"它调了 check",也断言"它除了 check 什么子命令都没提"。
+# ---------------------------------------------------------------------------
+UC=mkosi.extra/usr/lib/keel/update-check
+if [ -f "$UC" ] && [ -x "$UC" ]; then
+    ok "update-check 脚本存在且可执行"
+else
+    no "缺少可执行的 mkosi.extra/usr/lib/keel/update-check"
+fi
+if [ -f "$UC" ] && grep -q 'os-update check' "$UC"; then
+    ok "update-check 调用的是**只读**的 os-update check"
+else
+    no "update-check 没有调用 os-update check"
+fi
+# ⚠ 反向断言:脚本里出现的**每一处** os-update 都必须是 `os-update check`。
+# 换句话说:只要有人往里写了 fetch/stage(哪怕只是当成命令示例),这里就红。
+if [ -f "$UC" ]; then
+    n_all=$(grep -c 'os-update' "$UC" || true)
+    n_chk=$(grep -c 'os-update check' "$UC" || true)
+    if [ "${n_all:-0}" -gt 0 ] && [ "$n_all" = "$n_chk" ]; then
+        ok "update-check 里每一处 os-update 都是 check(${n_all} 处)—— 绝不 fetch/stage"
+    else
+        no "update-check 里出现了非 check 的 os-update 子命令(共 ${n_all} 处,其中 check ${n_chk} 处)—— 违反硬约束 1"
+    fi
+fi
+# 永远 exit 0:巡检失败只写结论,不该把 systemctl --failed 变成非空(keel-check 断言它为空)
+if [ -f "$UC" ] && ! grep -qE '^[[:space:]]*set -e' "$UC" && grep -q '^exit 0' "$UC"; then
+    ok "update-check 不用 set -e 且显式 exit 0(巡检永远成功,结论写状态文件)"
+else
+    no "update-check 可能非零退出 ⇒ keel-check 的「失败单元为空」会变成噪音"
+fi
+if grep -qE '^Type=oneshot' mkosi.extra/usr/lib/systemd/system/keel-update-check.service &&
+   grep -qE '^ConditionPathIsMountPoint=/data' mkosi.extra/usr/lib/systemd/system/keel-update-check.service; then
+    ok "keel-update-check.service 是 oneshot,且 /data 没挂上就不跑"
+else
+    no "keel-update-check.service 缺少 Type=oneshot / ConditionPathIsMountPoint=/data"
+fi
+if grep -qE '^OnBootSec=' mkosi.extra/usr/lib/systemd/system/keel-update-check.timer &&
+   grep -qE '^OnUnitActiveSec=' mkosi.extra/usr/lib/systemd/system/keel-update-check.timer; then
+    ok "keel-update-check.timer 有 OnBootSec + OnUnitActiveSec(开机先看一次,之后定期)"
+else
+    no "keel-update-check.timer 缺少 OnBootSec / OnUnitActiveSec"
+fi
+if grep -q 'enable keel-update-check.timer' "$PRESET"; then
+    ok "preset 启用了 keel-update-check.timer(开箱即用)"
+else
+    no "preset 没有启用 keel-update-check.timer"
+fi
+# 状态文件的写入点与呈现点:少了任何一环,"通知"就断了
+if grep -q 'keel_update_check_state' mkosi.extra/usr/lib/keel/lib.sh &&
+   grep -q 'keel_update_check_state' mkosi.extra/usr/bin/os-update &&
+   grep -q 'update-check.state' mkosi.extra/usr/bin/os-status &&
+   grep -q 'update-check.state' mkosi.extra/usr/share/keel/keel-check; then
+    ok "update-check.state 链路完整:lib.sh 的 helper → os-update check 写入 → os-status/keel-check 呈现"
+else
+    no "update-check.state 的写入或呈现链路缺了一环"
+fi
+# ── 功能测试(不只是 grep):helper 在 note 为空时也必须落盘 ────────────────────
+# 这一条是被真事逼出来的:helper 里原本最后一句是 `[ -n "$note" ] && printf …`,
+# note 为空(= 成功路径 up-to-date / update-available)时整个 { } 组返回 1,
+# 被后面的 || 兜底当成"写失败"删掉了临时文件 ⇒ **成功路径永远不写状态**,
+# 而上面那些静态断言全绿。只有真跑一次才发现(v1.1 ③ 在 VM 里实测踩到)。
+if [ -r mkosi.extra/usr/lib/keel/lib.sh ]; then
+    ft=$(tmpd)
+    if (
+        # shellcheck disable=SC1091
+        . mkosi.extra/usr/lib/keel/lib.sh
+        KEEL_STATE_DIR="$ft/keel"
+        keel_version() { printf '9.9.9\n'; }
+        st="$KEEL_STATE_DIR/update-check.state"
+        # 1) note 为空(成功路径)
+        keel_update_check_state up-to-date "1.2.3" "" || exit 1
+        [ -s "$st" ] || exit 1
+        grep -q '^verdict=up-to-date$' "$st" || exit 1
+        grep -q '^remote_version=1.2.3$' "$st" || exit 1
+        # 2) note 非空(失败/没配源路径)也要带上 note,并且覆盖写而不是追加
+        keel_update_check_state error "" "boom" || exit 1
+        grep -q '^verdict=error$' "$st" || exit 1
+        grep -q '^note=boom$' "$st" || exit 1
+        [ "$(grep -c '^verdict=' "$st")" = 1 ] || exit 1
+    ); then
+        ok "keel_update_check_state 实跑:note 为空也落盘、note 非空带上、且覆盖写(状态文件不追加)"
+    else
+        no "keel_update_check_state 没写出状态文件 —— 检查 helper 里 { } 组的最后一句(不能用 && 结尾,note 为空时它会返回 1)"
+    fi
+fi
 if grep -q 'RESERVE=' mkosi.extra/usr/lib/keel/firstboot && grep -q 'fallocate -l 256M' mkosi.extra/usr/lib/keel/firstboot; then
     ok "keel-firstboot 第 6 步预留 256 MiB 应急空间(小文件系统跳过)"
 else

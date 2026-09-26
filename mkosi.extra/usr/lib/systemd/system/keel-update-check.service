@@ -1,0 +1,12 @@
+[Unit]
+Description=keel: 检查更新源有没有新版本(只检查,不下载、不安装)
+Documentation=file:/usr/share/doc/keel/update.md
+# /data 没挂上时什么都别做:配置(更新源)与结论都在上面
+ConditionPathIsMountPoint=/data
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+# 脚本自己保证永远 exit 0(巡检失败只写结论),所以这里不需要 SuccessExitStatus=
+ExecStart=/usr/lib/keel/update-check

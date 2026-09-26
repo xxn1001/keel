@@ -393,6 +393,13 @@ sudo tools/burn.sh /dev/nvme0n1
 - [x] **v1.1 ⑥-原生:原生 FHS 构建路径已实战(2026-09-26)** —— 构建机本身是 Debian 13,
       `sudo tools/build.sh -p <密码>` 连跑三次全部 exit 0;`release-notes-v1.md` 的已知限制 #20
       已划掉(补了证据)。**仍未做的是 rootless(不带 sudo)那一半**
+- [x] **v1.1 ③:更新检查(只 check + 通知,2026-09-26)** —— 新增 `keel-update-check.timer/.service`
+      (开机 5 分钟后 + 每 6 小时,`Persistent=true`):只调**只读**的 `os-update check`
+      (拉一个 manifest),结论写 `/data/keel/update-check.state`,`os-status` 与 `keel-check`
+      各显示一行、journal 记一条。**绝不 fetch/stage** —— 硬约束 1:自动更新必须排在 v1.2 的
+      更新签名之后;`tools/verify.sh` 有反向断言守着("脚本里每一处 `os-update` 都必须是 `check`")。
+      巡检**永远 `exit 0`**(失败只写 `verdict=error`),否则 `keel-check` 的"失败单元为空"
+      会被巡检噪音污染;没配更新源时**连网络都不碰**。用户视角见 `docs/update.md` §8
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 

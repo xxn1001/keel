@@ -169,6 +169,42 @@ keel_state_set() {
     mv -f "$tmp" "$KEEL_STATE"
 }
 
+# "更新检查"的结论(v1.1 ③)。写进独立的状态文件,由 os-status / keel-check 呈现。
+#
+# 为什么要独立文件而不是塞进 /data/keel/state:那份 state 是**启动语义**的
+# (pending / running_slot / last_result),由 keel-confirm 写;而"有没有新版本"
+# 是**巡检结论**,由定时器每次覆盖。两者生命周期完全不同,混在一起会互相踩。
+#
+# verdict 取值(调用方约定,os-status 按它措辞):
+#   update-available  源上有比本机更新的版本
+#   up-to-date        源上与本机相同(或更旧)
+#   source-older      源上的版本比本机旧(八成是源指错了目录)
+#   no-source         /data/keel/config 里没有 UPDATE_SOURCE=
+#   error             连不上源 / manifest 读不懂(巡检失败,不是系统故障)
+#
+# best-effort:任何一步失败都**不抛**(它不该让调用者变红;data-guard 的规矩同理)。
+keel_update_check_state() {
+    local verdict=$1 remote=${2:-} note=${3:-} cur="" tmp=""
+    install -d -m 0755 "$KEEL_STATE_DIR" 2>/dev/null || return 0
+    cur="$(keel_version 2>/dev/null)" || cur=""
+    tmp="$(mktemp "$KEEL_STATE_DIR/.updchk.XXXXXX" 2>/dev/null)" || return 0
+    # ⚠ 最后一句必须是**恒为 0** 的命令:这里曾经写成 `[ -n "$note" ] && printf …`,
+    # note 为空(= 成功路径 update-available/up-to-date)时整个 { } 组返回 1,
+    # 被下面的 || 兜底当成"写失败"把临时文件删掉 ⇒ **成功路径永远不落盘**。
+    # 静态校验看不出来,只有真跑一次才发现(v1.1 ③ 在 VM 里实测踩到)。
+    # 所以用 if(条件为假时返回 0),不要用 `&&` 结尾。
+    {
+        printf 'checked_at=%s\n' "$(date +%s)"
+        printf 'verdict=%s\n' "$verdict"
+        printf 'current_version=%s\n' "$cur"
+        printf 'remote_version=%s\n' "$remote"
+        if [ -n "$note" ]; then printf 'note=%s\n' "$note"; fi
+    } >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    chmod 0644 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$KEEL_STATE_DIR/update-check.state" 2>/dev/null || rm -f "$tmp"
+    return 0
+}
+
 # 版本号 = **镜像版本**,不是发行版版本。
 #
 # mkosi 会把 `--image-version` 写进 /usr/lib/os-release 的 `IMAGE_VERSION=`

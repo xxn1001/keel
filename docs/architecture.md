@@ -227,6 +227,14 @@ workdir  = /data/overlayfs/etc/work
 小于 4 GiB 的 `/data`(live 镜像)只看不治。它只清**可再生**的数据 ——
 `/home`、`/etc` overlay 的 upper、`/data/keel` 一律不碰。
 
+**更新检查的状态(v1.1 ③)单独一个文件**:`keel-update-check.timer`(开机 5 分钟后 + 每 6 小时)
+只跑**只读**的 `os-update check`,把结论写进 `/data/keel/update-check.state`
+(`verdict` / `remote_version` / `current_version` / `checked_at` / `note`),
+`os-status` 与 `keel-check` 各显示一行。它**不下载、不安装**(自动更新要等 v1.2 的更新签名,
+roadmap §0 硬约束 1;`tools/verify.sh` 有"脚本里每一处 `os-update` 都必须是 `check`"的反向断言)。
+为什么不用 `/data/keel/state`:那份是**启动语义**(pending / running_slot / last_result,
+由 `keel-confirm` 写),这份是**巡检结论**(由定时器每次覆盖),生命周期完全不同。
+
 ---
 
 ## 5. 引导链
@@ -429,7 +437,8 @@ os-update gc               # 清理旧载荷(保留最近 2 个版本 + 当前)
 
 `os-update` 是**门面**:对外的子命令与状态语义是稳定的,底层怎么把载荷写进另一个槽是可以替换的
 (决策 D8)。**v1 的底层是"直接写盘"**:校验 sha256 → `dd` 进目标分区 → 拷 UKI 到 ESP →
-`bootctl set-preferred`。之所以先不用 `systemd-sysupdate`,是因为它的 `Type=partition`
+`bootctl set-oneshot`(候选槽只试一次;**不是** `set-preferred` —— systemd 257 没有那个动词,
+见坑 #43)。之所以先不用 `systemd-sysupdate`,是因为它的 `Type=partition`
 匹配语义还没在真机上验证过(§13.1 #2),而写错分区是不可接受的失败模式;
 等验证通过后只换底层,门面不动。
 
@@ -445,11 +454,10 @@ os-update gc               # 清理旧载荷(保留最近 2 个版本 + 当前)
 | `keel-confirm.service` | 启动成功后确认/回滚更新,写 state | `After=boot-complete.target systemd-bless-boot.service`、`WantedBy=boot-complete.target` |
 | `keel-data-guard.service` + `.timer` | §4.6 的看门人:查 `/data` 空间、必要时回收可再生数据 | 定时器 `OnBootSec=3min` + `OnUnitActiveSec=1d`;服务 `ConditionPathIsMountPoint=/data` |
 | `keel-nix-gc.service` + `.timer` | 每周 `nix-collect-garbage` + `nix-store --gc --max-freed=2G` | `OnCalendar=weekly`、`Persistent=true` |
+| `keel-update-check.service` + `.timer` | §4.6:只读检查更新源有没有新版本,写 `update-check.state`(v1.1 ③;**绝不** fetch/stage) | 定时器 `OnBootSec=5min` + `OnUnitActiveSec=6h`;服务 `ConditionPathIsMountPoint=/data`,永远 `exit 0` |
 
 辅助脚本放 `/usr/lib/keel/`,不要散在 `/usr/bin`。被 mask 掉的 `systemd-pcrlock*`
 (决策 D20)不在上表里 —— 它们不是我们的单元,只是被我们关掉。
-
-辅助脚本放 `/usr/lib/keel/`,不要散在 `/usr/bin`。
 
 ---
 

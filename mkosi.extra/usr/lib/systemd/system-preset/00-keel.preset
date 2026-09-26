@@ -16,6 +16,10 @@ enable keel-swapfile.service
 # /data 的空间看门人与 nix GC(决策 D23):两个都是定时器,服务本身由定时器拉起
 enable keel-data-guard.timer
 enable keel-nix-gc.timer
+# 更新**检查**(v1.1 ③):定时器只跑只读的 os-update check + 写结论 + 记日志。
+# **刻意不启用任何"自动 fetch/stage"** —— 自动更新必须排在 v1.2 的更新签名之后
+# (roadmap §0 硬约束 1)。要改策略先改那条约束,别只改这里。
+enable keel-update-check.timer
 
 # 网络(main 用 systemd 原生栈,决策 D15;Debian 默认不启用这两个)
 enable systemd-networkd.service
