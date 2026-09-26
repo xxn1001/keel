@@ -61,7 +61,7 @@ fi
 
 if grep -q 'KEEL_ESP_MOUNTED' mkosi.extra/usr/lib/keel/lib.sh \
    && grep -q 'KEEL_ESP_MOUNTED' mkosi.extra/usr/bin/os-status \
-   && grep -q 'KEEL_ESP_MOUNTED' mkosi.extra/usr/bin/os-update \
+   && grep -q 'keel_esp_ensure' mkosi.extra/usr/bin/os-update \
    && grep -q 'KEEL_ESP_MOUNTED' mkosi.extra/usr/lib/keel/confirm; then
     ok "ESP 没挂上时 os-status / os-update / keel-confirm 都会明确报出来(不再静默)"
 else
@@ -70,7 +70,8 @@ fi
 
 # 顺序:os-update 必须**先**确认 ESP 可用,再 dd 根分区 —— 反过来会留下"新根 + 旧内核"
 # 的槽,违反不变量 3,而且失败点离原因很远。
-esp_line=$(grep -n 'keel_esp_mount' mkosi.extra/usr/bin/os-update | head -n1 | cut -d: -f1)
+# 检查逻辑搬进 lib.sh 的 keel_esp_ensure 之后,这里改抓它的调用点(仍是同一处顺序约束)。
+esp_line=$(grep -n 'keel_esp_ensure' mkosi.extra/usr/bin/os-update | head -n1 | cut -d: -f1)
 dd_line=$(grep -n 'dd if="\$payload" of="\$dev"' mkosi.extra/usr/bin/os-update | head -n1 | cut -d: -f1)
 if [ -n "$esp_line" ] && [ -n "$dd_line" ] && [ "$esp_line" -lt "$dd_line" ]; then
     ok "os-update 先确认 ESP(第 $esp_line 行)再写根分区(第 $dd_line 行)"

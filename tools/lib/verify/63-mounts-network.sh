@@ -97,7 +97,8 @@ ok "preset 覆盖了四个 keel 单元"
 # swapfile:必须按 /data 的可用空间给自己设上限,而且不能留下半截文件。
 # 教训(2026-09,VM 实测):live 镜像的 data 分区只有 1 GiB,而默认大小按内存算(1.9G)
 # ⇒ dd 写到 ENOSPC,半个 swapfile 把 /data 填满 ⇒ /etc overlay 的 upper 再也写不进去。
-if grep -q 'df -P -B1 /data' mkosi.extra/usr/lib/keel/swapfile \
+if grep -q 'keel_data_fs_bytes avail' mkosi.extra/usr/lib/keel/swapfile \
+   && grep -q 'df -P -B1 /data' mkosi.extra/usr/lib/keel/lib.sh \
    && grep -q 'SWAP_NEW' mkosi.extra/usr/lib/keel/swapfile \
    && grep -q 'rm -f "$SWAP_NEW"' mkosi.extra/usr/lib/keel/swapfile \
    && grep -q 'MIN_SWAP' mkosi.extra/usr/lib/keel/swapfile; then

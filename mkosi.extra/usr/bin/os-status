@@ -265,7 +265,7 @@ fi
 hr
 echo "网络"
 mid="$(read_file /etc/machine-id)"
-if printf '%s' "$mid" | grep -qxE '[0-9a-f]{32}'; then
+if keel_machine_id_valid /etc/machine-id; then
     echo "  机器 ID    : ${mid}"
 else
     echo "  机器 ID    : 无效或缺失(${mid:-空})"
@@ -344,7 +344,7 @@ echo "swapfile 配置: ${swap_cfg:-留空 = min(内存, 8G) 且不小于 1G}"
 # 这一节的时候,而"能不能登录"必须能离线判断。
 # ---------------------------------------------------------------------------
 hr
-admin_sh="$(awk -F: '$1=="admin"{print $2}' /etc/shadow 2>/dev/null)" || admin_sh=""
+admin_sh="$(keel_shadow_field admin)" || admin_sh=""
 sudoers="/etc/sudoers.d/10-keel-admin"
 case "$admin_sh" in
     '')   admin_pw="未知(读不到 /etc/shadow?)" ;;
@@ -355,7 +355,7 @@ echo "登录账号     : admin(uid $(id -u admin 2>/dev/null || echo '不存在!
 echo "  admin 密码 : $admin_pw"
 echo "  sudo       : $([ -r "$sudoers" ] && echo "已配置($sudoers,需要密码)" || echo "**缺 $sudoers**")"
 echo "  root       : SSH 侧 PermitRootLogin no"
-root_sh="$(awk -F: '$1=="root"{print $2}' /etc/shadow 2>/dev/null)" || root_sh=""
+root_sh="$(keel_shadow_field root)" || root_sh=""
 case "$root_sh" in
     '!'*|'*'*) echo "               账号已锁定(shadow '$root_sh')⇒ 控制台也登不进去,这是预期" ;;
     \$*)       echo "               **账号未锁定** —— 不该出现,见决策 D21 / os-rescue --reset-etc" ;;

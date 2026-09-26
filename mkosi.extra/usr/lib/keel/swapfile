@@ -39,10 +39,11 @@ wanted_size_bytes() {
     esac
 }
 
-# /data 上真正可用的字节数(swapfile 与 /etc overlay 的 upper、journal 抢同一块盘)
+# /data 上真正可用的字节数(swapfile 与 /etc overlay 的 upper、journal 抢同一块盘)。
+# 查询本身在 lib.sh 的 keel_data_fs_bytes(与 os-update/firstboot/data-guard 共用一份)。
 data_avail_bytes() {
     local v
-    v=$(df -P -B1 /data 2>/dev/null | awk 'NR==2 {print $4}') || v=""
+    v=$(keel_data_fs_bytes avail) || v=""
     case "$v" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$v" ;; esac
 }
 

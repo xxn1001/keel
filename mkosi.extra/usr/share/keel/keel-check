@@ -40,6 +40,16 @@ rd()   { cat "$1" 2>/dev/null || true; }
 if ! command -v keel_cmdline_has >/dev/null 2>&1; then
     keel_cmdline_has() { tr -s '[:space:]' '\n' <"${2:-/proc/cmdline}" 2>/dev/null | grep -qx -e "$1"; }
 fi
+# 同理:lib.sh 没读到时,体检要用的 /data 空间查询与 shadow 取值也各兜一份最简实现。
+# keel-check **必须**在 lib.sh 缺失(镜像半坏)时仍能跑完并说真话,所以宁可在这里留
+# 私有兜底,也不让体检依赖一个新 helper(与上面 keel_cmdline_has 同一个理由)。
+# ⚠ 这两个兜底只实现体检用到的调用形状(单字段),别的调用方不走这里。
+if ! command -v keel_data_fs_bytes >/dev/null 2>&1; then
+    keel_data_fs_bytes() { df -P -B1 /data 2>/dev/null | awk -v c="$1" 'NR==2{print (c=="size"?$2:(c=="used"?$3:$4))}'; }
+fi
+if ! command -v keel_shadow_field >/dev/null 2>&1; then
+    keel_shadow_field() { awk -F: -v u="$1" '$1==u{print $2}' "${2:-/etc/shadow}" 2>/dev/null; }
+fi
 virt() { systemd-detect-virt 2>/dev/null || true; }
 # 只有明确回答"是某种虚拟机"才算虚拟机;读不到(systemd-detect-virt 缺失)按真机查 ——
 # 这条判据的用途是"别把宿主的事算到镜像头上",不是"尽量少报错"。
@@ -121,7 +131,9 @@ for d in keel var overlayfs home nix ota; do [ -e "/data/$d" ] || missing="$miss
 if [ -z "$missing" ]; then ok "/data 骨架完整(keel var overlayfs home nix ota)"; else no "/data 骨架缺:$missing(修复:sudo os-rescue --init-data)"; fi
 schema=$(rd /data/keel/schema-version)
 printf '  %-14s %s\n' "布局版本" "${schema:-未知}"
-read -r dsize davail < <(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $2, $4}')
+# /data 的 size / avail:走 lib.sh 的 keel_data_fs_bytes(读不到即空;兜底见文件头)
+dsize=$(keel_data_fs_bytes size)
+davail=$(keel_data_fs_bytes avail)
 if [ -n "${dsize:-}" ]; then
     dsize_h=$(awk -v b="$dsize" 'BEGIN{printf "%.1f GiB", b/1073741824}')
     davail_h=$(awk -v b="$davail" 'BEGIN{printf "%.1f GiB", b/1073741824}')
@@ -175,8 +187,8 @@ else
     no "admin 账号不存在"
 fi
 if isroot; then
-    a_hash=$(awk -F: '$1=="admin"{print $2}' /etc/shadow 2>/dev/null || true)
-    r_hash=$(awk -F: '$1=="root"{print $2}' /etc/shadow 2>/dev/null || true)
+    a_hash=$(keel_shadow_field admin)
+    r_hash=$(keel_shadow_field root)
     case "$a_hash" in
         \$*) ok "admin 有密码(初值是 -p / mkosi.rootpw 给的那个)" ;;
         "")  wn "读不到 admin 的 shadow 字段" ;;

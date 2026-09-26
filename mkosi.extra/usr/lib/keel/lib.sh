@@ -110,6 +110,42 @@ KEEL_ESP_MOUNTED=no
 # 没挂上时 KEEL_UKI_DIR 指向"本该挂的那里"(仅用于打印/报错,绝不拿它去读写)。
 KEEL_UKI_DIR="${KEEL_ESP:-$KEEL_ESP_MOUNT}/EFI/Linux"
 
+# ---------------------------------------------------------------------------
+# 确保 ESP 已经挂上,并把三个全局变量**就地**更新成"挂好之后"的值:
+#     KEEL_ESP / KEEL_UKI_DIR / KEEL_ESP_MOUNTED
+#
+# ⚠⚠ 必须当**普通命令**调用(如 `keel_esp_ensure die '…' '…'`),
+#      绝不允许写进 `$( )` 或管道 —— 那会在子 shell 里执行:挂载会成功,
+#      但调用方看到的 KEEL_ESP / KEEL_UKI_DIR / KEEL_ESP_MOUNTED 仍是旧值,
+#      后续所有 UKI 操作又落回空目录里(坑 #36 那种"每一步都成功、结果全落空")。
+#
+# 已经挂着时原样返回 0,绝不重复挂(理由见 keel_esp_mount)。
+# 成功新挂上时打印 "<mounted-log-prefix> <挂载点>"。
+# 为什么日志前缀由调用方给:三处调用点的文案本来就不同(逐字保留,别在重构里改口径)。
+#
+# 参数:
+#   $1 die|soft            die = 挂不上就 keel_die "$3";soft = 挂不上返回 1
+#   $2 mounted-log-prefix  成功挂上时日志里挂载点前面的那句
+#   $3 die-msg             die 模式下的报错原文
+# ---------------------------------------------------------------------------
+keel_esp_ensure() {
+    local mode=${1:-die} log_prefix=${2:-} die_msg=${3:-} mnt
+    if [ "$KEEL_ESP_MOUNTED" = yes ]; then
+        return 0
+    fi
+    if mnt=$(keel_esp_mount); then
+        KEEL_ESP=$mnt
+        KEEL_UKI_DIR="$mnt/EFI/Linux"
+        KEEL_ESP_MOUNTED=yes
+        keel_log "$log_prefix $mnt"
+        return 0
+    fi
+    case "$mode" in
+        soft) return 1 ;;
+        *) keel_die "$die_msg" ;;
+    esac
+}
+
 # 当前槽:只认 kernel cmdline 里的 root=PARTLABEL=root-<a|b> 这一个 token。
 # 槽身份完全靠 PARTLABEL(docs/traps.md 坑 #5),解析不出来就输出空。
 keel_current_slot() {
@@ -169,6 +205,45 @@ keel_state_set() {
     mv -f "$tmp" "$KEEL_STATE"
 }
 
+# ---------------------------------------------------------------------------
+# /data 文件系统的字节数(决策 D23:fetch 的预算、firstboot 的应急空间、
+# data-guard 的分级、os-status / keel-check 的报告都靠它)。
+#
+# 用法:keel_data_fs_bytes <size|used|avail> [...]
+#   按参数顺序输出字段(空格分隔),来自**同一个 df 快照**;读不到 /data 时
+#   **什么都不输出**(不是输出一行空字段),由调用方自己决定当 0 还是当"未知"。
+#   这样 `$(keel_data_fs_bytes avail)` 拿到空串、`read … < <(keel_data_fs_bytes …)`
+#   拿到 EOF,与各处原来的内联 df 逐字一致。
+#
+# 为什么读不到也不报错/不 die:调用方里既有 `set -e`(os-update / firstboot)也有
+#   `set -uo pipefail`(data-guard / keel-check),而"读不到"是预期内的事;
+#   返回值恒为 0,`set -e` 的调用方不会在赋值处意外退出。
+# 不做 cd,不碰任何全局。
+# ---------------------------------------------------------------------------
+keel_data_fs_bytes() {
+    local want out size used avail v first=1
+    for want in "$@"; do
+        case "$want" in
+            size|used|avail) ;;
+            *) return 2 ;;
+        esac
+    done
+    out=$(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $2, $3, $4}') || out=""
+    [ -n "$out" ] || return 0
+    size=""; used=""; avail=""
+    read -r size used avail <<<"$out" 2>/dev/null || true
+    out=""
+    for want in "$@"; do
+        case "$want" in
+            size)  v=$size ;;
+            used)  v=$used ;;
+            avail) v=$avail ;;
+        esac
+        if [ "$first" = 1 ]; then out=$v; first=0; else out="$out $v"; fi
+    done
+    printf '%s\n' "$out"
+}
+
 # "更新检查"的结论(v1.1 ③)。写进独立的状态文件,由 os-status / keel-check 呈现。
 #
 # 为什么要独立文件而不是塞进 /data/keel/state:那份 state 是**启动语义**的
@@ -222,6 +297,26 @@ keel_version() {
     printf '%s\n' "$v"
 }
 
+# /etc/machine-id(或指定文件)是不是有效的 32 位十六进制 ID —— 这份正则只在 lib.sh 里
+# 留一处,别让 mounts / os-status 各写一份(坑 #29:ID 无效 ⇒
+# networkd 的 DUID 拿到 -ENOPKG ⇒ DHCP/IPv6/DNSSEC 一起静默失效)。
+# 读不到、内容不是恰好一行 32 位十六进制都返回非 0。
+keel_machine_id_valid() {
+    local f=${1:-/etc/machine-id}
+    [ -r "$f" ] && grep -qxE '[0-9a-f]{32}' "$f" 2>/dev/null
+}
+
+# /etc/shadow 里某个账号的密码字段(第 2 列)。账号不存在、文件读不到都输出空串 ——
+# 调用方(os-status / keel-check / selftest)全部按"未知"处理。
+# 不用 getent:系统半坏时它未必可用,而这里只需要一个字段。
+keel_shadow_field() {
+    local user=$1 file=${2:-/etc/shadow} v=""
+    if [ -r "$file" ]; then
+        v=$(awk -F: -v u="$user" '$1==u{print $2}' "$file" 2>/dev/null) || v=""
+    fi
+    printf '%s\n' "$v"
+}
+
 keel_slot_device() { printf '/dev/disk/by-partlabel/root-%s' "$1"; }
 keel_uki_path() { printf '%s/keel-%s.efi' "$KEEL_UKI_DIR" "$1"; }
 
@@ -251,7 +346,10 @@ keel_find_uki() {
     ls -1 "$KEEL_UKI_DIR/keel-$1"*.efi 2>/dev/null | head -n1
 }
 
-# 需要 root 的操作统一用这个检查
+# 需要 root 的操作统一用这个检查。
+# ⚠ 消息与原先 os-update / os-install / os-rescue 里各自那份 need_root() **逐字一致**
+#   (那三份完全相同,是操作者实际看到的那句);keel_require_root 此前没有调用点,
+#   它带的旧文案不再对外输出,所以在这里对齐成真实可见的那句。
 keel_require_root() {
-    [ "$(id -u)" = 0 ] || keel_die "需要 root 权限(试试 sudo)"
+    [ "$(id -u)" = 0 ] || keel_die "需要 root 权限,请用 sudo 重新执行"
 }

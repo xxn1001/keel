@@ -33,8 +33,9 @@ CONSUMED="$KEEL_STATE_DIR/reserve-consumed"
 
 mb() { echo "$(($1 / 1048576)) MiB"; }
 
-# df -P -B1 的第二行:Filesystem 1B-blocks Used Available Capacity Mounted
-read -r size used avail < <(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $2, $3, $4}')
+# size/used/avail 来自 lib.sh 的 keel_data_fs_bytes(一个 df -P -B1 /data 快照;
+# 读不到就什么都不输出,下面按"读不到"处理)
+read -r size used avail < <(keel_data_fs_bytes size used avail)
 case "${size:-}" in
     ''|*[!0-9]*) keel_log "读不到 /data 的空间信息(df 失败或 /data 没挂),跳过"; exit 0 ;;
 esac
@@ -94,7 +95,7 @@ else
 fi
 
 # 回收之后重新量一次,写进状态文件给 os-status 看
-read -r _ _ avail2 < <(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $2, $3, $4}')
+read -r _ _ avail2 < <(keel_data_fs_bytes size used avail)
 [ -n "${avail2:-}" ] || avail2="$avail"
 # /data/keel 正常一定存在(骨架 + keel-firstboot),但状态报告是"系统半坏时也要能用"的
 # 东西 ⇒ 缺了就自己建,别让一个重定向失败毁掉整份报告(lib.sh 里 keel_state_set 同理)。

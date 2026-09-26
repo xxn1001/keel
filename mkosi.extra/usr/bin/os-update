@@ -31,17 +31,11 @@ die_usage() {
     keel_die "用法:$*"
 }
 
-need_root() {
-    # 写分区、改 ESP、写 /data 状态都需要 root;提前失败比写到一半失败干净得多
-    if [ "$(id -u)" != 0 ]; then
-        keel_die "需要 root 权限,请用 sudo 重新执行"
-    fi
-}
-
-# /data 上的可用字节数(读不到就当 0 —— 宁可不下载,也不要把 /data 写满)
+# /data 上的可用字节数(读不到就当 0 —— 宁可不下载,也不要把 /data 写满)。
+# 查询本身在 lib.sh 的 keel_data_fs_bytes(与 swapfile/firstboot/data-guard 共用一份)。
 free_bytes() {
     local v
-    v="$(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $4}')" || v=""
+    v="$(keel_data_fs_bytes avail)" || v=""
     case "${v:-}" in ''|*[!0-9]*) v=0 ;; esac
     printf '%s' "$v"
 }
@@ -350,16 +344,9 @@ cmd_stage() {
     # ⇒ 一旦切过去就是"新内核配旧根"的反面(旧内核配新根),直接违反不变量 3,
     # 而且失败点离原因很远。所以先挂/先检查,再动分区。
     # -----------------------------------------------------------------------
-    if [ "$KEEL_ESP_MOUNTED" != yes ]; then
-        if mnt=$(keel_esp_mount); then
-            keel_log "ESP 原来没挂上,已自动挂到 $mnt"
-            KEEL_ESP=$mnt
-            KEEL_UKI_DIR="$mnt/EFI/Linux"
-            KEEL_ESP_MOUNTED=yes
-        else
-            keel_die "ESP(PARTNAME=esp)没挂上,也挂不起来 —— 拒绝写分区:没有可写的 ESP 就写不进新 UKI,而只换根分区会让槽里的内核与根不配对(不变量 3)。先检查 lsblk -o NAME,SIZE,PARTLABEL 有没有 esp 分区,再跑 os-rescue --repair-boot"
-        fi
-    fi
+    # ⚠ keel_esp_ensure 必须当普通命令调用(它会就地更新 KEEL_ESP / KEEL_UKI_DIR /
+    #   KEEL_ESP_MOUNTED),不能写进 $( ) 或管道(理由见 lib.sh 里的注释)。
+    keel_esp_ensure die 'ESP 原来没挂上,已自动挂到' "ESP(PARTNAME=esp)没挂上,也挂不起来 —— 拒绝写分区:没有可写的 ESP 就写不进新 UKI,而只换根分区会让槽里的内核与根不配对(不变量 3)。先检查 lsblk -o NAME,SIZE,PARTLABEL 有没有 esp 分区,再跑 os-rescue --repair-boot"
 
     # -----------------------------------------------------------------------
     # ESP **空间**也要在写根分区之前确认(不变量 10 的精神,理由同上一段)
@@ -565,7 +552,9 @@ cmd_gc() {
 # ---------------------------------------------------------------------------
 # 参数解析与公共上下文
 # ---------------------------------------------------------------------------
-need_root
+# 写分区、改 ESP、写 /data 状态都需要 root;提前失败比写到一半失败干净得多
+# (检查在 lib.sh 的 keel_require_root,消息不变)
+keel_require_root
 [ "$#" -ge 1 ] || die_usage "os-update <check|fetch|stage|switch|rollback|gc> [选项]"
 
 CMD="$1"

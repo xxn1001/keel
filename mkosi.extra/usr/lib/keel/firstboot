@@ -107,7 +107,7 @@ if [ -n "$vol" ] && [ -b "$vol" ]; then
     # `df` 看到的 Size 天然比设备小 1~2%(2026-09 实测 471 MiB / 27 GiB ≈ 1.7%),
     # 所以只在"文件系统比分区小 5% 以上"时才认为真没扩到位。
     part_bytes=$(blockdev --getsize64 "$vol" 2>/dev/null) || part_bytes=""
-    fs_bytes=$(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $2}') || fs_bytes=""
+    fs_bytes=$(keel_data_fs_bytes size) || fs_bytes=""
     keel_log "data 尺寸:分区 ${part_bytes:-未知} 字节 / 文件系统 ${fs_bytes:-未知} 字节"
     if [ -n "$part_bytes" ] && [ -n "$fs_bytes" ] &&
        [ "$fs_bytes" -lt $(( part_bytes - part_bytes / 20 )) ] 2>/dev/null; then
@@ -129,7 +129,7 @@ fi
 # ---------------------------------------------------------------------------
 RESERVE="$KEEL_STATE_DIR/.reserve"
 if [ ! -e "$RESERVE" ]; then
-    read -r dsize davail < <(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $2, $4}')
+    read -r dsize davail < <(keel_data_fs_bytes size avail)
     case "${dsize:-}" in ''|*[!0-9]*) dsize=0 ;; esac
     case "${davail:-}" in ''|*[!0-9]*) davail=0 ;; esac
     if [ "$dsize" -ge $((4 * 1024 * 1024 * 1024)) ] && [ "$davail" -ge $((1024 * 1024 * 1024)) ]; then

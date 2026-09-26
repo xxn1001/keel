@@ -50,8 +50,8 @@ else
 fi
 echo "--- 登录账号(决策 D21:admin 是唯一交互账号,root 锁定)"
 echo "  id admin   : $(id admin 2>&1)"
-echo "  admin shadow 字段: $(awk -F: '$1=="admin"{print $2}' /etc/shadow 2>/dev/null)"
-echo "  root  shadow 字段: $(awk -F: '$1=="root"{print $2}' /etc/shadow 2>/dev/null)"
+echo "  admin shadow 字段: $(keel_shadow_field admin)"
+echo "  root  shadow 字段: $(keel_shadow_field root)"
 ls -l /etc/sudoers.d/10-keel-admin 2>&1 | sed 's/^/  /'
 echo "  sshd drop-in : $(grep -h '^PermitRootLogin' /etc/ssh/sshd_config.d/*.conf 2>/dev/null)"
 echo "  credstore 残留(root 密码 credential 必须已被删): $(ls /usr/lib/credstore/ 2>&1 | tr '\n' ' ')"

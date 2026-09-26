@@ -46,12 +46,6 @@ usage() {
 EOF
 }
 
-need_root() {
-    if [ "$(id -u)" != 0 ]; then
-        keel_die "需要 root 权限,请用 sudo 重新执行"
-    fi
-}
-
 # ---------------------------------------------------------------------------
 # --init-data
 #
@@ -196,7 +190,7 @@ do_grow_data() {
         keel_die "resize2fs $data_dev 失败:$rs_out(e2fsprogs 装了吗?/data 是 ext4 吗?)"
     fi
     keel_log "resize2fs:$(printf '%s' "$rs_out" | tr '\n' ' ')"
-    echo "现在的大小:分区 $(blockdev --getsize64 "$data_dev" 2>/dev/null) 字节 / 文件系统 $(df -P -B1 /data 2>/dev/null | awk 'NR==2{print $2}') 字节"
+    echo "现在的大小:分区 $(blockdev --getsize64 "$data_dev" 2>/dev/null) 字节 / 文件系统 $(keel_data_fs_bytes size) 字节"
     echo "(文件系统比分区小 1~2% 是 ext4 元数据/保留块的正常开销,不是没扩到位)"
 
 }
@@ -260,21 +254,14 @@ do_mark_bad() {
 # 还能起来;进来了就用这条命令把引导器与启动项重新装好(docs/architecture.md §5.2)。
 # ---------------------------------------------------------------------------
 do_repair_boot() {
-    local slot counted f mnt
+    local slot counted f
     slot="$(keel_current_slot 2>/dev/null)" || slot=""
 
     # ESP 没挂上就先挂 —— 这条命令本来就有"修引导"的职责,而 ESP 没挂上正是
     # 最常见的那种"引导看着没事、其实更新/确认全废"的状态(坑 #36)
-    if [ "$KEEL_ESP_MOUNTED" != yes ]; then
-        if mnt=$(keel_esp_mount); then
-            keel_log "ESP 原来没挂上,已挂到 $mnt"
-            KEEL_ESP=$mnt
-            KEEL_UKI_DIR="$mnt/EFI/Linux"
-            KEEL_ESP_MOUNTED=yes
-        else
-            keel_die "找不到/挂不上 PARTNAME=esp 的分区:先 lsblk -o NAME,SIZE,PARTLABEL 看有没有 esp;分区在但挂载失败就看 dmesg | tail 里 vfat 的报错(比如 FAT 损坏)"
-        fi
-    fi
+    # ⚠ keel_esp_ensure 必须当普通命令调用(它会就地更新 KEEL_ESP / KEEL_UKI_DIR /
+    #   KEEL_ESP_MOUNTED),不能写进 $( ) 或管道(理由见 lib.sh 里的注释)。
+    keel_esp_ensure die 'ESP 原来没挂上,已挂到' "找不到/挂不上 PARTNAME=esp 的分区:先 lsblk -o NAME,SIZE,PARTLABEL 看有没有 esp;分区在但挂载失败就看 dmesg | tail 里 vfat 的报错(比如 FAT 损坏)"
 
     if bootctl install; then
         keel_log "bootctl install 完成(systemd-boot + fallback BOOTX64.EFI + NVRAM 启动项)"
@@ -338,17 +325,10 @@ list_uki_entries() {
 }
 
 do_clean_esp() {
-    local pending f base s canonical before after mnt
-    if [ "$KEEL_ESP_MOUNTED" != yes ]; then
-        if mnt=$(keel_esp_mount); then
-            KEEL_ESP=$mnt
-            KEEL_UKI_DIR="$mnt/EFI/Linux"
-            KEEL_ESP_MOUNTED=yes
-            keel_log "ESP 原来没挂上,已挂到 $mnt"
-        else
-            keel_die "找不到/挂不上 PARTNAME=esp 的分区:先 lsblk -o NAME,SIZE,PARTLABEL 看有没有 esp"
-        fi
-    fi
+    local pending f base s canonical before after
+    # ⚠ keel_esp_ensure 必须当普通命令调用(它会就地更新 KEEL_ESP / KEEL_UKI_DIR /
+    #   KEEL_ESP_MOUNTED),不能写进 $( ) 或管道(理由见 lib.sh 里的注释)。
+    keel_esp_ensure die 'ESP 原来没挂上,已挂到' "找不到/挂不上 PARTNAME=esp 的分区:先 lsblk -o NAME,SIZE,PARTLABEL 看有没有 esp"
     if [ ! -d "$KEEL_UKI_DIR" ]; then
         keel_log "$KEEL_UKI_DIR 不存在 —— 没什么可清的"
         return 0
@@ -395,7 +375,8 @@ do_clean_esp() {
 # ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
-need_root
+# 修复动作要 root;检查在 lib.sh 的 keel_require_root,消息不变
+keel_require_root
 [ "$#" -ge 1 ] || {
     usage
     exit 1

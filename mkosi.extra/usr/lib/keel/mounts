@@ -182,9 +182,9 @@ fi
 # 把 /etc overlay 提前到 initrd 里挂(PID1 一开始就读到持久化的 ID),
 # 或者 cmdline 里加 `systemd.machine_id=firmware`(用硬件 UUID,代价是依赖 DMI 可靠)。
 # ---------------------------------------------------------------------------
-if ! grep -qxE '[0-9a-f]{32}' /etc/machine-id 2>/dev/null; then
+if ! keel_machine_id_valid /etc/machine-id; then
     # ① PID1 本次启动的 ID(它是首启时写到 /run 的,不是垃圾文件:/run 是 tmpfs)
-    if grep -qxE '[0-9a-f]{32}' /run/machine-id 2>/dev/null && cat /run/machine-id >/etc/machine-id 2>/dev/null; then
+    if keel_machine_id_valid /run/machine-id && cat /run/machine-id >/etc/machine-id 2>/dev/null; then
         keel_log "已固化 machine-id(取自 PID1 本次启动使用的 ID)"
     else
         # ② 清空 + 让官方工具生成(空文件时它才会真的干活)
@@ -193,7 +193,7 @@ if ! grep -qxE '[0-9a-f]{32}' /etc/machine-id 2>/dev/null; then
     fi
     chmod 0444 /etc/machine-id 2>/dev/null || true
 
-    if grep -qxE '[0-9a-f]{32}' /etc/machine-id 2>/dev/null; then
+    if keel_machine_id_valid /etc/machine-id; then
         keel_log "machine-id = $(cat /etc/machine-id)"
     else
         keel_log "警告:/etc/machine-id 仍然不是有效 ID(内容:$(cat /etc/machine-id 2>/dev/null))——"

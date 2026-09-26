@@ -40,12 +40,6 @@ usage() {
 EOF
 }
 
-need_root() {
-    if [ "$(id -u)" != 0 ]; then
-        keel_die "需要 root 权限,请用 sudo 重新执行"
-    fi
-}
-
 confirm() {
     # 非交互(没有 tty)时不能等输入:直接失败,避免"在管道里静默擦盘"
     if [ ! -t 0 ]; then
@@ -115,7 +109,9 @@ find_part() {
 # ---------------------------------------------------------------------------
 # 参数与校验
 # ---------------------------------------------------------------------------
-need_root
+# 整盘擦除需要 root;提前失败比擦到一半失败干净得多
+# (检查在 lib.sh 的 keel_require_root,消息不变)
+keel_require_root
 
 # live 环境自己的槽与版本:装到目标盘后,首启的 pending 判定要知道"装的是哪一版"
 CURRENT_SLOT="$(keel_current_slot 2>/dev/null)" || CURRENT_SLOT=""
@@ -340,15 +336,12 @@ trap - EXIT
 # 盘的 A 槽标签同名(§3.3 / docs/traps.md 坑 #5)。
 # ---------------------------------------------------------------------------
 # live 环境里的 ESP 必须真的挂上(坑 #36):没挂就先挂 —— 失败在"复制不到 UKI"上,
-# 总好过装出一块"看着装好了、其实起不来"的盘
-if [ "$KEEL_ESP_MOUNTED" != yes ]; then
-    if esp_mnt=$(keel_esp_mount); then
-        keel_log "live ESP 原来没挂上,已挂到 $esp_mnt"
-        KEEL_ESP=$esp_mnt
-        KEEL_UKI_DIR="$esp_mnt/EFI/Linux"
-        KEEL_ESP_MOUNTED=yes
-    fi
-fi
+# 总好过装出一块"看着装好了、其实起不来"的盘。
+# soft 模式:挂不上**不在这里 die**(后面 [ -d "$KEEL_ESP" ] 的报错才是失败点),
+# 在 set -e 下必须接 `|| true`,否则 os-install 会在这个预期可失败的探测上直接退出。
+# ⚠ keel_esp_ensure 必须当普通命令调用(它会就地更新 KEEL_ESP / KEEL_UKI_DIR /
+#   KEEL_ESP_MOUNTED),不能写进 $( ) 或管道(理由见 lib.sh 里的注释)。
+keel_esp_ensure soft 'live ESP 原来没挂上,已挂到' || true
 ESP_MNT="$(mktemp -d /tmp/keel-install.XXXXXX)"
 mount -t vfat -o umask=0077 "$part_esp" "$ESP_MNT" || keel_die "挂载 ${part_esp} 失败"
 if [ -d "$KEEL_ESP" ]; then
