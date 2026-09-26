@@ -431,3 +431,36 @@
   这一点明确写在 `docs/roadmap.md` 的 v1 收尾清单里,不许当成已验证。
 - **代价**:控制台上不再有内核的 info 级进度;要看就 `dmesg`、`journalctl -k` 或临时调回 7。
   `/data` 写满时的警告(warning)仍然会出现在控制台上 —— 那正是我们要保留的部分。
+
+## D28 `/etc` 继续用 overlayfs,**否决**"`/usr/etc` + `/data/etc` 三方合并"(2026-09-26)
+
+- **背景(提案)**:有人提议照 Fedora CoreOS / rpm-ostree 的做法,把镜像默认 `/etc` 生成到
+  `/usr/etc`,启动时把 `/data/etc` bind 到 `/etc`,按"用户改过的用用户的、没改过的用 `/usr/etc`"
+  做三方合并,以此消掉 overlayfs 带来的坑。完整评估见 `docs/roadmap.md` §2.10。
+- **决策**:**不做(废案)**;`/etc` 继续用 `lower = 当前部署的 /etc` + `upper = /data/overlayfs/etc/upper`
+  的 overlayfs(D5 不变)。
+- **理由**:
+  1. **overlayfs 已经提供了那条合并语义** —— 文件不在 upper 就读 lower 的**当前版本**默认值。
+     提案的收益不在"合并",而在"去掉 overlay 这个机制",而它并不解决最贵的坑。
+  2. **提案按字面实现会重蹈 D5 否决的坑**:bind 挂载没有 lower,未改动的默认值必须被 materialize;
+     "装机时拷一份、以后缺什么补什么"就是一次性快照,新版本对默认值的改动会被永久遮蔽。
+     真做三方合并需要 base(= 上一版部署的默认值)⇒ **要新写一个合并执行器**(roadmap 2.8 那件事),
+     而且**不可逆**,回滚语义会被破坏。
+  3. **实测:它一个收益案例都找不到。** 在一台走过完整生命周期(ext4 装机 → v1 `os-update` 迁移到
+     erofs → 重启)的机器上,overlay upper 里只有 **11 个文件**:
+     `/.updated /machine-id /.pwd.lock /ld.so.cache /kernel/entry-token /ssh/ssh_host_*`。
+     **`passwd`/`group`/`shadow` 都不在里面**(`/etc/passwd` 仍是镜像的 34 行)。
+     即 upper 里只有"机器专属的秘密"(永远不该被默认值替换)与"会被重新生成的缓存"
+     (`ld.so.cache` 每次启动由 `ldconfig.service` 重建)。
+  4. **它也不解决那四条最贵的坑**:#24(环形依赖)、#29/D19(machine-id)、#37(不变量 10)、
+     #61(单元顺序)的根因都是"可写 `/etc` 依赖 `/data`、且挂载太晚(PID1 已读过 `/etc`)"。
+     换 bind 一模一样。**真正的解法是 D19 方案 A(把 `/etc` 挂载提到 initrd)**,已排 v2.0。
+- **否决的替代方案**:
+  - 保留 overlay、只把 `lowerdir` 从 `/etc` 换成 `/usr/etc`:功能收益接近零(默认值本来就在只读
+    镜像里),只在将来做 dm-verity、想让"默认值"与"机器状态"在镜像里物理分开时再考虑;
+  - 用通用三方合并去治"账号数据库被整文件遮蔽":**治不了** —— 那需要按行合并 passwd/group
+    (ostree 是专门特判的)。对症的便宜做法是用 `systemd-sysusers.d` 声明基底系统账号
+    (见 `docs/roadmap.md` §3.5,低优先级)。
+- **什么情况下重新考虑**:① 真要做 dm-verity / measured boot,并且要求"镜像里的 `/etc` 默认值"
+  与"机器状态"在存储上物理分离;② overlayfs 出现我们真正踩到的功能性缺陷(O_TMPFILE、
+  跨目录 rename、特定工具不兼容 —— 目前一个都没遇到)。
