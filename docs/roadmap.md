@@ -4,6 +4,26 @@
 > v1 的已知限制写在 [`release-notes-v1.md`](release-notes-v1.md)(并随构建进入 `dist/keel-<版本>/`)。
 > 决策与理由见 [`decisions.md`](decisions.md),踩过的坑见 [`AGENTS.md`](../AGENTS.md) §3。
 
+## 0. 版本计划(v1.1 / v1.2 / v2.0,2026-09 拍板)
+
+原则:**先把功能/运维的补齐(v1.1),再做安全(v1.2),最后动结构(v2.0)** —— 结构一动就要迁移,
+而迁移执行器本身还没写,所以结构类的事必须排在最后、并且互相依赖。
+
+| 版本 | 主题 | 内容(对应下面的条目) | 粗估 |
+|---|---|---|---|
+| **v1.1** | 功能与运维 | ESP 余量 + `.failed` 条目清理;更新载荷**压缩**(`mkosi.conf` 的 `CompressOutput=` 目前是 `no` → `zstd`,顺带把 13 GiB 砍到几 GiB);更新**检查**(默认只 check + 通知,**不自动装**);`os-install` 两个 TODO(2.7);原生/rootless 构建实测并写进文档 | ~1 周 |
+| **v1.2** | 安全 | **更新签名**(1.1)→ **Secure Boot**(1.2,含 UKI 签名、自己的密钥库、解封 `pcrlock`);initrd 冻结修复(3.0) | ~2–3 周 |
+| **v2.0** | 结构与可信 | **迁移执行器**(2.8,先做,它是下面一切的前提)→ **erofs 只读根**(D2 的升级 A)→ **`/data` 加密 + TPM 封印**(1.3)+ **dm-verity**(1.4)+ **早期启动重排**(把 `/etc` overlay 提到 initrd,见 D19 方案 A)→ 可选:`systemd-sysupdate` 底层(2.5)、`cache` 分区(2.4)、`server` profile(2.2) | ~1–2 月 |
+| 不排期 | 等上游 / 可选 | "连续三次"试用语义(2.5b,等 Debian 的 systemd ≥ 261)、`desktop` profile(2.1)、`/usr/lib/modules` 外置(2.3)、`machines/`(3.4) | —— |
+
+两条**顺序上的硬约束**(别调换):
+
+1. **自动更新必须排在签名之后**:v1.1 的定时器只做"检查 + 通知";等 v1.2 有了签名,才谈得上
+   自动 fetch/stage —— 否则等于让机器自动从"只靠 sha256"的源取货。
+2. **erofs 可以提前,verity 不能单独做**:erofs 是独立改动(而且顺手解决载荷过大),所以 v1.1 尾巴
+   就可以上;dm-verity 的收益依赖"roothash/签名本身被信任"(Secure Boot)与"`/etc` 不可变"
+   (D19 方案 A/B),必须和 v1.2/v2.0 那两件事合成一轮。
+
 ## 1. 安全(目前 v1 明确不做)
 
 | # | 事项 | 现在为什么不做 | 动手时要一起改什么 |
@@ -27,15 +47,15 @@
 | 2.7 | **`os-install` 的两个 TODO** | ① 根文件系统实际占用超过目标分区尺寸时的截断检查;② `keel-confirm` 的 pending/running_slot 边界 |
 | 2.8 | **`/data` schema 迁移执行器**(v1 明确不做) | v1 的行为是:带 `migrate=` 的载荷被 `fetch` **拒绝**(坑 #48),布局冻结在 schema 1。要做的时候:① 定义 manifest 的迁移语法(只增不破的 mkdir/权限/文件);② 想清楚 `schema`(载荷要求的布局版本)与 `schema_min`(载荷还能读的最低版本)的区别 —— 现在 `fetch` 那句 `schema > 本机 ⇒ 拒绝` 与"由旧系统迁移"的语义是**互相矛盾**的,得先理顺;③ 在 VM 里按 §4 演练(含**回滚**到旧版本后旧系统仍能读 /data);④ 第一次真实迁移前不要动布局 |
 
-## 2.95 v1 打包前必须复核的两件事(代码已改,效果待构建验证)
+## 2.95 已复核:控制台日志级别与日志落盘(D27 / 坑 #61)
 
-| # | 事项 | 怎么验 |
+| # | 事项 | 结果(2026-09-25,项目所有者在自己机器上实跑构建 + 首启) |
 |---|---|---|
-| V1-a | `kernel.printk = 4 4 1 7` 与 `keel-mounts` 的三个 `Before=` 都在**构建产物**里 | 构建后在假镜像树/`debugfs` 里回读文件;真机或 VM 首启后 `cat /proc/sys/kernel/printk` 应为 `4 4 1 7` |
-| V1-b | **日志落盘**(顺序修复的真正目的) | 重启一次,`journalctl --list-boots` 必须能看到**上一个启动**;`ls /var/log/journal/*/` 里有 `.journal`;`journalctl -b -1` 能读上一次的日志 |
+| V1-a | `kernel.printk = 4 4 1 7` 与 `keel-mounts` 的三个 `Before=` 在产物与运行系统里 | ✅ 产物 `slot-a.root.raw` 里两份文件都在(drop-in 权限 0644);运行中 `cat /proc/sys/kernel/printk` = `4 4 1 7` |
+| V1-b | **日志落盘** | ✅ `/var/log/journal/*/` 有 `system.journal` + `user-1000.journal`;`journalctl --list-boots` 能看到 **-2 / -1 / 0** 三次启动 |
 
-> 这两条不许写成"已验证":2026-09 只验到了**机制**(手工 `sysctl -w` / `journalctl --flush`
-> 能立刻达到预期效果),端到端的"启动顺序生效"要等下一次构建 + 首启。
+> 这两条是 v1 标签之前的最后一块证据;机制层面(手工 `sysctl -w` / `journalctl --flush`)与
+> 端到端(构建产物 + 首启)现在都验过了。
 
 ## 3. 顺手要还的技术债
 
