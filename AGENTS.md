@@ -173,6 +173,34 @@ cat /etc/os-release        # 看 ID / ID_LIKE —— 判的是**构建宿主**,�
 `/etc/os-release`),报错时直接告诉你"该走哪条路"。**别在文档里写死"用 nix-shell …"这类
 只对某一台机器成立的命令** —— 要写就写成"宿主是 X 时用 Y"。
 
+### 开发/验证环境(2026-09 起):一台 **Debian 13** 的 incus 虚拟机
+
+构建与验证**不再借用开发者的个人电脑**。现在的形态:
+
+| 项 | 值 |
+|---|---|
+| 宿主 | 一台简易服务器(NixOS,4 核 / 8 GiB,**不是**将来要装 keel 的那台) |
+| 开发环境 | incus **虚拟机**(不是 LXC 容器):Debian 13(trixie),共享 4 核、6 GiB 内存、**盘 80–90 GiB**(宿主总共只有 100 GB) |
+| 关键前提 | **嵌套虚拟化打开**(`/dev/kvm` 在 VM 里可用)—— `mkosi vm` 与 libvirt 两条路都靠它 |
+| 怎么干活 | agent 直接 SSH 进这台 VM 构建/起 VM/跑演练;代码走 GitHub(仓库公开 ⇒ VM 里匿名 `git clone` / `git pull` 即可) |
+
+**为什么是 Debian 13**:和目标镜像、构建容器同一代;Debian 仓库里的 **mkosi 是 25.3**,
+正好与容器里那份同版本 ⇒ "原生路径 vs 容器路径"是干净的对照实验(§"两条构建路径必须对等")。
+
+**这台 VM 上的三条纪律**(磁盘只有 80–90 GiB):
+
+1. **一次只跑一件重活**:一次完整构建(3 个 mkosi profile)在 4 个共享核上大概 20–35 分钟,
+   期间不要同时起 VM;内存 6 GiB 也不允许"构建 + guest"并行。
+2. **产物要勤清**:一次构建会产出 `mkosi.output/`(约 60 GiB **逻辑**,稀疏文件实占小得多)和
+   `dist/keel-<版本>/`(约 27 GiB 逻辑)。规矩是:**只留一份 `dist/`**,复制完 dist 后
+   `rm -f mkosi.output/keel-slot-*`(保留 `keel.raw` 给 `mkosi vm` 用),`mkosi.cache/`、
+   `mkosi.pkgcache/`、`mkosi.tools/` 不要删(它们省时间)。
+3. **演练前先腾地方**:演练会让 guest 真写真占 13 GiB 载荷(现形态)⇒ 先清旧 `dist/` 再跑。
+   等 **v1.1 的 erofs** 落地后,这一条的要求会宽很多(载荷预计降到 1.5–2 GiB)。
+
+**这不改变任何不变量**:宿主与开发环境只是"构建机",keel 仍然只跑在目标机(将来的服务器 /
+现在的笔记本)上;`docs/release-notes-v1.md` 里"原生 FHS 构建路径尚未实战"那条,正是这台 VM 要补的。
+
 ### 两条构建路径必须**对等**(CLI 只写一份)
 
 keel 有两条构建路径,它们是**同一个东西的两个入口**,不是两个项目:
@@ -311,6 +339,10 @@ sudo tools/burn.sh /dev/nvme0n1
       发布说明与**已知限制 22 条**在 [`docs/release-notes-v1.md`](docs/release-notes-v1.md),
       v1 之后的计划在 [`docs/roadmap.md`](docs/roadmap.md)。打标签时的实测证据写进了标签正文
       (装机 / 更新 / 回滚 / 坏槽三类兜底 / 救援五路径 / 写满 / 日志落盘 / 控制台日志级别)。
+- [x] **开发/验证环境迁到独立 VM(2026-09)**:incus 虚拟机、Debian 13、共享 4 核 / 6 GiB /
+      盘 80–90 GiB、嵌套虚拟化(见 §2 那一节)。宿主是临时服务器,agent 直接在里面构建与验证;
+      代码走 GitHub。**v1.1 第一件任务是 erofs 只读根**(理由:磁盘最紧,erofs 一次压三处,见
+      `docs/roadmap.md` §0/§2.9)
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 

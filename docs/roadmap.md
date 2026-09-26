@@ -11,18 +11,26 @@
 
 | 版本 | 主题 | 内容(对应下面的条目) | 粗估 |
 |---|---|---|---|
-| **v1.1** | 功能与运维 | ESP 余量 + `.failed` 条目清理;更新载荷**压缩**(`mkosi.conf` 的 `CompressOutput=` 目前是 `no` → `zstd`,顺带把 13 GiB 砍到几 GiB);更新**检查**(默认只 check + 通知,**不自动装**);`os-install` 两个 TODO(2.7);原生/rootless 构建实测并写进文档 | ~1 周 |
-| **v1.2** | 安全 | **更新签名**(1.1)→ **Secure Boot**(1.2,含 UKI 签名、自己的密钥库、解封 `pcrlock`);initrd 冻结修复(3.0) | ~2–3 周 |
-| **v2.0** | 结构与可信 | **迁移执行器**(2.8,先做,它是下面一切的前提)→ **erofs 只读根**(D2 的升级 A)→ **`/data` 加密 + TPM 封印**(1.3)+ **dm-verity**(1.4)+ **早期启动重排**(把 `/etc` overlay 提到 initrd,见 D19 方案 A)→ 可选:`systemd-sysupdate` 底层(2.5)、`cache` 分区(2.4)、`server` profile(2.2) | ~1–2 月 |
+| **v1.1** | 功能与运维 | **① erofs 只读根(2.9,第一件:载荷 ~6 GiB → ~1.5–2 GiB,`dist/`、演练 qcow2 增长一起变小)** → ② ESP 余量 + `.failed` 条目清理 → ③ 更新**检查**(默认只 check + 通知,**不自动装**)→ ④ `os-install` 两个 TODO(2.7)→ ⑤ 演练/开发的磁盘占用收紧(live 镜像 truncate 尺寸可配)→ ⑥ 原生/rootless 构建实测并写进文档 | 不赶时间,分多次 |
+| **v1.2** | 安全 | **更新签名**(1.1)→ **Secure Boot**(1.2,含 UKI 签名、自己的密钥库、解封 `pcrlock`);initrd 冻结修复(3.0) | —— |
+| **v2.0** | 结构与可信 | **迁移执行器**(2.8,先做,它是下面一切的前提)→ **`/data` 加密 + TPM 封印**(1.3)+ **dm-verity**(1.4)+ **早期启动重排**(把 `/etc` overlay 提到 initrd,见 D19 方案 A)→ 可选:`systemd-sysupdate` 底层(2.5)、`cache` 分区(2.4)、`server` profile(2.2) | —— |
 | 不排期 | 等上游 / 可选 | "连续三次"试用语义(2.5b,等 Debian 的 systemd ≥ 261)、`desktop` profile(2.1)、`/usr/lib/modules` 外置(2.3)、`machines/`(3.4) | —— |
 
-两条**顺序上的硬约束**(别调换):
+**为什么 erofs 排在第一位**(2026-09 调整):验证用的服务器盘一共只有 100 GB,分给开发 VM 的是
+80–90 GB,而**当前形态一次构建就会产出 60 GiB 逻辑(`mkosi.output/`)+ 27 GiB 逻辑(`dist/`)**、
+演练时 guest 还会真写真占 13 GiB 载荷 —— 磁盘是这套流程里最紧的资源。erofs 一次改动同时缓解三处:
+根载荷(6 GiB → 约 1.5–2 GiB)、`dist/` 与 `mkosi.output/`、演练里 qcow2 的增长。
+**载荷压缩(`CompressOutput=zstd`)因此降级成备选**:如果 erofs 那条路被某个前置挡住,再回退到
+"先压缩、后换格式"。
+
+三条**顺序上的硬约束**(别调换):
 
 1. **自动更新必须排在签名之后**:v1.1 的定时器只做"检查 + 通知";等 v1.2 有了签名,才谈得上
    自动 fetch/stage —— 否则等于让机器自动从"只靠 sha256"的源取货。
-2. **erofs 可以提前,verity 不能单独做**:erofs 是独立改动(而且顺手解决载荷过大),所以 v1.1 尾巴
-   就可以上;dm-verity 的收益依赖"roothash/签名本身被信任"(Secure Boot)与"`/etc` 不可变"
-   (D19 方案 A/B),必须和 v1.2/v2.0 那两件事合成一轮。
+2. **verity 不能单独做**:dm-verity 的收益依赖"roothash/签名本身被信任"(Secure Boot)与
+   "`/etc` 不可变"(D19 方案 A/B),必须和 v1.2/v2.0 那两件事合成一轮。
+3. **erofs 要先于"slot 尺寸常量"的任何改动**:根换成 erofs 之后内容会小很多,那时再讨论
+   "新机器要不要把 6 GiB 槽位改小"(老机器不变、两种尺寸都能吃同一份载荷)才有意义。
 
 ## 1. 安全(目前 v1 明确不做)
 
@@ -56,6 +64,31 @@
 
 > 这两条是 v1 标签之前的最后一块证据;机制层面(手工 `sysctl -w` / `journalctl --flush`)与
 > 端到端(构建产物 + 首启)现在都验过了。
+
+## 2.9 erofs 只读根(v1.1 第一件;D2 的"升级 A")
+
+**目标**:根分区从 `ext4` + cmdline `ro`(策略只读)换成 **erofs 镜像**(结构上不可写 + 压缩)。
+顺带把载荷/产物/演练的磁盘占用压下来(见 §0 的说明)。
+
+**要动的地方(已经想清楚的清单)**:
+
+| # | 事项 | 说明/风险 |
+|---|---|---|
+| 1 | **载荷**侧(`repart/slot-*/10-root-a.conf`)的 `Format=ext4` → `Format=erofs`,并且**解除尺寸钉死**:现在它和 install 侧一样写着 `SizeMinBytes=SizeMaxBytes=6G` ⇒ 产物必然 6 GiB。改成 `Minimize=yes` + 一个小的 `SizeMinBytes`(不再写 `SizeMaxBytes`),让产物只占内容大小 | ⚠ 这是"载荷变小"的关键;`SplitName`/`Label`/`Type=` 不动 |
+| 1b | **安装布局**侧(`repart/install/10-root-a.conf`、`20-root-b.conf`)保持 `SizeMin=SizeMax=6G`,只把格式换成 erofs | 槽位尺寸是布局常量(不变量 9):已装机的老机器不能改。**老机器照样能吃更小的载荷**(erofs 文件系统自带大小,分区比它大没问题) |
+| 2 | 构建侧要有 `mkfs.erofs` | systemd-repart 调它;`ToolsTree=default` 下要确认 `erofs-utils` 在工具树里(可能要显式加 `ToolsTreePackages=`) |
+| 3 | **initrd 必须能挂 erofs** | 模块或内建;`root=PARTLABEL=…` 不带 `rootfstype=` ⇒ 依赖内核自动识别,必须实测(否则候选槽直接起不来) |
+| 4 | `keel-check` / `os-status` / `os-update` 里对根文件系统的假设 | 目前基本是 `df`/`findmnt`,预计不受影响;`keel-check` 的"分区与文件系统尺寸一致"那条要按只读压缩文件系统重新解读 |
+| 5 | slot 尺寸常量 | **本次不动**;等 erofs 落地后再单独讨论"新机器是否改小"(见 §0 硬约束 3) |
+| 6 | 文档 | `architecture.md` 的分区/文件系统一节、`decisions.md` 里 D2 的状态、`AGENTS.md` 不变量 1 的措辞(只读从"策略"变"结构") |
+
+**验证计划(必须全过才算完成)**:
+
+1. libvirt 整盘装机 → 首启 → `sudo ~/keel-check` 全绿(重点看根分区挂载类型与 `/etc` overlay);
+2. `os-update` 一轮:stage 写候选槽(erofs 镜像)→ 重启进新槽 → 确认 + bless;
+3. **老机器迁移实测**:在一台"根还是 ext4"的机器上更新,验证"换 UKI + dd erofs 镜像进同一个分区"
+   就能切过去(这是本次最大的收益点,也是最大的不确定点);
+4. 记录载荷/产物体积的前后对比(预期:slot 载荷 6 GiB → 约 1.5–2 GiB)。
 
 ## 3. 顺手要还的技术债
 
