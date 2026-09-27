@@ -103,7 +103,24 @@ sudo os-update rollback                  # 主动回滚到另一个槽
      的 CLI 与能力已对齐并有断言,但第一次实战是接下来在 CachyOS 上的那一轮。~~
      **已解决(v1.1,2026-09-26)**:构建机本身就是 Debian 13(FHS 宿主),`sudo tools/build.sh -p <密码>`
      连跑三次(两个 v1.1 载荷 + 一个引导镜像)全部 exit 0,产物、`dist/` 布局、`-p` 初始密码链路
-     都与容器路径一致。**仍未做的是 rootless(不带 sudo)那一半** —— 见 `roadmap.md` §0 ⑥。
+     都与容器路径一致。
+     **rootless(不带 sudo)那一半也补做了(2026-09-27),结论是"能跑通,但产物不等价"**:
+     不带 sudo 也能跑完三个 profile、exit 0、`dist/` 五个产物齐全(不需要 CAP_SYS_ADMIN;
+     `tools/build.sh` 里原来那句"mkosi 的沙箱需要 CAP_SYS_ADMIN"是错的,已改),
+     但**镜像里所有非 0 的 uid/gid 都会被压成 0** —— 把两次构建的 `slot-a.root.raw` 解出来逐条比:
+     root 构建有 18 个 `gid≠0`、3 个 `uid≠0` 的条目,rootless 构建是 **0 和 0**。
+     丢的正是"属主不是 root"的那批:`/etc/shadow`(shadow 组)、setgid shadow 的
+     `unix_chkpwd`/`chage`/`expiry`、utmp 组的 `/var/log/{wtmp,btmp,lastlog}`、
+     `nix/var/nix/daemon-socket`,以及 **`/usr/share/keel/data-skeleton/home/admin`(1000:1000 → 0:0)**
+     ⇒ 装完机 admin 的家目录会归 root。原因是"非 root 用户只能创建属于自己的 uid/gid 的文件"
+     (mkosi 源码里明写,它甚至为此把沙箱里的 `chown` 变成 noop),不是 keel 的 bug。
+     **所以:开发/自测用 rootless 没问题,发布产物必须 `sudo tools/build.sh`**;
+     两种构建也**不要混用同一个 `mkosi.cache/`**(增量缓存是整棵树 move/copy,会把错误属主传染给
+     下一次构建 —— 切换身份前 `rm -rf mkosi.cache/*.cache`,包缓存可以留)。见 `roadmap.md` §0 ⑥、坑 #66。
+     同一轮还修掉两处"校验器自己说谎":非 root 时 PATH 里没有 `/usr/sbin` ⇒ `sfdisk` 看不见、
+     verify 第 3 节 14 条断言**整节静默消失**(root 191 通过 vs 非 root 173 通过);shellcheck
+     的输出写死在 `/tmp` 下的固定文件名 ⇒ root 跑过一次之后非 root 假红(坑 #67/#68)。
+     修完之后 **root 与非 root 跑 verify 都是 0 失败**,并新增第 11 节专门给校验器自己上断言。
 21. `os-install` 还留着两个 TODO:根镜像实际占用超过目标分区尺寸时的截断检查;
      `keel-confirm` 的 pending / running_slot 边界。(roadmap 2.7)
 22. `docs/` 里的历史叙述偶尔还带着"当时还没做"的口气,发版后统一清一遍。(roadmap 3.3)

@@ -15,6 +15,18 @@
 #
 # 查不了的:真实构建与启动。那是 tools/build.sh + 真机/虚拟机的事(docs/architecture.md §13)。
 set -uo pipefail
+
+# ── 环境归一化:sbin 目录 ────────────────────────────────────────────────────
+# Debian 普通用户的默认 PATH 里**没有** /usr/sbin 与 /sbin,而校验要用的 sfdisk
+# (fdisk 包)恰恰装在那儿 ⇒ 非 root 跑 verify 时第 3 节会以「缺 sfdisk」为由
+# **整节跳过**,root 跑同一份代码却跑得满满当当:同一个仓库给出两套答案。
+# 2026-09 的 rootless 实测就是这么发现的(root 191 通过 / 0 跳过,非 root 173 通过 /
+# 4 跳过,差额正是这一节)+ 后面 shellcheck 那项因为写死的 /tmp 路径假红。
+# 门面只在这里做一次环境归一化,不给每条检查各写一份兜底。
+# 只**追加**,不前置:绝不遮蔽调用者自己的 PATH。
+PATH="${PATH:+$PATH:}/usr/sbin:/sbin"
+export PATH
+
 verify_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 cd "$(dirname "$0")/.." || exit 1
 
@@ -37,6 +49,7 @@ cd "$(dirname "$0")/.." || exit 1
 . "$verify_dir/lib/verify/90-identity.sh"
 . "$verify_dir/lib/verify/95-data-budget.sh"
 . "$verify_dir/lib/verify/96-manifest-protocol.sh"
+. "$verify_dir/lib/verify/97-gate-env.sh"
 
 # ── 按原顺序调用(顺序即输出顺序)──
 verify_mkosi
@@ -67,6 +80,7 @@ verify_accounts
 verify_identity
 verify_data_budget
 verify_manifest_protocol
+verify_gate_env
 
 # ---------------------------------------------------------------------------
 printf '\n\033[1m结果: %d 通过, %d 失败' "$pass" "$fail"

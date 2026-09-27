@@ -54,7 +54,7 @@ MODE=build
 if ! command -v mkosi >/dev/null 2>&1; then
     die "没装 mkosi。$(keel_host_hint)"
 fi
-[ "$(id -u)" = 0 ] || log "提示:没在用 root 跑。mkosi 的构建沙箱需要 CAP_SYS_ADMIN,报权限错误就加 sudo"
+[ "$(id -u)" = 0 ] || log "提示:没在用 root 跑 —— 能跑通(mkosi 25.3 会用用户命名空间),但产物**不等价**:镜像里非 0 的 uid/gid 会被压成 0(坑 #66);发布产物请用 sudo"
 
 # OTA 演练走**和容器 drill 模式同一份**编排脚本(tools/ota-drill-container.sh:名字里的
 # container 是历史原因,它用 cwd 定位仓库、不假设自己在容器里)。它自己会跑静态校验、

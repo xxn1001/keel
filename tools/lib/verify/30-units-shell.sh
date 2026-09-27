@@ -41,11 +41,17 @@ for f in ${scripts[@]+"${scripts[@]}"}; do
 done
 ok "bash -n 通过(${#scripts[@]} 个脚本)"
 if [ "${#scripts[@]}" -gt 0 ] && have shellcheck; then
-    if shellcheck -S warning "${scripts[@]}" >/tmp/keel-shellcheck.log 2>&1; then
+    # 日志走 tmpd(=$TMPDIR 下的随机名)。**不要**改回写死的固定路径:原来的
+    # keel-shellcheck.log 放在世界可写的 /tmp 下、名字又固定 ⇒ 被 root 跑过一次
+    # 之后那个文件就归 root,非 root 再跑直接 "Permission denied",shellcheck 这一项
+    # **假红**(2026-09 rootless 实测);而且固定名字 + 世界可写目录本来就是该躲开的
+    # 攻击面(预先放个符号链接,下一次 root 跑就会去截断它指向的那个文件)。
+    sc_log=$(tmpd)/shellcheck.log
+    if shellcheck -S warning "${scripts[@]}" >"$sc_log" 2>&1; then
         ok "shellcheck(-S warning)通过"
     else
         no "shellcheck 有问题:"
-        grep -E '^In |\^--' /tmp/keel-shellcheck.log | head -20 | sed 's/^/      /'
+        grep -E '^In |\^--' "$sc_log" | head -20 | sed 's/^/      /'
     fi
 elif ! have shellcheck; then
     skip "没装 shellcheck,跳过(建议装上)"

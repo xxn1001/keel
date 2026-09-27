@@ -203,6 +203,22 @@ cat /etc/os-release        # 看 ID / ID_LIKE —— 判的是**构建宿主**,�
 3. **演练前先腾地方**:v1.1 起载荷是 **erofs**、一份只要 **1.1 GiB**(v1 是 13 GiB),要求已经宽很多;
    但演练仍会让 guest 真的写盘 ⇒ 先清旧 `dist/` 与旧 libvirt 镜像(`mkosi.output/libvirt/`)再跑。
 
+**rootless(不带 sudo)构建:能跑通,但产物不等价(2026-09-27 实测,坑 #66)** ——
+`tools/build.sh` 以普通用户能跑完三个 profile、exit 0、`dist/` 五个产物齐全(不需要 CAP_SYS_ADMIN),
+但镜像里**所有非 0 的 uid/gid 都会被压成 0**:把 `slot-a.root.raw` 用 `fsck.erofs --extract` 解出来比一遍,
+root 构建有 18 个 `gid≠0`、3 个 `uid≠0` 的条目,rootless 构建是 **0 和 0** —— 其中
+`/usr/share/keel/data-skeleton/home/admin` 由 1000:1000 变成 0:0(装完机 admin 的家目录归 root,
+用户写不了自己的家目录),`/etc/shadow` 的 shadow 组、setgid shadow 的 `unix_chkpwd`/`chage` 等一起丢。
+原因是"非 root 用户只能创建属于自己的 uid/gid 的文件"(mkosi 源码里就这么写的,它甚至为此把沙箱里的
+`chown` 变成 noop)。所以:**开发/自测/CI 用 rootless 没问题(还快),发布产物必须
+`sudo tools/build.sh`**;另外**别把两种构建混在同一个 `mkosi.cache/` 上** —— 增量缓存是整棵树
+move/copy(`cp --preserve=…,ownership`),身份一变就把错误属主**传染**给下一次构建,
+切换身份前先 `rm -rf mkosi.cache/*.cache`(`mkosi.pkgcache/` 是 .deb 缓存,可以留着省下载)。
+
+**非 root 跑 `tools/verify.sh` 曾经是"两套答案"**(同一轮实测,坑 #67/#68):门面现在自己把
+`/usr/sbin:/sbin` **追加**进 PATH(否则 `sfdisk` 看不见、第 3 节 14 条断言整节消失),缺工具时报**失败**
+而不是静默跳过,并且第 11 节专门给"校验器自己"上了断言(`tools/lib/verify/97-gate-env.sh`)。
+
 **这不改变任何不变量**:这台机器只是"构建机",keel 仍然只跑在目标机(将来的服务器 /
 现在的笔记本)上。
 
@@ -393,9 +409,15 @@ sudo tools/burn.sh /dev/nvme0n1
       现在按**超级块魔数**分派:erofs 走 `fsck.erofs --extract` → 改树 → `mkfs.erofs` 重打包
       (**不用 mount/loop**),ext4 仍走 `debugfs`,认不出就明确失败。顺带更正一条错误笔记:
       `fsck.erofs --extract` 对 root **保留 setuid**(实测 `/usr/bin/sudo` 是 `-rwsr-xr-x`)
-- [x] **v1.1 ⑥-原生:原生 FHS 构建路径已实战(2026-09-26)** —— 构建机本身是 Debian 13,
-      `sudo tools/build.sh -p <密码>` 连跑三次全部 exit 0;`release-notes-v1.md` 的已知限制 #20
-      已划掉(补了证据)。**仍未做的是 rootless(不带 sudo)那一半**
+- [x] **v1.1 ⑥-原生:原生 FHS 构建路径已实战(2026-09-26,rootless 2026-09-27 补完)** ——
+      构建机本身是 Debian 13,`sudo tools/build.sh -p <密码>` 连跑三次全部 exit 0;
+      随后补做 **rootless(不带 sudo)那一半**,结论是"**能跑通,但产物不等价**":
+      普通用户跑三个 profile 也 exit 0、`dist/` 齐全,可镜像里**所有非 0 的 uid/gid 都被压成 0**
+      (`slot-a` 解包比对:root 构建 18 个 `gid≠0`/3 个 `uid≠0`,rootless 是 0/0;含 admin 家目录
+      1000:1000 → 0:0)。⇒ **开发/自测可以 rootless,发布产物必须用 root**;
+      两种构建**不能混用同一个 `mkosi.cache/`**。同一轮还修掉了"门会静默少跑"的两处
+      (非 root 的 PATH 看不见 `/usr/sbin/sfdisk` ⇒ 第 3 节 14 条断言整节消失;shellcheck 日志
+      写死 `/tmp` 固定名 ⇒ root 跑过之后非 root 假红)。细节见坑 #66–#68 与 `release-notes-v1.md` #20
 - [x] **v1.1 ③:更新检查(只 check + 通知,2026-09-26)** —— 新增 `keel-update-check.timer/.service`
       (开机 5 分钟后 + 每 6 小时,`Persistent=true`):只调**只读**的 `os-update check`
       (拉一个 manifest),结论写 `/data/keel/update-check.state`,`os-status` 与 `keel-check`

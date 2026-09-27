@@ -1258,3 +1258,63 @@
     `Before=`/`After=` 一起看,光看函数体永远看不出这个 bug;
     ③ 同一类的还有 `last_result`:它只会被 confirm 写,所以作为"有没有跑过确认"的判据是安全的,
     `running_slot` 不是 —— **同样是"状态键",写入者不同,可信度就不同**。
+
+66. **不带 sudo 也能构建,但**产物不等价**:镜像里非 0 的 uid/gid 全被压成 0(2026-09-27,v1.1 ⑥ 的 rootless 实测)。**
+    起因是 ⑥ 里那句"原生路径 rootless 那一半还没做" —— 实测结论分两半,两句都要记住:
+    **① 能跑通**:`tools/build.sh` 以普通用户跑完三个 profile、exit 0,`dist/` 五个产物齐全
+    (mkosi 25.3 会用用户命名空间 + `/etc/subuid`/`subgid`,不需要 CAP_SYS_ADMIN;
+     这条也顺手纠正了 `build.sh` 里原来那句"mkosi 的沙箱需要 CAP_SYS_ADMIN"的旧说法)。
+    **② 但产物是坏的**:把两次构建的 `slot-a.root.raw` 都 `fsck.erofs --extract` 出来,
+    按 `%P %y %m %U %G %s` 比一遍:
+    ```
+    root 构建    : 17563 个条目,gid≠0 的 18 个、uid≠0 的 3 个
+    rootless 构建: 17563 个条目,gid≠0 的  0 个、uid≠0 的 0 个   ← 全被压成 0
+    ```
+    差的 21 个文件正好是"属主不是 root"的那批:`/etc/shadow`/`gshadow`(shadow 组 42)、
+    setgid 的 `unix_chkpwd`/`chage`/`expiry`(42)、`ssh-agent`(101)、
+    `dbus-daemon-launch-helper`(996)、`/var/log/{wtmp,btmp,lastlog}`(utmp 43)、`/var/mail`(8)、
+    `nix/var/nix/daemon-socket`(989)、`var/lib/systemd/network`(998)、`/var/log/journal`(999),
+    以及 **`/usr/share/keel/data-skeleton/home/admin`(1000:1000 → 0:0)** —— 最后这条是功能性的:
+    它会被首启 `cp -a -n` 到 `/data/home/admin`,于是 **admin 的家目录归 root**,用户写不了自己的家目录。
+    **原因**(不是 keel 的 bug,是"非 root 用户本来就做不到"):普通用户只能创建属于自己的 uid/gid
+    的文件。mkosi 自己的源码里写得很直白(`sandbox.py:seccomp_suppress_chown`):
+    > There's still a few files and directories left in distributions in /usr and /etc that are not
+    > owned by root. … Unfortunately, non-root users can only create files owned by their own uid.
+    > To still allow non-root users to build images, if requested we install a seccomp filter that
+    > makes calls to chown() and friends a noop.
+    实测里对应的现场就是 dpkg 装 `passwd` 时 chown 不到 shadow 组、`systemd-tmpfiles` 那一行
+    `fchownat() of /buildroot/nix/var/nix/daemon-socket failed: Invalid argument`(EINVAL =
+    目标 gid 在用户命名空间里没有映射)。**换过一次缓存重跑,24 个文件的差异一字不差** ⇒ 不是缓存脏,
+    是这条路径的固有性质。
+    **规矩**:① 开发/自测/CI 用 rootless 没问题(它还快);**发布产物必须 `sudo tools/build.sh`**,
+    `build.sh` 现在会在非 root 时把这句话打出来;② **别把两种构建混在同一个 `mkosi.cache/` 上** ——
+    增量缓存是"整棵树 move/copy"(`move_tree` 是 rename,`copy_tree` 用
+    `cp --preserve=…,ownership`),身份一变,那棵树就把错误属主**传染**给下一次构建
+    (实测:rootless 跑完之后 `mkosi.cache/debian~trixie~x86-64.cache` 里 18429/18429 个文件的
+    属主都变成了构建者;根构建只在 `tools.cache` 里留 2/28065 个非 root 属主)。切换身份之前:
+    `rm -rf mkosi.cache/*.cache`(`mkosi.pkgcache/` 是 .deb 缓存,可以留着,省下载)。
+
+67. **校验器会"静默少跑":非 root 时 PATH 里没有 `/usr/sbin`,第 3 节整节消失(2026-09-27,同一次 rootless 实测)。**
+    同一个仓库、同一份 `tools/verify.sh`,root 跑是 **191 通过 / 0 跳过**,非 root 跑是
+    **173 通过 / 4 跳过** —— 差的 14 条全在第 3 节(repart 分区布局:分区名/尺寸/类型/erofs/空槽…),
+    而它给出的理由是一行不起眼的 `- 缺 systemd-repart 或 sfdisk,跳过`。
+    **真相**:`sfdisk` 装在 `/usr/sbin`(fdisk 包),而 Debian 普通用户的默认 PATH 是
+    `/usr/local/bin:/usr/bin:/bin:…` —— **没有 sbin**;root 的 PATH 里有。所以 `have sfdisk` 为假,
+    而那一节是"要么全跑、要么整节跳过"的结构 ⇒ 十几条断言凭空消失,汇总行还写着"0 失败"。
+    **这是最坏的一类坏法**:门自己残了,却报一切正常。**修法**:① 门面 `tools/verify.sh` 自己把
+    `/usr/sbin:/sbin` **追加**进 PATH(只追加,不遮蔽调用者的);② 缺工具时**报失败**而不是跳过
+    (缺工具是"宿主没装全",不是"这台机器上没这项检查"),并在消息里说清怎么装;
+    ③ 容器适配器里补装 `fdisk`(容器里原本也没有 ⇒ 容器路径同样整节消失);
+    ④ 第 11 节给"门自己"上断言(见 `tools/lib/verify/97-gate-env.sh`)。
+    **教训**:凡是"缺东西就跳过"的分支,跳过的**不是一条检查,而是一整节**;写这种分支时要问
+    "跳掉了几条?"——数量要能被看见。
+
+68. **写死的临时路径会让门"看人下菜":root 跑过一次,非 root 再跑就假红(2026-09-27,同一次实测)。**
+    非 root 跑 `tools/verify.sh` 时第 5 节报 `shellcheck 有问题:`,细节却是一行
+    `/tmp/keel-shellcheck.log: Permission denied` —— 校验器把 shellcheck 的输出重定向到一个
+    **写死的、世界可写目录下的固定文件名**;那个文件被 root 跑过一次,属主就是 root,普通用户再也写不动。
+    (顺带的安全面:固定名字 + 世界可写目录,预先放个符号链接就能让下一次 root 跑去截断它指向的文件。)
+    **修法**:走 `tmpd`(=`mktemp -d`,`$TMPDIR` 下的随机名,退出时由 trap 清掉)——
+    仓库里别的地方早就这么做了,只有这一处漏了。第 11 节现在有一条断言扫这个模式。
+    **教训**:临时文件的两条铁律 —— **随机名字**、**别假设下一次是谁在跑**;
+    "root 跑过"会留下普通用户动不了的东西,这类残留会让同一份代码对不同的人给出不同的答案。

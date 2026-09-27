@@ -196,8 +196,10 @@ if ! command -v mkosi >/dev/null 2>&1; then
     echo "keel-container: 容器内安装 mkosi ..." >&2
     apt-get update -qq
     # shellcheck 也装上:tools/verify.sh 第 5 项要用它,不然那项会被跳过
+    # fdisk 装上是为了 sfdisk:verify 第 3 节(repart 分区布局,十几条断言)用
+    # `sfdisk --dump` 读分区表,缺它那一节会**整节消失** —— 而容器里原本没有。
     apt-get install -y -qq --no-install-recommends \
-        mkosi bubblewrap ca-certificates git shellcheck
+        mkosi bubblewrap ca-certificates git shellcheck fdisk
 fi
 '
 

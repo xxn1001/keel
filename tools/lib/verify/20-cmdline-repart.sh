@@ -38,7 +38,15 @@ verify_repart() {
 head1 "3. repart 分区布局"
 # ---------------------------------------------------------------------------
 if ! have systemd-repart || ! have sfdisk; then
-    skip "缺 systemd-repart 或 sfdisk,跳过"
+    # **报失败,不静默跳过**:这一节是十几条分区布局断言(名字/尺寸/类型/erofs/
+    # 未格式化的空槽…),整节少跑了没人看得出来 —— 2026-09 rootless 实测就是这么
+    # 发现"非 root 比 root 少 14 条"的(Debian 普通用户的 PATH 里没有 /usr/sbin,
+    # 而 sfdisk 装在那儿;门面现在会补 PATH)。缺工具是**宿主没装全**,不是
+    # "这台机器上没这项检查",所以必须是红的,并且说清楚怎么装。
+    repart_missing=""
+    have systemd-repart || repart_missing="systemd-repart"
+    have sfdisk || repart_missing="${repart_missing:+$repart_missing、}sfdisk"
+    no "缺 ${repart_missing}:第 3 节(repart 分区布局)的断言会**整节消失**。sfdisk 在 fdisk 包里:apt-get install -y fdisk"
 else
     tree=$(tmpd)
     mkdir -p "$tree/boot/EFI/Linux" "$tree/efi" "$tree/etc" \
