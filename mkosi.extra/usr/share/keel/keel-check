@@ -363,6 +363,27 @@ if tr -s '[:space:]' '\n' </proc/cmdline 2>/dev/null | grep -q '^console=ttyS0';
 head1 "9. nix(用户态在自己手里,不变量 7)"
 # ---------------------------------------------------------------------------
 if have nix; then ok "nix 命令在:$(nix --version 2>/dev/null | head -1)"; else no "找不到 nix 命令(基底里应该有 nix-bin)"; fi
+# nix 的**版本门槛**(决策 D29;C 项,2026-09-27)。
+#
+# trixie 打包的 nix 是 2.26.3,已 EOL,而 Debian 在 security-tracker 上给它标了 4 条
+# "no DSA"(= 不打算在 trixie 修):CVE-2026-44028(NAR 解析无界递归 → 可能以 root 执行代码,
+# 任何能连 daemon 的本地用户)、CVE-2026-44029(`--unpack` 目录穿越 → 任意文件写)、
+# CVE-2026-39860(注册固定输出时跟符号链接 → 覆盖 root 可写文件)、CVE-2026-64846(低危 TOCTOU)。
+# 2.34.7 修掉前三条,2.35.0 再修第四条 ⇒ 门槛定在 **2.34.7**。
+#
+# 为什么这里只**警告**不判失败:nix 用得对不对不影响本机能不能跑(v1.1 的判据是"硬性检查全过"),
+# 它影响的是**纪律** —— 在升到门槛之前,只从你信任的源装东西(别配第三方二进制缓存、
+# 别对不信任的归档用 `nix store prefetch-file --unpack`)。修复路线见 roadmap §1.5。
+nix_ver="$(nix --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)" || nix_ver=""
+if [ -n "$nix_ver" ]; then
+    # 用 sort -V 比版本:相等时 tail 仍是自己,所以 "tail == nix_ver" 就是 ">="
+    nix_top="$(printf '%s\n%s\n' 2.34.7 "$nix_ver" | sort -V | tail -n1)"
+    if [ "$nix_top" = "$nix_ver" ]; then
+        ok "nix 版本 $nix_ver ≥ 2.34.7(已含 44028/44029/39860 的修复)"
+    else
+        wn "nix 版本 $nix_ver < 2.34.7:trixie 的包已 EOL,4 条未修安全问题(决策 D29)⇒ 只从受信源装东西;修复见 roadmap §1.5"
+    fi
+fi
 if [ -d /nix ] && [ ! -L /nix ]; then ok "/nix 是真目录(不能是符号链接,坑 #34)"; else no "/nix 不是真目录 ⇒ nix 会拒绝工作"; fi
 findmnt -no SOURCE /nix >/dev/null 2>&1 && ok "/nix 已挂载(绑定自 $(findmnt -no SOURCE /nix))" || no "/nix 没挂上"
 if [ -w /nix/store ] || [ "$(stat -c %U /nix/store 2>/dev/null)" = root ]; then ok "/nix/store 存在且可写(当前用户 $(id -un) 通过 sudo 使用)"; else wn "/nix/store 可能不可写"; fi

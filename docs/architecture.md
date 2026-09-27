@@ -23,7 +23,7 @@
 | 原子更新 + 自动回滚 | boot counting + `systemd-bless-boot` + `LoaderEntryOneShot` / `LoaderEntryDefault` |
 | `/etc` 可写 | overlayfs(lower = 镜像,upper = `/data`) |
 | `/data` 状态分区 | `/var`、`/home`、`/root`、`/nix` 全部落在这里;含 swapfile |
-| nix 可用 | Debian 包 `nix-bin` + `nix-setup-systemd`;flakes 打开 |
+| nix 可用 | Debian 包 `nix-bin` + `nix-setup-systemd`;flakes 打开。**v1.2 起改由上游供给**(固定版本+哈希的 tarball 进数据骨架;trixie 的 2.26.3 有 4 条 Debian 标为 no-DSA 的安全问题),见决策 D29 / `roadmap.md` §1.5 |
 | 远程可用 | sshd + 有线网络(systemd-networkd)+ systemd-resolved |
 | 装机 / 自救命令 | `os-install`、`os-rescue`、`os-status`、`os-update` |
 | 静态校验工具 | `tools/verify.sh`(在本容器就能跑) |

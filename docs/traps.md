@@ -1393,3 +1393,27 @@
     shell 里做不到;但"旧文件或新文件"这个语义已经够用);② 这类 bug **只在硬断电下出现**,
     所有"正常重启"的测试都测不到,只有 `virsh destroy` / 拔电才现形;
     ③ 它也不会在任何日志里报错 —— 那几次 confirm 一句话都没说(因为没有 pending)。
+
+72. **"发行版的包太老"这件事要**先量再定**:钉 sid 的 nix 实测解不开,而 trixie 的 nix 背着 4 条 no-DSA(2026-09-27,v1.2 评估 nix 来源时)。**
+    起因:镜像里的 nix 是 trixie 的 **2.26.3**,上游已经 **2.35.2**,于是很自然会想"从 sid/backports 拿个新的"。
+    **实测把这条路堵死了**(方法可复用,值得记下来):
+    ① 在 `debian:trixie` 容器里加 sid 源直接装 ⇒ apt 会把 **libc6 2.43 / systemd 262 / bash 5.3 /
+       perl-base / openssl 3.6** 一起从 unstable 拖进来(apt 默认取**每个依赖的最高版本**);
+    ② 按规矩钉住(只有 `nix-bin`+`nix-setup-systemd` 走 sid,其余留 trixie)⇒ **解不开**:
+       ```
+       nix-bin 2.34.8 Depends libcurl4-gnutls (>= 8.20.0-3~)
+       trixie 的 libcurl = 8.14.1-2+deb13u5      ⇒ held broken packages
+       ```
+    ③ 查 Debian pool 里的版本分布:`nix-bin` 只有 **2.3.7 / 2.8.0 / 2.26.3 / 2.34.8**
+       —— **没有**"修了洞又兼容 trixie"的中间版本(2.26.3 之后直接跳到 2.34.8);
+    ④ 查 backports:**trixie-backports 里根本没有 nix 这个包**;
+    ⑤ 查 `security-tracker.debian.org/tracker/source-package/nix`(权威,别只看别人转述):
+       trixie 有 **4 条 "no DSA"(Debian 不打算在 trixie 修)**,其中三条 root 级、修在 **2.34.7**,
+       第四条修在 **2.35.0**。**只升客户端没用** —— 洞在 daemon 侧(NAR 解析、输出注册)。
+    结论与去向:**决策 D29**(v1.2 用上游固定版本+哈希的 tarball 进数据骨架,加性同步),
+    当前(未升级)的纪律写进 `keel-check` 的警告与 release notes。
+    **教训**:① "包太老"要先分清是**功能**还是**安全**问题 —— 功能上 nixpkgs 是现取的(客户端老不影响装到新软件),
+    安全上才是真债;② "从 sid 拿一个包"在 Debian 上**不是**一条配置级捷径:先看依赖链(尤其 libcurl/libc/systemd),
+    再看 pool 里的版本分布,再看 backports,最后看 security-tracker 的**逐发行版状态**;
+    ③ 别用二手转述判断 CVE(这次转述里的"NAR 解析栈溢出"和"≥2.28.7"对上了,但条数与具体描述对不上),
+    `security-tracker.debian.org` 上一眼就能看全,连"no DSA"这种态度信息都在。

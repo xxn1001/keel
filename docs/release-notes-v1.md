@@ -168,6 +168,28 @@ sudo os-update rollback                  # 主动回滚到另一个槽
     oneshot 是在写状态**之前**设的,最坏情况只是 `last_result` 少记一次(`os-status` 显示"无记录")。
     真机上不必为此做任何事;实在在意,`stage` 跑完等一两秒再断电即可(这个窗口本身极小)。
 
+### 4.7 nix 的来源(v1.1 的已知**安全债**)
+
+24. **基底里的 nix 是 Debian trixie 的 2.26.3,已 EOL,而 Debian 不打算在 trixie 修它的 4 条安全问题。**
+    [Debian security-tracker](https://security-tracker.debian.org/tracker/source-package/nix) 给 trixie
+    标了 **4 条 "no DSA"**:
+    * **CVE-2026-44028** —— NAR 解析器无界递归 ⇒ 栈溢出到堆 ⇒ **可能以 root 执行代码**;
+      任何**能连上 daemon 的本地用户**都可利用(`allowed-users` 默认全放行)。修在 2.34.7
+    * **CVE-2026-44029** —— `nix-prefetch-url --unpack` / `nix store prefetch-file --unpack`
+      **目录穿越 ⇒ 任意文件写**。修在 2.34.7
+    * **CVE-2026-39860** —— 注册固定输出时跟随符号链接 ⇒ **覆盖 root 可写的文件**(沙箱 Linux 构建)。修在 2.34.7
+    * CVE-2026-64846 —— `recursive-nix` 的 TOCTOU:创建/截断一个**空文件**,需赢竞态。修在 2.35.0
+
+    **在 nix 升级之前,只从你信任的源装东西** —— 别配第三方二进制缓存、别对不信任的归档用 `--unpack`。
+    keel 是单用户模型(`admin` 本来就有 sudo),所以 44028 的实际价值是"拿到 admin 但不知道 sudo 密码 ⇒
+    提权到 root";而 44029/39860 的触发前提是"装/解一个不信任来源的包或归档"。
+    `keel-check` 会在 nix < 2.34.7 时给出这条警告,`os-status` 报版本(判据只有一份,见决策 D29)。
+
+    **修复路线**:换更新的 Debian 包**实测不可行**(sid 的 `nix-bin` 要 `libcurl ≥ 8.20`,trixie 是 8.14;
+    Debian pool 里 2.26.3 之后直接跳到 2.34.8,**没有修了洞又兼容 trixie 的中间版本**;trixie-backports
+    根本没有 nix)⇒ **v1.2 改由上游供给**(固定版本+哈希的 tarball 进数据骨架 + 加性同步),
+    见 `roadmap.md` §1.5 与决策 D29;当时的实测方法记在 `docs/traps.md` #72。
+
 ## 5. 出问题先看哪里
 
 ```bash

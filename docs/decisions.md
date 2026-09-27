@@ -464,3 +464,39 @@
 - **什么情况下重新考虑**:① 真要做 dm-verity / measured boot,并且要求"镜像里的 `/etc` 默认值"
   与"机器状态"在存储上物理分离;② overlayfs 出现我们真正踩到的功能性缺陷(O_TMPFILE、
   跨目录 rename、特定工具不兼容 —— 目前一个都没遇到)。
+
+## D29 nix 的来源与供给方式:**不接受 trixie 的包作为长期方案**,v1.2 起改由上游供给(B1)
+
+- **背景(2026-09-27 实测 + 权威数据)**:镜像里的 nix 是 Debian trixie 的 `nix-bin` **2.26.3**
+  (D7 选的),而上游已经 **2.35.2**。更关键的是 Debian security-tracker 给 trixie 标了
+  **4 条 "no DSA"**(= 不打算在 trixie 修),其中三条是 root 级:
+  | CVE | 影响 | 修在 |
+  |---|---|---|
+  | CVE-2026-44028 | NAR 解析器无界递归 → 栈溢出到堆 → **可能以 root 执行代码**;任何能连 daemon 的本地用户都可利用(`allowed-users` 默认全放行) | 2.34.7 |
+  | CVE-2026-44029 | `nix-prefetch-url --unpack` / `nix store prefetch-file --unpack` **目录穿越 → 任意文件写** | 2.34.7 |
+  | CVE-2026-39860 | 注册固定输出时跟随符号链接 → **覆盖 root 可写的文件**(沙箱 Linux 构建) | 2.34.7 |
+  | CVE-2026-64846 | `recursive-nix` 的 TOCTOU:创建/截断一个**空文件**,需赢竞态 | 2.35.0 |
+- **决策**:**B1** —— 构建期取**固定版本 + 哈希**的上游 tarball(2.35.2,27 MB),放进**数据骨架**
+  (`/nix` 是 `/data` 上的 bind mount),再加一个**加性同步**(store path 不存在才拷、profile 重指);
+  daemon 单元与 nixbld 用户按上游方式烤进镜像,接替 Debian 的 `nix-setup-systemd`。
+- **理由**:
+  1. 这是**唯一**能拿到修复的路;"只升客户端"(`nix profile install nixpkgs#nix`)救不了 daemon 侧 ——
+     洞在解析/注册路径上,而 daemon 以 root 跑。
+  2. **A 路线(换更新的 Debian 包)实测不可行**:sid 的 `nix-bin 2.34.8` 要 `libcurl4-gnutls >= 8.20`
+     (trixie 是 8.14),钉住只装 nix 两个包时 apt 求解器直接 `held broken packages`;不钉就会把
+     libc6/systemd/bash/perl-base/openssl 一起从 unstable 拖进来。Debian pool 里 `nix-bin` 只有
+     **2.3.7 / 2.8.0 / 2.26.3 / 2.34.8**(**没有**"修了洞又兼容 trixie"的中间版本),
+     trixie-backports **根本没有 nix**。
+  3. 加性同步与镜像里已有的"数据骨架只增不破"是同一套思路;store path 内容寻址 ⇒ 新旧共存安全、
+     回滚天然成立(每个槽的镜像带自己那份 nix);代价只是载荷大约 +30 MB(erofs 后)。
+  4. 好处是**nix 版本从此跟着槽走**(回滚也跟着回),彻底摆脱"发行版打包滞后/EOL";版本+哈希钉死 ⇒ 可复现、可离线下装。
+- **否决**:
+  - **钉 sid 的 `nix-bin`**(见上,依赖链解不开);
+  - **把 unstable 拖进基座**(与"稳定基座、一个发行版、可复现"的前提冲突);
+  - **只升客户端**(洞在 daemon 侧);
+  - **B2 `/nix` 改 overlay**(lower = 槽内只读闭包、upper = `/data/nix`)—— 版本天然随槽走、不需要同步机制,
+    但 store 的硬链接/GC/rename 与 overlay 的语义没验过,留作 **v2.0 备选**(与 D19 的 `/etc` overlay 一起想)。
+- **代价与边界**:我们从"用发行版的集成"变成"自己维护 nix 的多用户集成"(单元/用户/PATH),
+  以后上游改单元要跟着看。**在 B1 落地之前**(即 v1.2 发布前的 v1.1 机器上):
+  只从受信任的源装东西 —— 别配第三方二进制缓存、别对不信任的归档用 `--unpack`;
+  `keel-check` 会在 nix < 2.34.7 时给出这条警告(`os-status` 只报版本,判据只有一份)。

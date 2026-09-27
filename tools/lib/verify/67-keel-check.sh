@@ -104,4 +104,21 @@ else
     no "迁移/schema 检查在下载之后(第 ${n_mig:-?} 行 vs 第 ${n_dl:-?} 行)⇒ 会先下完整载荷才拒绝"
 fi
 
+# C 项(决策 D29):nix 的**版本门槛**只能有一份判据,放在 keel-check 里;os-status 只报版本。
+# trixie 的 nix 2.26.3 已 EOL,Debian 标了 4 条 no-DSA,2.34.7 修掉前三条 ⇒ 门槛写死在这里。
+if grep -q '2\.34\.7' mkosi.extra/usr/share/keel/keel-check &&
+   grep -q '只从受信源装东西' mkosi.extra/usr/share/keel/keel-check; then
+    ok "keel-check 报了 nix 版本门槛(2.34.7)与「低于门槛只从受信源装东西」的纪律"
+else
+    no "keel-check 少了 nix 版本门槛/纪律 ⇒ trixie 的 2.26.3 有 4 条未修安全问题(决策 D29)"
+fi
+# 注意判据要精确:注释里**提到**门槛不算抄判据(那只是解释),代码里出现才算 ⇒
+# 只看非注释行。第一版写成"文件里不许出现 2.34.7",结果被 os-status 的一句解释性注释绊倒。
+if grep -qE '^[^#]*nix +:' mkosi.extra/usr/bin/os-status &&
+   ! grep -qE '^[^#]*2\.34\.7' mkosi.extra/usr/bin/os-status; then
+    ok "os-status 只报 nix 版本、代码里不重复门槛判据(避免两处判据漂移)"
+else
+    no "os-status 要么没报 nix 版本,要么代码里自己抄了一份版本门槛(判据只该在 keel-check 里)"
+fi
+
 }

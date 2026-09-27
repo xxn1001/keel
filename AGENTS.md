@@ -471,6 +471,14 @@ sudo tools/burn.sh /dev/nvme0n1
       坑 #70(stage 的候选条目与正式条目**同一个条目 ID** ⇒ 第 2 轮起引导器选中**旧 UKI**、
       旧内核配新根违反不变量 3,且每次更新漏 156 MiB)与坑 #71(状态文件只 rename 不落盘 ⇒
       硬断电留下**空文件**、整个 state 被打回原形)。证据与现场见 `docs/traps.md` #70/#71
+- [x] **nix 安全债的评估与处置(2026-09-27,决策 D29)** —— trixie 的 nix 2.26.3 已 EOL,Debian 在
+      security-tracker 上给它标了 **4 条 "no DSA"(不打算在 trixie 修)**,其中三条 root 级
+      (NAR 解析递归 → 潜在 root RCE;`--unpack` 目录穿越 → 任意写;固定输出注册跟随符号链接 → 覆盖 root 文件),
+      修在 **2.34.7**,第四条修在 2.35.0;**只升客户端救不了**(洞在 daemon 侧)。
+      换更新的 Debian 包这条路**实测不可行**(sid 要 `libcurl ≥ 8.20` 而 trixie 是 8.14;pool 里没有
+      修了洞又兼容 trixie 的中间版本;trixie-backports 根本没有 nix)⇒ 当前把纪律做成可见:
+      `keel-check` 在 nix < 2.34.7 时警告"只从受信源装东西",`os-status` 报版本(判据只有一份);
+      **v1.2 走 B1**:上游固定版本+哈希的 tarball 进数据骨架 + 加性同步(见 `roadmap.md` §1.5、决策 D29)
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 

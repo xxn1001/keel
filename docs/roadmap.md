@@ -12,7 +12,7 @@
 | 版本 | 主题 | 内容(对应下面的条目) | 粗估 |
 |---|---|---|---|
 | **v1.1** | 功能与运维 | **① ✅ erofs 只读根(2.9,已完成:载荷 6 GiB → 401 MiB,`dist/`、演练 qcow2 增长一起变小)** → **② ✅ ESP 余量 + `.failed` 清理(stage 动分区前先查 ESP 空间 + 自动清墓碑 + `os-rescue --clean-esp` 显式入口)** → **③ ✅ 更新检查(`keel-update-check.timer`:只 check + 通知;绝不 fetch/stage)** → **④ ✅ `os-install` 两个 TODO 结清(2.7)** → **⑤ ✅ 演练/开发磁盘收紧(镜像尺寸可配:默认 40G → 24G,下限 20G + `fetch` 预算按实测载荷改回 2 GiB)** → ⑥ **✅ 原生已实测;rootless 也实测了 —— 结论是"产物不等价"**,于是原生路径**直接拒绝非 root**(没 root 走容器适配器;见坑 #66),并写进文档 | 不赶时间,分多次 |
-| **v1.2** | 安全 | **更新签名**(1.1)→ **Secure Boot**(1.2,含 UKI 签名、自己的密钥库、解封 `pcrlock`);initrd 冻结修复(3.0) | —— |
+| **v1.2** | 安全 | **更新签名**(1.1)→ **Secure Boot**(1.2,含 UKI 签名、自己的密钥库、解封 `pcrlock`);**nix 改由上游供给**(1.5,修掉 trixie 那 4 条 no-DSA);**发布包收紧**(2.10:压缩安装镜像 + `install.sh` + `burn.sh` 版本核对);initrd 冻结修复(3.0) | —— |
 | **v2.0** | 结构与可信 | **迁移执行器**(2.8,先做,它是下面一切的前提)→ **`/data` 加密 + TPM 封印**(1.3)+ **dm-verity**(1.4)+ **早期启动重排**(把 `/etc` overlay 提到 initrd,见 D19 方案 A —— **它才是 #24/#29/#37/#61 四条的真正解法**)→ 可选:`systemd-sysupdate` 底层(2.5)、`cache` 分区(2.4)、`server` profile(2.2) | —— |
 | 不排期 | 等上游 / 可选 | "连续三次"试用语义(2.5b,等 Debian 的 systemd ≥ 261)、`desktop` profile(2.1)、`/usr/lib/modules` 外置(2.3)、`machines/`(3.4) | —— |
 
@@ -41,6 +41,8 @@
 | 1.3 | **TPM 封印的密钥**(LUKS / `/data` 加密) | v1 的 `/data` 是**不加密**的(决策 D6):机器被拿走/退役,数据就没了(服务器上这条同样是硬伤) | 与 1.2 一起做:`systemd-cryptenroll` + `pcrlock`/`systemd-measure` 把密钥封印到启动链;`/data` 换 LUKS 会**改分区布局** ⇒ 必须按"只增不破"迁移(不变量 6) |
 | 1.4 | **dm-verity 校验根分区** | 与"每台机器的 `/data` 迁移/机器专属字节"冲突(决策 D19 方案 D 已否决) | 需要先把"根镜像逐字节可校验"这条保住:任何往根里写机器专属数据的设计都要先排除 |
 
+| 1.5 | **nix 的来源与供给方式**(v1.2 拍板:B1) | **trixie 的 nix 2.26.3 已 EOL,而 Debian 在 security-tracker 上给它标了 4 条 "no DSA"(不打算在 trixie 修)**:CVE-2026-44028(NAR 解析无界递归 → 栈溢出到堆 → **可能以 root 执行代码**,任何能连 daemon 的本地用户)、CVE-2026-44029(`--unpack` 目录穿越 → **任意文件写**)、CVE-2026-39860(注册固定输出时跟随符号链接 → **覆盖 root 可写文件**)、CVE-2026-64846(recursive-nix TOCTOU,低危);2.34.7 修掉前三条、2.35.0 修第四条。**只升客户端救不了**(洞在 daemon 侧)。 | **B1(已拍板)**:构建期取**固定版本+哈希**的上游 tarball(2.35.2,27 MB)⇒ 进**数据骨架**(`/nix` 在 `/data` 上的 bind mount)+ **加性同步**(store path 不存在才拷、profile 重指),daemon 单元与 nixbld 用户按上游方式烤进镜像(接替 Debian 的 `nix-setup-systemd`)。好处:版本**跟着槽走**、可复现、可离线下装;代价:从"用发行版集成"变成"自己维护多用户集成"。**已否决**:① 钉 sid 的 `nix-bin`(实测解不开:sid 要 `libcurl4-gnutls >= 8.20`,trixie 是 8.14;Debian pool 里 2.26.3 之后直接跳到 2.34.8,**没有修了洞又兼容 trixie 的中间版本**;trixie-backports 根本没有 nix);② 把 unstable 拖进基座(与"稳定基座/可复现"冲突);③ 只升客户端。**备选 B2**(记 v2.0):`/nix` 改 overlay(lower=槽内只读闭包,upper=/data),版本天然随槽走,但 store 的硬链接/GC/rename 与 overlay 语义待实测 |
+
 ## 2. 系统功能
 
 | # | 事项 | 说明 |
@@ -54,6 +56,9 @@
 | 2.6 | **自动更新定时器** | **v1.1 ③ 已做"检查"那一半**:`keel-update-check.timer` 只跑只读的 `os-update check` + 写结论 + 通知(`docs/update.md` §8)。**真正的"自动 fetch / 自动 stage"仍不做** —— 硬约束 1:要等 v1.2 的更新签名。到那时再按"检查频率 + 按窗口下载"的保守策略加,并且记得把 `tools/verify.sh` 里"update-check 里每一处 os-update 都必须是 check"的反向断言一起改掉 |
 | 2.7 | **`os-install` 的两个 TODO** | ✅ **已结清(v1.1 ④,2026-09-26)**:① **根占用 vs 目标分区** —— 拷的是**整块设备**,所以判据是**分区容量**而不是文件系统占用(erofs 的 fs 大小写在超级块里、可远小于分区);并且**读不到容量就拒绝**(旧写法两个变量都空时会静默放行,那正是坑 #36 的形态)。② **`keel-confirm` 的 pending/running_slot 边界** —— 装机写入的 `pending_slot=a` + 空的 `running_slot`/`last_result` 现在被明确识别为"装机后首次启动",日志与"一次更新成功"分开报;装机路径实测 `last_result=success`、pending 清空、`running_slot=a` |
 | 2.8 | **`/data` schema 迁移执行器**(v1 明确不做) | v1 的行为是:带 `migrate=` 的载荷被 `fetch` **拒绝**(坑 #48),布局冻结在 schema 1。要做的时候:① 定义 manifest 的迁移语法(只增不破的 mkdir/权限/文件);② 想清楚 `schema`(载荷要求的布局版本)与 `schema_min`(载荷还能读的最低版本)的区别 —— 现在 `fetch` 那句 `schema > 本机 ⇒ 拒绝` 与"由旧系统迁移"的语义是**互相矛盾**的,得先理顺;③ 在 VM 里按 §4 演练(含**回滚**到旧版本后旧系统仍能读 /data);④ 第一次真实迁移前不要动布局 |
+
+| 2.10 | **发布包收紧**(v1.2) | v1.1 的 `dist/keel-<版本>/` 里,`keel.raw` 是 **15 GiB 逻辑 / 562 MiB 实占**的稀疏文件 —— 拷到不支持稀疏的文件系统、传 release 资产、写 U 盘,全都按逻辑大小走,分发时很难受。 | ① **压缩安装镜像**(实测 `zstd -3`:562 MiB → **363 MiB**)+ `install.sh`(**v1**:解压 → 写到指定盘,**不需要宿主装 mkosi**)—— `burn.sh` 保留不动(它走 mkosi 的 burn,按目标盘容量修 GPT);② 发布目录定成 **`output/keel-<版本>/`**(保留版本号:一眼看出手上是哪版、能并存两版);③ `burn.sh` 烧之前**核对版本**(镜像里的 `IMAGE_VERSION` vs `dist/` 里最新 manifest 的 `version=`;现在它只烧 `mkosi.output/keel.raw` 而这个文件名里没有版本号,存在"烧出另一版而不知道"的真空档)。**已否决**:把更新载荷也打成一个 `payload.tar.zst` 喂给更新器 —— 解包那步确实简单,但要让 `fetch` 从"逐个平铺文件 + 逐件 sha256"改成"下一个包 + 解包 + 再逐件校验",而动的是全项目最安全攸关的一条路,只省 ~393 MiB(1118 → 725 MiB,zstd -3),且 D8 说这条底层将来可能换成 `systemd-sysupdate`(传输格式该由它定)。**替代做法**:发布包本身是**一个 `.tar.zst`**,里面含**原样的 `payload/` 目录**(更新源解出来即可用,更新器一行不改)+ 压缩安装镜像 + `install.sh` + 文档 |
+| 2.11 | **宿主侧安装器(可选)** | 目标是"在宿主上一条命令把 keel 装到指定盘"(不需要先烧 U 盘、也不需要 `os-install`)。**可行性**:素材现成(安装侧 repart 定义已在镜像里、`slot-a.root.raw`/`slot-a.uki.efi` 就是内容、data 骨架与 systemd-boot 的 `.efi` 能在构建时打进发布包);`os-install` **已经拒绝写到正在运行的那块盘**,所以"自己烧自己再 os-install"这条捷径是被设计挡掉的。 | 代价是**全项目最危险的一段代码**(分区 + 引导器),而且会和 `os-install` 形成"两份实现 ⇒ 漂移"(#62/#70/#71 都是这类)。要做就得:① 与 `os-install` **共享同一份定义/逻辑**;② 用**完整演练**钉住(install.sh 装 → 只挂目标盘启动 → `keel-check` → 一轮更新 → 回滚)。排 v1.2 中后段 |
 
 ## 2.95 已复核:控制台日志级别与日志落盘(D27 / 坑 #61)
 
