@@ -60,5 +60,21 @@ if grep -qE '\|\| die "原生构建必须用 root' tools/build.sh; then
 else
     no "tools/build.sh 不再拒绝非 root 构建 ⇒ 会产出属主被压成 0 的镜像,而且看起来一切正常"
 fi
+# ⑦ 第 5 节的 lint **名单**也要守住:库文件不带 shebang,全靠那个 `libs=(…)` 数组点名,
+#    删掉它两句 ok 照样打印(只是少检查 20 个文件)—— 又是坑 #67 那个坑型。
+#    这里**直接查那个数组**(第 5 节是前面跑的,`libs` 在本 shell 里还在),不是 grep 猜。
+libs_missing=""
+for m in mkosi.extra/usr/lib/keel/lib.sh tools/lib/verify/*.sh; do
+    [ -e "$m" ] || continue
+    case " ${libs[*]-} " in
+        *" $m "*) ;;
+        *) libs_missing="$libs_missing $m" ;;
+    esac
+done
+if [ -z "$libs_missing" ]; then
+    ok "第 5 节的 lint 名单覆盖了 lib.sh 与全部校验模块(${#libs[@]} 个没有 shebang 的源码)"
+else
+    no "第 5 节的 lint 名单漏了(它们没有 shebang,不在那个 find 的结果里):$libs_missing"
+fi
 
 }

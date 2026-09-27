@@ -3,6 +3,11 @@
 # 用法:`. /usr/lib/keel/lib.sh`
 # 被 /usr/lib/keel/* 与 /usr/bin/os-* 共用。
 #
+# shellcheck disable=SC2034  # 这是**库**:KEEL_SCHEMA_FILE / KEEL_OTA / KEEL_GROW_* 等
+#                            # 是给 source 它的调用方用的,在本文件里当然"没被读到"。
+#                            # (2026-09-27 起 §5 会把本文件也 lint 进去 —— 以前它不带
+#                            #  shebang,被"只 lint 有 shebang 的脚本"那条规则漏掉了。)
+#
 # 两个刻意的设计:
 #   1. 不依赖 jq / python3 —— 镜像里没有它们,一切解析都用 coreutils;
 #   2. 状态文件是 `key=value` 文本而不是 JSON(见 docs/architecture.md §4.2)。
