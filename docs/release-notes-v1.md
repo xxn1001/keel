@@ -104,7 +104,7 @@ sudo os-update rollback                  # 主动回滚到另一个槽
      **已解决(v1.1,2026-09-26)**:构建机本身就是 Debian 13(FHS 宿主),`sudo tools/build.sh -p <密码>`
      连跑三次(两个 v1.1 载荷 + 一个引导镜像)全部 exit 0,产物、`dist/` 布局、`-p` 初始密码链路
      都与容器路径一致。
-     **rootless(不带 sudo)那一半也补做了(2026-09-27),结论是"能跑通,但产物不等价"**:
+     **rootless(不带 sudo)那一半也补做了(2026-09-27),结论是"能跑通,但产物不等价 ⇒ 直接拒绝"**:
      不带 sudo 也能跑完三个 profile、exit 0、`dist/` 五个产物齐全(不需要 CAP_SYS_ADMIN;
      `tools/build.sh` 里原来那句"mkosi 的沙箱需要 CAP_SYS_ADMIN"是错的,已改),
      但**镜像里所有非 0 的 uid/gid 都会被压成 0** —— 把两次构建的 `slot-a.root.raw` 解出来逐条比:
@@ -114,7 +114,10 @@ sudo os-update rollback                  # 主动回滚到另一个槽
      `nix/var/nix/daemon-socket`,以及 **`/usr/share/keel/data-skeleton/home/admin`(1000:1000 → 0:0)**
      ⇒ 装完机 admin 的家目录会归 root。原因是"非 root 用户只能创建属于自己的 uid/gid 的文件"
      (mkosi 源码里明写,它甚至为此把沙箱里的 `chown` 变成 noop),不是 keel 的 bug。
-     **所以:开发/自测用 rootless 没问题,发布产物必须 `sudo tools/build.sh`**;
+     产物**看起来一切正常**(exit 0、产物齐全),所以不是提示一句而是**直接拒绝**:
+     `sudo tools/build.sh` 是原生路径的唯一形态(非 root 直接 `die`)。
+     **没有 root 也要构建 → 走容器适配器** `tools/build-container.sh`:容器里是 root,而且 podman 会把
+     宿主机的 subuid/subgid 映射进容器(实测:不用 sudo 的 rootless podman 容器里 `chown 0:42` 生效)。
      两种构建也**不要混用同一个 `mkosi.cache/`**(增量缓存是整棵树 move/copy,会把错误属主传染给
      下一次构建 —— 切换身份前 `rm -rf mkosi.cache/*.cache`,包缓存可以留)。见 `roadmap.md` §0 ⑥、坑 #66。
      同一轮还修掉两处"校验器自己说谎":非 root 时 PATH 里没有 `/usr/sbin` ⇒ `sfdisk` 看不见、

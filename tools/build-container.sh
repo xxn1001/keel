@@ -228,8 +228,11 @@ ARGS=(run --rm -it --privileged -v "$PWD:/work" -v "$WS:/var/tmp" -w /work)
 #   KEEL_DRILL_PORT=9000 sudo tools/build-container.sh drill
 ARGS+=(-e "KEEL_DRILL_BOOT_VERSION=$DRILL_BOOT_VERSION" -e "KEEL_DRILL_PORT=$DRILL_PORT")
 log "引擎:$ENGINE   镜像:$IMAGE   模式:$MODE${EXTRA_PROFILES:+   额外 profile:$EXTRA_PROFILES}"
-[ "$(id -u)" = 0 ] || log "提示:没在用 root 跑。若报权限错误,请加 sudo(mkosi 的沙箱需要 CAP_SYS_ADMIN)"
-log "产物会落在宿主机的 mkosi.output/ 与 dist/(属主是 root)"
+# 宿主这边不一定需要 root:构建发生在**容器里的 root** 身份下,而容器引擎会把 uid/gid 映射进去
+# (rootless podman 实测有完整的 subuid/subgid 映射)。原生路径(`tools/build.sh`)反过来只支持 root
+# —— 那条路没有映射,非 0 的 uid/gid 会被压成 0(坑 #66)。
+[ "$(id -u)" = 0 ] || log "提示:没在用 root 跑 —— 容器里仍然以 root 构建,通常没问题;报权限错误再加 sudo"
+log "产物会落在宿主机的 mkosi.output/ 与 dist/(属主:rootful 引擎是 root,rootless 是你自己)"
 
 exec "$ENGINE" "${ARGS[@]}" "$IMAGE" \
     bash -lc "$PROVISION"'

@@ -11,7 +11,7 @@
 
 | 版本 | 主题 | 内容(对应下面的条目) | 粗估 |
 |---|---|---|---|
-| **v1.1** | 功能与运维 | **① ✅ erofs 只读根(2.9,已完成:载荷 6 GiB → 401 MiB,`dist/`、演练 qcow2 增长一起变小)** → **② ✅ ESP 余量 + `.failed` 清理(stage 动分区前先查 ESP 空间 + 自动清墓碑 + `os-rescue --clean-esp` 显式入口)** → **③ ✅ 更新检查(`keel-update-check.timer`:只 check + 通知;绝不 fetch/stage)** → **④ ✅ `os-install` 两个 TODO 结清(2.7)** → **⑤ ✅ 演练/开发磁盘收紧(镜像尺寸可配:默认 40G → 24G,下限 20G + `fetch` 预算按实测载荷改回 2 GiB)** → ⑥ **✅ 原生已实测 + rootless 也实测了**(能跑完三个 profile、exit 0,但产物**不等价**:非 0 的 uid/gid 全被压成 0 ⇒ **发布产物必须用 root 构建**;见坑 #66),并写进文档 | 不赶时间,分多次 |
+| **v1.1** | 功能与运维 | **① ✅ erofs 只读根(2.9,已完成:载荷 6 GiB → 401 MiB,`dist/`、演练 qcow2 增长一起变小)** → **② ✅ ESP 余量 + `.failed` 清理(stage 动分区前先查 ESP 空间 + 自动清墓碑 + `os-rescue --clean-esp` 显式入口)** → **③ ✅ 更新检查(`keel-update-check.timer`:只 check + 通知;绝不 fetch/stage)** → **④ ✅ `os-install` 两个 TODO 结清(2.7)** → **⑤ ✅ 演练/开发磁盘收紧(镜像尺寸可配:默认 40G → 24G,下限 20G + `fetch` 预算按实测载荷改回 2 GiB)** → ⑥ **✅ 原生已实测;rootless 也实测了 —— 结论是"产物不等价"**,于是原生路径**直接拒绝非 root**(没 root 走容器适配器;见坑 #66),并写进文档 | 不赶时间,分多次 |
 | **v1.2** | 安全 | **更新签名**(1.1)→ **Secure Boot**(1.2,含 UKI 签名、自己的密钥库、解封 `pcrlock`);initrd 冻结修复(3.0) | —— |
 | **v2.0** | 结构与可信 | **迁移执行器**(2.8,先做,它是下面一切的前提)→ **`/data` 加密 + TPM 封印**(1.3)+ **dm-verity**(1.4)+ **早期启动重排**(把 `/etc` overlay 提到 initrd,见 D19 方案 A —— **它才是 #24/#29/#37/#61 四条的真正解法**)→ 可选:`systemd-sysupdate` 底层(2.5)、`cache` 分区(2.4)、`server` profile(2.2) | —— |
 | 不排期 | 等上游 / 可选 | "连续三次"试用语义(2.5b,等 Debian 的 systemd ≥ 261)、`desktop` profile(2.1)、`/usr/lib/modules` 外置(2.3)、`machines/`(3.4) | —— |

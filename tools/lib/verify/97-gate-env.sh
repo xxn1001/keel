@@ -53,12 +53,12 @@ if [ -z "$mod_bad" ]; then
 else
     no "校验模块的拆分约定被破坏:$mod_bad"
 fi
-# ⑥ rootless 构建"能跑但产物不等价"(坑 #66):这句提示不能被删掉 —— 删了就会有人
-#    拿 rootless 的产物去发布,而那份镜像里 admin 的家目录是归 root 的。
-if grep -q 'uid/gid' tools/build.sh; then
-    ok "build.sh 在非 root 时会说明产物不等价(非 0 的 uid/gid 被压成 0,坑 #66)"
+# ⑥ rootless 构建"能跑但产物不等价"(坑 #66)—— 现在原生路径**直接拒绝**非 root。
+#    这条断言守着那句 die:被改回"只警告"就意味着有人会拿属主被压成 0 的产物去发布。
+if grep -qE '\|\| die "原生构建必须用 root' tools/build.sh; then
+    ok "build.sh 直接**拒绝**非 root 构建(坑 #66:非 0 的 uid/gid 会被压成 0),并指向容器适配器"
 else
-    no "tools/build.sh 少了「非 root 构建的产物不等价」这句提示 ⇒ 有人会拿它去发布"
+    no "tools/build.sh 不再拒绝非 root 构建 ⇒ 会产出属主被压成 0 的镜像,而且看起来一切正常"
 fi
 
 }

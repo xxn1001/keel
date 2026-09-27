@@ -203,16 +203,19 @@ cat /etc/os-release        # 看 ID / ID_LIKE —— 判的是**构建宿主**,�
 3. **演练前先腾地方**:v1.1 起载荷是 **erofs**、一份只要 **1.1 GiB**(v1 是 13 GiB),要求已经宽很多;
    但演练仍会让 guest 真的写盘 ⇒ 先清旧 `dist/` 与旧 libvirt 镜像(`mkosi.output/libvirt/`)再跑。
 
-**rootless(不带 sudo)构建:能跑通,但产物不等价(2026-09-27 实测,坑 #66)** ——
-`tools/build.sh` 以普通用户能跑完三个 profile、exit 0、`dist/` 五个产物齐全(不需要 CAP_SYS_ADMIN),
-但镜像里**所有非 0 的 uid/gid 都会被压成 0**:把 `slot-a.root.raw` 用 `fsck.erofs --extract` 解出来比一遍,
-root 构建有 18 个 `gid≠0`、3 个 `uid≠0` 的条目,rootless 构建是 **0 和 0** —— 其中
-`/usr/share/keel/data-skeleton/home/admin` 由 1000:1000 变成 0:0(装完机 admin 的家目录归 root,
-用户写不了自己的家目录),`/etc/shadow` 的 shadow 组、setgid shadow 的 `unix_chkpwd`/`chage` 等一起丢。
-原因是"非 root 用户只能创建属于自己的 uid/gid 的文件"(mkosi 源码里就这么写的,它甚至为此把沙箱里的
-`chown` 变成 noop)。所以:**开发/自测/CI 用 rootless 没问题(还快),发布产物必须
-`sudo tools/build.sh`**;另外**别把两种构建混在同一个 `mkosi.cache/` 上** —— 增量缓存是整棵树
-move/copy(`cp --preserve=…,ownership`),身份一变就把错误属主**传染**给下一次构建,
+**原生构建只支持 root(2026-09-27 起,坑 #66)** ——
+非 root 跑 `tools/build.sh` 时 mkosi 没有 subgid 映射,镜像里**所有非 0 的 uid/gid 都会被压成 0**:
+把 `slot-a.root.raw` 用 `fsck.erofs --extract` 解出来比一遍,root 构建有 18 个 `gid≠0`、3 个 `uid≠0`,
+非 root 是 **0 和 0** —— 其中包括 `/usr/share/keel/data-skeleton/home/admin`(1000:1000 → 0:0,
+装完机 admin 的家目录归 root、用户写不了自己的家目录),`/etc/shadow` 的 shadow 组与 setgid shadow 的
+`unix_chkpwd`/`chage` 一起丢。原因是"非 root 用户只能创建属于自己的 uid/gid 的文件"(mkosi 源码里
+就这么写的,它甚至为此把沙箱里的 `chown` 变成 noop)。产物**看起来一切正常**(exit 0、产物齐全),
+所以这里不是"提示一句"而是**直接拒绝**:`build.sh` 见到 `id -u != 0` 就 `die`。
+**没有 root 也要构建 → 走容器适配器** `tools/build-container.sh`:容器里是 root,而且 podman 会把
+宿主机的 subuid/subgid 映射进容器(2026-09-27 实测:不用 sudo 的 rootless podman 容器里
+`chown 0:42` 真的生效)⇒ 那条路的产物不受这个限制。
+另外**别把两种构建混在同一个 `mkosi.cache/` 上**(万一你绕过了拒绝逻辑):
+增量缓存是整棵树 move/copy(`cp --preserve=…,ownership`),身份一变就把错误属主**传染**给下一次构建,
 切换身份前先 `rm -rf mkosi.cache/*.cache`(`mkosi.pkgcache/` 是 .deb 缓存,可以留着省下载)。
 
 **非 root 跑 `tools/verify.sh` 曾经是"两套答案"**(同一轮实测,坑 #67/#68):门面现在自己把
@@ -414,10 +417,12 @@ sudo tools/burn.sh /dev/nvme0n1
       随后补做 **rootless(不带 sudo)那一半**,结论是"**能跑通,但产物不等价**":
       普通用户跑三个 profile 也 exit 0、`dist/` 齐全,可镜像里**所有非 0 的 uid/gid 都被压成 0**
       (`slot-a` 解包比对:root 构建 18 个 `gid≠0`/3 个 `uid≠0`,rootless 是 0/0;含 admin 家目录
-      1000:1000 → 0:0)。⇒ **开发/自测可以 rootless,发布产物必须用 root**;
-      两种构建**不能混用同一个 `mkosi.cache/`**。同一轮还修掉了"门会静默少跑"的两处
-      (非 root 的 PATH 看不见 `/usr/sbin/sfdisk` ⇒ 第 3 节 14 条断言整节消失;shellcheck 日志
-      写死 `/tmp` 固定名 ⇒ root 跑过之后非 root 假红)。细节见坑 #66–#68 与 `release-notes-v1.md` #20
+      1000:1000 → 0:0)⇒ **原生路径改成直接拒绝非 root**(`build.sh` 见 `id -u != 0` 就 die),
+      没有 root 要走**容器适配器**(容器里是 root,podman 还会把 subuid/subgid 映射进去,实测
+      容器内 `chown 0:42` 生效);两种构建也**不能混用同一个 `mkosi.cache/`**。
+      同一轮还修掉了"门会静默少跑"的两处(非 root 的 PATH 看不见 `/usr/sbin/sfdisk` ⇒ 第 3 节
+      14 条断言整节消失;shellcheck 日志写死 `/tmp` 固定名 ⇒ root 跑过之后非 root 假红)。
+      细节见坑 #66–#68 与 `release-notes-v1.md` #20
 - [x] **v1.1 ③:更新检查(只 check + 通知,2026-09-26)** —— 新增 `keel-update-check.timer/.service`
       (开机 5 分钟后 + 每 6 小时,`Persistent=true`):只调**只读**的 `os-update check`
       (拉一个 manifest),结论写 `/data/keel/update-check.state`,`os-status` 与 `keel-check`

@@ -54,7 +54,19 @@ MODE=build
 if ! command -v mkosi >/dev/null 2>&1; then
     die "没装 mkosi。$(keel_host_hint)"
 fi
-[ "$(id -u)" = 0 ] || log "提示:没在用 root 跑 —— 能跑通(mkosi 25.3 会用用户命名空间),但产物**不等价**:镜像里非 0 的 uid/gid 会被压成 0(坑 #66);发布产物请用 sudo"
+# **非 root 直接拒绝**(2026-09-27,v1.1 ⑥ 实测,坑 #66)。
+#
+# 为什么不是"警告一句就放行":mkosi 在裸宿主上以普通用户构建时没有 subgid 映射,
+# 镜像里**所有非 0 的 uid/gid 都会被压成 0** —— `/etc/shadow` 的 shadow 组、
+# setgid shadow 的 unix_chkpwd/chage、utmp 组,以及
+# `/usr/share/keel/data-skeleton/home/admin`(1000:1000 → 0:0,装完机 admin 的家目录归 root)。
+# 产物**看起来一切正常**(构建 exit 0、产物齐全),所以一句提示会被几千行日志埋掉;
+# 本项目的规矩是"拒绝好过假装"(同 os-update fetch 拒绝带 migrate= 的载荷)。
+#
+# 需要"没有 root 也能构建"时走**容器适配器**:容器里是 root,而且 podman 会把宿主机的
+# subuid/subgid 映射进容器(2026-09-27 实测:不用 sudo 的 rootless podman 容器里
+# `chown 0:42` 真的生效)⇒ 那条路的产物不受这个限制。
+[ "$(id -u)" = 0 ] || die "原生构建必须用 root:非 root 构建出的镜像里非 0 的 uid/gid 会被压成 0(坑 #66,admin 的家目录会归 root)。请 sudo 重跑,或改用 tools/build-container.sh(在容器里以 root 构建,不需要宿主 sudo)。"
 
 # OTA 演练走**和容器 drill 模式同一份**编排脚本(tools/ota-drill-container.sh:名字里的
 # container 是历史原因,它用 cwd 定位仓库、不假设自己在容器里)。它自己会跑静态校验、
