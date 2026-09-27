@@ -19,9 +19,11 @@ set -euo pipefail
 . /usr/lib/keel/lib.sh
 
 readonly SKELETON="/usr/share/keel/data-skeleton"
-readonly REPART_DEFS="/usr/lib/keel/repart.d"
+# 这两个路径来自 lib.sh(单一事实来源 —— keel_grow_data_probe 也用它们,
+# 而它还要被首启的 keel-firstboot 调用)。
+readonly REPART_DEFS="$KEEL_REPART_DEFS"
 readonly RESET_FLAG="/data/overlayfs/.reset-etc-requested"
-readonly DATA_PART="/dev/disk/by-partlabel/data"
+readonly DATA_PART="$KEEL_DATA_PART"
 
 usage() {
     cat <<'EOF'
@@ -33,8 +35,9 @@ usage() {
   --reset-etc     请求"下次启动清空 /etc 的可写层"。本命令**不清空**:只写标志文件
                   /data/overlayfs/.reset-etc-requested,由 keel-mounts 在挂载前
                   先把旧 upper 备份成 etc.bak-<时间戳>,再清空。
-  --grow-data   用 systemd-repart 把 data 分区扩到整盘剩余空间(只扩不缩;
-                  文件系统由 repart 的 GrowFileSystem 负责,不需要手动 resize2fs)。
+  --grow-data   把 data 分区扩到整盘剩余空间(只扩不缩)。**两步**:systemd-repart
+                  扩分区(它从不改动已存在分区的文件系统),再由 systemd-growfs 或
+                  resize2fs 把文件系统顶满;幂等,已经到顶时什么都不做。
   --mark-bad      把当前运行的这个槽标记为 bad(systemd-bless-boot bad),
                   让引导器以后不再选它。仅当另一个槽确实可用时才用。
   --repair-boot   重装 ESP 上的引导器并重建 NVRAM 启动项(bootctl install)。
@@ -117,82 +120,55 @@ do_reset_etc() {
 # 必须和装机时的 30-data.conf 是同一个类型 UUID(见 repart/install/30-data.conf
 # 的注释:刻意用项目私有 UUID,避免和 linux-generic 的 root-b 撞车)。
 #
-# TODO(待验证):"GrowFileSystem=yes 会顺带 resize2fs" 这个说法**站不住**:
+# 分区那一步与"自己 mount(8) 挂的 data 分区"为什么必须分开做(坑 #42):
 #   读 systemd main 的源码,resize_fs() 只被 systemd-growfs 调用,
 #   repart 自己从不 resize 已有文件系统(context_mkfs 里明写
 #   `if (PARTITION_EXISTS(p)) continue;  /* Never format existing partitions */`),
 #   GrowFileSystem= 只是把 GPT 的 bit 59 打上,交给 gpt-auto-generator 生成
-#   systemd-growfs@.service —— 而我们的 data 分区是自己挂的(从前是 cmdline 的
-#   systemd.mount-extra=PARTLABEL=data),不经过 gpt-auto-generator
-#   (repart.d(5):这三个 flag "only affect automatic partition mounting")。
-#   ⇒ 所以这一步只保证**分区**变大;文件系统要另外扩。2026-09 用 40G 假盘实测:
-#   systemd-growfs /data 在这种"自己 mount(8) 挂的"挂载点上**会失败**
-#   (它要的是 systemd 的 .mount 单元),所以现在的顺序是
-#   "先试 systemd-growfs(把错误打出来)→ 失败就用 resize2fs 直接扩"(坑 #42)。
-#   两个数字(分区 / 文件系统)都会打印出来,不一致就是没扩到位。
+#   systemd-growfs@.service —— 而我们的 data 分区是 keel-mounts 自己挂的,
+#   不经过 gpt-auto-generator(repart.d(5):这三个 flag "only affect automatic
+#   partition mounting")。⇒ repart 只保证**分区**变大,文件系统要另外扩。
+#   2026-09 用 40G 假盘实测:systemd-growfs 在这种挂载点上**会失败**(它要的是
+#   systemd 的 .mount 单元),所以顺序是"先试 systemd-growfs(错误原样打出来)
+#   → 失败就用 resize2fs 直接扩"。两个数字(分区 / 文件系统)都会打印出来,
+#   不一致就是没扩到位。
+#
+# 机制本身在 lib.sh 的 keel_grow_data_*(与首启的 keel-firstboot **共用一份**,
+# 以前两处各抄一份、已经漂移过 —— 见 lib.sh 里那段注释)。这里只负责措辞:
+# 面向操作者,所以**每一步失败都要 die**(和首启"只记日志、绝不拦启动"正相反),
+# 并且用 verbose 让 repart 的过程打在屏幕上 —— 这正是那两处调用点必须分开写文案的原因。
 # ---------------------------------------------------------------------------
 do_grow_data() {
-    local pn rel disk part_bytes dev_bytes
-    if [ ! -e "$DATA_PART" ]; then
+    local part_bytes dev_bytes
+    if ! keel_grow_data_probe; then
         keel_die "找不到 data 分区:${DATA_PART}"
     fi
-    pn="$(lsblk -no PKNAME "$(readlink -f "$DATA_PART")" 2>/dev/null | head -n1)" || pn=""
-    if [ -z "$pn" ]; then
+    if [ -z "$KEEL_GROW_DISK" ]; then
         keel_die "解析不出 data 分区所在的磁盘(lsblk -no PKNAME $(readlink -f "$DATA_PART") 没输出)"
     fi
-    # lsblk 给出的 PKNAME 可能是分区名而不是整盘名(不同版本/不同插件对
-    # by-partlabel 符号链接的处理不一样),所以再往上找一层,直到父设备是整盘。
-    rel="$(lsblk -no TYPE "$(readlink -f "$DATA_PART")" 2>/dev/null | head -n1)" || rel=""
-    if [ "$rel" != "disk" ]; then
-        local pn2
-        pn2="$(lsblk -no PKNAME "/dev/$pn" 2>/dev/null | head -n1)" || pn2=""
-        # nvme0n1p2 的父设备是 nvme0n1(TYPE=disk),它自己没有父设备 —— lsblk 对
-        # 整盘会打印空行,这里必须把它挡掉,否则 pn 会被清空。
-        if [ -n "$pn2" ]; then
-            pn="$pn2"
-        fi
-    fi
-    if [ -b "/dev/$pn" ]; then
-        disk="/dev/$pn"
-    elif [ -b "$pn" ]; then
-        disk="$pn"
-    else
-        keel_die "解析出的目标磁盘不存在:/dev/${pn}"
-    fi
-    [ -d "$REPART_DEFS" ] || keel_die "找不到 repart 定义目录:${REPART_DEFS}"
+    part_bytes="$(blockdev --getsize64 "$KEEL_GROW_PART" 2>/dev/null)" || part_bytes=""
+    dev_bytes="$(blockdev --getsize64 "$KEEL_GROW_DISK" 2>/dev/null)" || dev_bytes=""
+    echo "目标磁盘 : ${KEEL_GROW_DISK}(${dev_bytes:-未知} 字节)"
+    echo "data     : ${KEEL_GROW_PART}(当前 ${part_bytes:-未知} 字节)"
+    echo "只扩不缩。分两步:repart 扩**分区**,文件系统随后由 systemd-growfs(有就用)"
+    echo "或 resize2fs 顶满 —— repart 从不改动已存在分区的文件系统,GrowFileSystem= 只是"
+    echo "个给 systemd-gpt-auto-generator 看的 GPT 标志位,而我们不走那条路。"
 
-    part_bytes="$(blockdev --getsize64 "$(readlink -f "$DATA_PART")" 2>/dev/null)" || part_bytes=""
-    dev_bytes="$(blockdev --getsize64 "$disk" 2>/dev/null)" || dev_bytes=""
-    echo "目标磁盘 : ${disk}(${dev_bytes:-未知} 字节)"
-    echo "data     : $(readlink -f "$DATA_PART")(当前 ${part_bytes:-未知} 字节)"
-    echo "只扩不缩。分两步:repart 扩**分区**,systemd-growfs 扩**文件系统** ——"
-    echo "repart 从不改动已存在分区的文件系统,GrowFileSystem= 只是个给"
-    echo "systemd-gpt-auto-generator 看的 GPT 标志位,而我们不走那条路。"
-
-    if ! command -v systemd-repart >/dev/null 2>&1; then
-        keel_die "找不到 systemd-repart(systemd-repart 包没装?)"
+    keel_grow_data_apply verbose || true
+    case "$KEEL_GROW_REPART" in
+        nodefs) keel_die "找不到 repart 定义目录:${REPART_DEFS}" ;;
+        notool) keel_die "找不到 systemd-repart(systemd-repart 包没装?)" ;;
+        failed) keel_die "systemd-repart 失败。常见原因:目标盘上还有别的分区占着后面的空间、或定义里的类型 UUID 对不上现有 data 分区。" ;;
+    esac
+    if [ -n "$KEEL_GROW_GFS_ERR" ]; then
+        keel_log "systemd-growfs 失败($KEEL_GROW_GFS_ERR),改用 resize2fs"
     fi
-    systemd-repart --dry-run=no --definitions="$REPART_DEFS" "$disk" ||
-        keel_die "systemd-repart 失败。常见原因:目标盘上还有别的分区占着后面的空间、或定义里的类型 UUID 对不上现有 data 分区。"
-    sync
-
-    # 第二步:把文件系统顶满分到的新空间(ext4 在线扩容,resize2fs;e2fsprogs 提供)。
-    # 为什么不用 systemd-growfs 当唯一手段(坑 #42,实测):Debian 的 systemd 包**不带**
-    # 这个二进制,旧写法拿到的其实是 "command not found",还被 `>/dev/null 2>&1` 吞了。
-    # 有就试一下(通用工具,按文件系统类型分派),没有就直接 resize2fs;已经到顶时它返回 0。
-    data_dev="$(readlink -f "$DATA_PART")"
-    if command -v systemd-growfs >/dev/null 2>&1; then
-        if ! gf_out=$(systemd-growfs /data 2>&1); then
-            keel_log "systemd-growfs 失败($gf_out),改用 resize2fs"
-        fi
+    if [ "$KEEL_GROW_FS" != ok ]; then
+        keel_die "resize2fs $KEEL_GROW_PART 失败:$KEEL_GROW_FS_ERR(e2fsprogs 装了吗?/data 是 ext4 吗?)"
     fi
-    if ! rs_out=$(resize2fs "$data_dev" 2>&1); then
-        keel_die "resize2fs $data_dev 失败:$rs_out(e2fsprogs 装了吗?/data 是 ext4 吗?)"
-    fi
-    keel_log "resize2fs:$(printf '%s' "$rs_out" | tr '\n' ' ')"
-    echo "现在的大小:分区 $(blockdev --getsize64 "$data_dev" 2>/dev/null) 字节 / 文件系统 $(keel_data_fs_bytes size) 字节"
+    keel_log "resize2fs:$(printf '%s' "$KEEL_GROW_RS_OUT" | tr '\n' ' ')"
+    echo "现在的大小:分区 ${KEEL_GROW_PART_BYTES} 字节 / 文件系统 ${KEEL_GROW_FS_BYTES} 字节"
     echo "(文件系统比分区小 1~2% 是 ext4 元数据/保留块的正常开销,不是没扩到位)"
-
 }
 
 # ---------------------------------------------------------------------------

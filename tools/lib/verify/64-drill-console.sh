@@ -16,19 +16,47 @@ fi
 
 # /data 的文件系统扩容:必须有 resize2fs 兜底(坑 #42:systemd-growfs 对"自己 mount(8)
 # 挂的"挂载点会失败,2026-09 用 40G 假盘复现过"分区扩到 27G、文件系统还是 974M")。
-if grep -q 'command -v systemd-growfs' mkosi.extra/usr/lib/keel/firstboot &&
-   grep -q 'resize2fs "$vol"' mkosi.extra/usr/lib/keel/firstboot &&
-   grep -q 'systemd 包不带它' mkosi.extra/usr/lib/keel/firstboot &&
-   grep -q 'part_bytes / 20' mkosi.extra/usr/lib/keel/firstboot; then
-    ok "keel-firstboot:growfs 有则试、resize2fs 必跑、按 5% 容差判断是否扩到位(坑 #42)"
+#
+# 2026-09-27(P3)起,机制只有**一份**(lib.sh 的 keel_grow_data_*),firstboot 与
+# os-rescue 都只是调用它 —— 这两处以前各抄一份、已经漂移(一边少"再往上找一层"的磁盘
+# 解析、一边少 5% 容差)。所以断言也搬过来:**先看那一份实现,再看两个调用点没有私货**。
+if grep -q 'command -v systemd-growfs' mkosi.extra/usr/lib/keel/lib.sh &&
+   grep -q 'resize2fs "$KEEL_GROW_PART"' mkosi.extra/usr/lib/keel/lib.sh &&
+   grep -q '坑 #42' mkosi.extra/usr/lib/keel/lib.sh; then
+    ok "lib.sh 的 keel_grow_data_apply:growfs 有则试、resize2fs 必跑(坑 #42,唯一实现)"
 else
-    no "keel-firstboot 的扩容逻辑不完整(缺 resize2fs / 缺 growfs 存在性判断 / 缺 5% 容差)"
+    no "lib.sh 的扩容机制不完整(缺 resize2fs / 缺 growfs 存在性判断)"
 fi
-if grep -q 'resize2fs "$data_dev"' mkosi.extra/usr/bin/os-rescue &&
-   grep -q '现在的大小:分区' mkosi.extra/usr/bin/os-rescue; then
-    ok "os-rescue --grow-data 同样有 resize2fs 兜底,并打印分区/文件系统两个尺寸"
+if grep -q 'keel_grow_data_apply' mkosi.extra/usr/lib/keel/firstboot &&
+   grep -q 'KEEL_GROW_PART_BYTES / 20' mkosi.extra/usr/lib/keel/firstboot; then
+    ok "keel-firstboot 调共用机制,并保留自己的 5% 容差判断(没扩到位就警告)"
 else
-    no "os-rescue --grow-data 没有 resize2fs 兜底(坑 #42)"
+    no "keel-firstboot 没有走 keel_grow_data_apply,或丢了 5% 容差判断"
+fi
+if grep -q 'keel_grow_data_apply verbose' mkosi.extra/usr/bin/os-rescue &&
+   grep -q '现在的大小:分区' mkosi.extra/usr/bin/os-rescue; then
+    ok "os-rescue --grow-data 走同一份机制(verbose)、并打印分区/文件系统两个尺寸"
+else
+    no "os-rescue --grow-data 没走 keel_grow_data_apply(坑 #42 的兜底就在那里)"
+fi
+# 反向断言:两个调用点都不许再有真正的 repart/growfs/resize2fs 调用 ——
+# 漂移就是这么开始的。判据要够严:**注释行不算**(坑 #42 的解释里就写着这些命令),
+# 只有"命令位置 + 后面跟着参数"才算(`resize2fs 把文件系统顶满` 这种用法说明不算)。
+#
+# ⚠ 逐个文件跑,不要把两个文件一起喂给 `grep -v`:那样它会给每行加 `文件:` 前缀,
+#   `^`/空白锚点就全失效了 —— 这个判据第一版就是这么写的,结果**变异的树照样全绿**
+#   (往 firstboot 末尾塞一行 `resize2fs "$vol"` 都没抓到)。定向变异才试出来的。
+drift=""
+for f in mkosi.extra/usr/lib/keel/firstboot mkosi.extra/usr/bin/os-rescue; do
+    hit=$(grep -vE '^[[:space:]]*#' "$f" 2>/dev/null |
+          grep -nE '(^|[[:space:]])(systemd-repart|systemd-growfs|resize2fs)[[:space:]]+("?\$|-|/dev/)' || true)
+    if [ -n "$hit" ]; then drift="$drift  ${f}:$(printf '%s' "$hit" | head -1)"; fi
+done
+if [ -z "$drift" ]; then
+    ok "firstboot / os-rescue 里没有 repart·growfs·resize2fs 的私货(扩容只有 lib.sh 一份)"
+else
+    no "这些文件又自己抄了扩容逻辑(应该只调 keel_grow_data_*):"
+    printf '%s\n' "$drift" | head -5 | sed 's/^/      /'
 fi
 
 # OTA 演练(mkosi.extra-test/):必须只在 test profile,且被 test preset 启用

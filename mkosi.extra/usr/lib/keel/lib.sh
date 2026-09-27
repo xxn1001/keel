@@ -244,6 +244,138 @@ keel_data_fs_bytes() {
     printf '%s\n' "$out"
 }
 
+# ---------------------------------------------------------------------------
+# /data 扩容:repart 扩**分区** + growfs/resize2fs 扩**文件系统**
+#
+# 谁用:`keel-firstboot`(每次启动的自愈)与 `os-rescue --grow-data`(手动入口)。
+# **为什么必须是这一份**:这两处曾经各抄一份,结果已经漂移 —— firstboot 那份少了
+# "PKNAME 可能是分区名、要再往上找一层"的处理,os-rescue 那份少了 5% 容差判断,
+# 两边的日志文案也各不相同。坑 #42(resize2fs 压根没跑、文件系统没扩到位)正是这种
+# "改了一处忘了另一处"的形态。
+#
+# 这一对函数**只做机制,一句文案都不写**:两处调用点的措辞与"失败要不要致命"本来
+# 就不同(firstboot 只记日志、绝不能拦住启动;os-rescue 面向操作者、失败要 die),
+# 结果全部通过下面的全局变量交回调用方,由调用方自己措辞。
+#
+# ⚠ 必须当**普通命令**调用,不许写进 `$( )` 或管道 —— 结果全在全局变量里,
+#   在子 shell 里跑等于什么都没发生(和 keel_esp_ensure 同一个坑型)。
+#
+# keel_grow_data_probe:定位 data 分区与它所在的整盘。
+#   返回 0 = 有可用的 data 分区(KEEL_GROW_PART 非空);
+#   返回 1 = 连 data 分区都没有(调用方自己决定要不要出声 —— firstboot 是静默的)。
+#   解析不出整盘时 KEEL_GROW_DISK 为空、**但仍然返回 0**:分区扩不了的时候,
+#   文件系统那一步照样该试(firstboot 原来的行为就是这样)。
+#
+# keel_grow_data_apply [quiet|verbose]:先 repart 扩分区(能定位到整盘时才做),
+#   再扩文件系统。quiet = repart 的输出丢掉(每次启动都跑的 firstboot 用),
+#   verbose = repart 的输出原样进 stdout(面向操作者的 os-rescue 用)。
+#   两步各自记结果、互不牵连 —— "哪一步算致命"由调用方决定。
+#   返回 0 = 文件系统扩成功;1 = 没有 data 分区,或扩文件系统失败(分区那步失败
+#   不算:firstboot 要继续启动,os-rescue 要 die —— 看 KEEL_GROW_REPART)。
+#
+# 结果变量(每次调用开头都会清空,成功/失败都尽量填):
+#   KEEL_GROW_PART / KEEL_GROW_DISK            data 分区设备 / 它所在的整盘
+#   KEEL_GROW_PART_BYTES / KEEL_GROW_FS_BYTES  两个尺寸(读不到就是空串)
+#   KEEL_GROW_REPART  ok|skipped|nodefs|notool|failed   (skipped = 定位不到整盘)
+#   KEEL_GROW_REPART_ERR                       失败时 repart 的输出
+#   KEEL_GROW_FS      ok|failed
+#   KEEL_GROW_FS_ERR                           resize2fs 失败时的原文
+#   KEEL_GROW_GFS     yes|no                   镜像里有没有 systemd-growfs
+#   KEEL_GROW_GFS_ERR                          有、但跑失败了时的原文(不算致命)
+#   KEEL_GROW_RS_OUT                           resize2fs 成功时的原文
+# ---------------------------------------------------------------------------
+KEEL_DATA_PART=${KEEL_DATA_PART:-/dev/disk/by-partlabel/data}
+KEEL_REPART_DEFS=${KEEL_REPART_DEFS:-/usr/lib/keel/repart.d}
+
+keel_grow_data_probe() {
+    KEEL_GROW_PART=""; KEEL_GROW_DISK=""
+    local vol pk rel pn2
+    vol=$(readlink -f "$KEEL_DATA_PART" 2>/dev/null) || vol=""
+    if [ -z "$vol" ] || [ ! -b "$vol" ]; then
+        return 1
+    fi
+    KEEL_GROW_PART=$vol
+    pk=$(lsblk -ndo PKNAME "$vol" 2>/dev/null | head -n1) || pk=""
+    [ -n "$pk" ] || return 0
+    # lsblk 给出的 PKNAME 可能是分区名而不是整盘名(不同版本/不同插件对
+    # by-partlabel 符号链接的处理不一样),所以再往上找一层,直到父设备是整盘。
+    rel=$(lsblk -ndo TYPE "$vol" 2>/dev/null | head -n1) || rel=""
+    if [ "$rel" != disk ]; then
+        pn2=$(lsblk -ndo PKNAME "/dev/$pk" 2>/dev/null | head -n1) || pn2=""
+        # nvme0n1p2 的父设备是 nvme0n1(TYPE=disk),它自己没有父设备 —— lsblk 对
+        # 整盘会打印空行,这里必须把它挡掉,否则 pk 会被清空。
+        if [ -n "$pn2" ]; then pk=$pn2; fi
+    fi
+    if [ -b "/dev/$pk" ]; then
+        KEEL_GROW_DISK="/dev/$pk"
+    elif [ -b "$pk" ]; then
+        KEEL_GROW_DISK="$pk"
+    fi
+    return 0
+}
+
+keel_grow_data_apply() {
+    local mode=${1:-quiet} repart_out gfs_out rs_out
+    KEEL_GROW_PART_BYTES=""; KEEL_GROW_FS_BYTES=""
+    KEEL_GROW_REPART=""; KEEL_GROW_REPART_ERR=""
+    KEEL_GROW_FS=""; KEEL_GROW_FS_ERR=""
+    KEEL_GROW_GFS=""; KEEL_GROW_GFS_ERR=""; KEEL_GROW_RS_OUT=""
+    if [ -z "$KEEL_GROW_PART" ]; then
+        keel_grow_data_probe || return 1
+    fi
+    # ① 分区:repart 只扩不缩,而且幂等(分区表已经符合定义时它什么都不做)。
+    #    它**从不**改已存在分区的文件系统 —— GrowFileSystem= 只是给
+    #    systemd-gpt-auto-generator 看的 GPT 标志位,而我们不走那条路(见 ②)。
+    KEEL_GROW_REPART=skipped
+    if [ -n "$KEEL_GROW_DISK" ]; then
+        if [ ! -d "$KEEL_REPART_DEFS" ]; then
+            KEEL_GROW_REPART=nodefs
+        elif ! command -v systemd-repart >/dev/null 2>&1; then
+            KEEL_GROW_REPART=notool
+        elif [ "$mode" = verbose ]; then
+            if systemd-repart --dry-run=no --definitions="$KEEL_REPART_DEFS" "$KEEL_GROW_DISK"; then
+                KEEL_GROW_REPART=ok
+            else
+                KEEL_GROW_REPART=failed
+            fi
+        elif repart_out=$(systemd-repart --dry-run=no --definitions="$KEEL_REPART_DEFS" "$KEEL_GROW_DISK" 2>&1); then
+            KEEL_GROW_REPART=ok
+        else
+            KEEL_GROW_REPART=failed
+            KEEL_GROW_REPART_ERR=$repart_out
+        fi
+        if [ "$KEEL_GROW_REPART" = ok ]; then sync; fi
+    fi
+    # ② 文件系统:有 systemd-growfs 就先试它(通用工具、按文件系统类型分派),然后
+    #    **总是**跑 resize2fs —— ext4 的在线扩容,mounted 状态下也能扩,已经到顶时返回 0。
+    #    growfs 失败**不算**失败:坑 #42 实测 Debian 的 systemd 包根本不带这个二进制,
+    #    而且它对"自己 mount(8) 挂的挂载点"也会失败(它要的是 systemd 的 .mount 单元)。
+    if command -v systemd-growfs >/dev/null 2>&1; then
+        KEEL_GROW_GFS=yes
+        if ! gfs_out=$(systemd-growfs /data 2>&1); then
+            KEEL_GROW_GFS_ERR=$gfs_out
+        fi
+    else
+        KEEL_GROW_GFS=no
+    fi
+    if rs_out=$(resize2fs "$KEEL_GROW_PART" 2>&1); then
+        KEEL_GROW_FS=ok
+        KEEL_GROW_RS_OUT=$rs_out
+    else
+        KEEL_GROW_FS=failed
+        KEEL_GROW_FS_ERR=$rs_out
+    fi
+    # 两个尺寸都交回去。**不能**要求它们相等:ext4 的元数据/保留块让 df 看到的 Size
+    # 天然比设备小 1~2%(2026-09 实测 471 MiB / 27 GiB ≈ 1.7%),所以这里只交数字,
+    # 容差判断留给调用方(firstboot 5% 才算没扩到位,os-rescue 只提示 1~2% 属正常开销)。
+    KEEL_GROW_PART_BYTES=$(blockdev --getsize64 "$KEEL_GROW_PART" 2>/dev/null) || KEEL_GROW_PART_BYTES=""
+    KEEL_GROW_FS_BYTES=$(keel_data_fs_bytes size) || KEEL_GROW_FS_BYTES=""
+    if [ "$KEEL_GROW_FS" != ok ]; then
+        return 1
+    fi
+    return 0
+}
+
 # "更新检查"的结论(v1.1 ③)。写进独立的状态文件,由 os-status / keel-check 呈现。
 #
 # 为什么要独立文件而不是塞进 /data/keel/state:那份 state 是**启动语义**的
