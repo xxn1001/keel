@@ -103,6 +103,22 @@ if grep -q 'keel_update_check_state' mkosi.extra/usr/lib/keel/lib.sh &&
    grep -q 'update-check.state' mkosi.extra/usr/bin/os-status &&
    grep -q 'update-check.state' mkosi.extra/usr/share/keel/keel-check; then
     ok "update-check.state 链路完整:lib.sh 的 helper → os-update check 写入 → os-status/keel-check 呈现"
+
+# 状态文件必须**先落盘、再改名**(坑 #70)。只做 rename 是不够的:`mktemp` + 写入 + `mv` 在
+# 硬断电下会留下**空文件**(rename 原子,但新文件的数据可能还在页缓存),下一次写入就从空文件
+# 重建 ⇒ pending/last_result/first_boot 一起消失。压力测试实测:6 刀里 5 刀把 state 打成
+# "只剩 entry_*/running_slot"。两个写入方(keel_state_set / keel_update_check_state)都要 sync。
+sync_missing=""
+for fn in keel_state_set keel_update_check_state; do
+    if ! awk "/^${fn}\\(\\)/,/^}/" mkosi.extra/usr/lib/keel/lib.sh | grep -q 'sync "$tmp"'; then
+        sync_missing="$sync_missing $fn"
+    fi
+done
+if [ -z "$sync_missing" ]; then
+    ok "状态文件的写入都**先落盘再改名**(rename 前 sync \$tmp;坑 #70)"
+else
+    no "这些写入方只 rename 不落盘,硬断电会把状态文件打成空文件:$sync_missing"
+fi
 else
     no "update-check.state 的写入或呈现链路缺了一环"
 fi

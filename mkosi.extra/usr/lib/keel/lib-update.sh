@@ -398,6 +398,24 @@ cmd_stage() {
         keel_die "挂载点 ${KEEL_ESP} 无法重新挂载为可写:检查它是否真的挂载了(findmnt ${KEEL_ESP});先执行 sudo os-rescue --repair-boot 或手动 mount ${KEEL_ESP}"
     fi
     ukisrc="$KEEL_UKI_DIR/keel-${target}+${TRIES}.efi"
+    # ⚠⚠ **必须先把目标槽的正式条目挪开**:它和即将写入的候选条目是**同一个条目 ID**
+    #    (bootctl 的 ID = 文件名去掉 `+N` 计数后缀 —— 见下面 set-oneshot 那段的说明)。
+    #    不挪开的话,下一次启动时那个 ID 会解析到**旧的正式条目**上,于是:
+    #      ① 机器启动的还是**旧 UKI**,而根分区已经换成新载荷 ⇒「旧内核 + 新根」,
+    #         直接违反不变量 3(内核与根必须配对),而 keel-confirm 只看槽与版本、
+    #         发现不了(它是从**新根**的 os-release 读版本号的);
+    #      ② 候选条目永远没人消费,留在 ESP 上吃 156 MiB —— **每次更新漏一个**,
+    #         稳态是每个槽各一个孤儿(共 312 MiB),ESP 可用从 710 MiB 掉到 398 MiB,
+    #         低于 keel-check 自己的 400 MiB 警告线,离 stage 的空间下限只剩 36 MiB。
+    #    2026-09-27 的循环 soak 第 2 轮就复现了(第 1 轮没事,因为那时目标槽还没有
+    #    正式条目、ID 是唯一的)。挪开之后 ID 唯一 ⇒ 引导器只会选中候选 ⇒ boot counting
+    #    正常 → bless 把它改名成正式名 ⇒ 既不漏空间、也不会"新根配旧内核"。
+    #
+    #    为什么是**删**而不是改名备份:目标槽的根分区此刻**已经被新载荷覆盖**了,
+    #    旧正式条目指向的内容已经不存在,留着只会再漏 156 MiB。删掉之后任何一个断电
+    #    窗口都是安全的:此刻持久默认仍指向**正在运行**的那个槽,固件不会没得选。
+    rm -f "$KEEL_UKI_DIR/keel-${target}.efi" \
+        || keel_die "删不掉目标槽的正式条目 $KEEL_UKI_DIR/keel-${target}.efi:ESP 可写吗?"
     cp -- "$uki" "$ukisrc" || keel_die "写入 $ukisrc 失败(ESP 空间不足?)"
     sync
     keel_log "UKI 已写入 ${ukisrc}(名字里的 +${TRIES} 是 boot counting 的 tries-left)"

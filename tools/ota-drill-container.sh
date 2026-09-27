@@ -97,6 +97,10 @@ rm -rf /tmp/drill-serve
 mkdir -p /tmp/drill-serve
 ln -sfn "$REPO/$DRILL_PAYLOAD" /tmp/drill-serve/good
 ( cd /tmp/drill-serve && nohup python3 -m http.server "$DRILL_PORT" --bind 0.0.0.0 >/tmp/drill-http.log 2>&1 & )
+# 收尾必须把它收掉(2026-09-27 实测两件事):① 不收就一直占着 $DRILL_PORT,下一次演练撞"端口被占";
+# ② 它继承的 stdout 会让 `tools/build.sh --drill 2>&1 | tee 日志` 的管道**一直不关** ——
+#    演练明明已经跑完、日志最后一行都打完了,作业却永远显示 running(得手动 kill 才结束)。
+trap 'pkill -f "http.server $DRILL_PORT" 2>/dev/null || true' EXIT
 sleep 2
 # 用 python3 探测(容器里**没有 curl** —— 第一次就栽在这:mkosi 不依赖它)
 python3 - "$DRILL_PORT" <<'PY'

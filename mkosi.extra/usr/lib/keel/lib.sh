@@ -197,7 +197,16 @@ keel_state_get() {
     sed -n "s/^[[:space:]]*$1=//p" "$KEEL_STATE" | tail -n1
 }
 
-# 原子写:先写临时文件再 rename,避免掉电留下半个状态文件。
+# 原子写:先写临时文件、落盘、再 rename。
+#
+# ⚠ 只有 rename 是不够的(2026-09-27 压力测试实测,见坑 #70):`mktemp` + 写入 + `mv`
+#   在**硬断电**(真机拔电 / 内核 panic / 虚拟机 `virsh destroy`)下会留下一个**空文件** ——
+#   rename 本身是原子的,但**新文件的数据**可能还在页缓存里,日志重放之后目录项在、内容是空的。
+#   后果不是"少一次更新",而是**整个状态文件被打回原形**:下一次 keel_state_set 从空文件
+#   重建,于是 pending_slot / last_result / first_boot 这些键一起消失
+#   (实测:6 刀里 5 刀把 state 打成"只剩 entry_*/running_slot")。
+#   `sync FILE`(coreutils ≥ 8.24)只把这个文件刷下去,不动整个系统;没有这个参数的老
+#   coreutils 退回全量 `sync`(慢一点,但语义正确)。
 keel_state_set() {
     local key=$1 val=${2:-} tmp
     install -d -m 0755 "$KEEL_STATE_DIR"
@@ -207,6 +216,7 @@ keel_state_set() {
     fi
     printf '%s=%s\n' "$key" "$val" >>"$tmp"
     chmod 0644 "$tmp"
+    sync "$tmp" 2>/dev/null || sync
     mv -f "$tmp" "$KEEL_STATE"
 }
 
@@ -413,6 +423,9 @@ keel_update_check_state() {
         if [ -n "$note" ]; then printf 'note=%s\n' "$note"; fi
     } >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
     chmod 0644 "$tmp" 2>/dev/null || true
+    # 同样要**先落盘再改名**(理由见 keel_state_set 上面那段:硬断电会在 rename 之后
+    # 留下一个空文件)。这个文件丢了只影响"上次检查结论",但仍然照同样的规矩写。
+    sync "$tmp" 2>/dev/null || sync
     mv -f "$tmp" "$KEEL_STATE_DIR/update-check.state" 2>/dev/null || rm -f "$tmp"
     return 0
 }

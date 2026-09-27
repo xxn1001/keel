@@ -47,6 +47,20 @@ else
     no "os-update stage 没有 ESP 空间前置检查 ⇒ ESP 满时会写半个 UKI 而根已更新(内核与根不配对)"
 fi
 # v1.1 ②:清掉**所有**槽的 .failed/.bad 墓碑(不只目标槽)
+# 目标槽的**正式条目**必须在"写候选 / 设候选"之前删掉:两者是**同一个条目 ID**
+# (bootctl 的 ID = 文件名去掉 +N 计数后缀)⇒ 不删的话 set-oneshot 会解析到旧的正式条目上:
+#   ① 机器启动的还是旧 UKI,而根分区已经是新载荷 ⇒「旧内核 + 新根」,违反不变量 3
+#      —— keel-confirm 只看槽与版本(版本还是从**新根**读的),发现不了;
+#   ② 候选条目永远没人消费 ⇒ 每次更新漏一个 156 MiB 的 UKI,稳态每槽一个孤儿,
+#      ESP 可用 710 → 398 MiB(低于 keel-check 自己的 400 MiB 警告线)。
+# 2026-09-27 的循环 soak 第 2 轮复现(第 1 轮没事:那时目标槽还没有正式条目,ID 唯一)。
+rm_line=$(grep -n 'rm -f "$KEEL_UKI_DIR/keel-${target}.efi"' "$UPDATE_MECH" | head -n1 | cut -d: -f1)
+one_line=$(grep -n 'keel_boot_candidate' "$UPDATE_MECH" | head -n1 | cut -d: -f1)
+if [ -n "$rm_line" ] && [ -n "$one_line" ] && [ "$rm_line" -lt "$one_line" ]; then
+    ok "os-update stage 先删目标槽的正式条目(第 $rm_line 行)再设候选(第 $one_line 行)⇒ 条目 ID 唯一"
+else
+    no "stage 没在设候选之前删掉目标槽的正式条目 ⇒ 会启动旧 UKI(旧内核+新根,不变量 3)且每次更新漏 156 MiB"
+fi
 if grep -q 'keel-\*.efi.failed' "$UPDATE_MECH"; then
     ok "os-update stage 顺手清掉所有槽的 .failed/.bad 墓碑(ESP 空间自愈)"
 else

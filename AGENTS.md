@@ -336,6 +336,16 @@ tools/libvirt-test.sh update-serve     # 在 libvirt 宿主上起本地更新源
 # 装机之后的体检(在目标系统里跑;libvirt 装完、真机装完都适用)
 sudo ~/keel-check                      # 转发到 /usr/share/keel/keel-check(随系统更新)
 
+# 发布前的压力测试(宿主机驱动 libvirt;四个阶段各自断言,末尾给表)
+sudo tools/stress-libvirt.sh up            # 造盘 → live 装到 vdb → 只挂目标盘重启 → 等到能 SSH
+tools/libvirt-test.sh update-serve &       # 宿主上提供更新源(guest 走 192.168.122.1)
+sudo tools/stress-libvirt.sh a 25          # A 循环 soak:25 轮 a↔b(ESP 余量/条目数/载荷数/UKI 配对)
+sudo tools/stress-libvirt.sh b 6           # B 断电 torture:stage 写到一半硬断电 6 次
+sudo tools/stress-libvirt.sh c             # C 满盘 + 看门人三级 + 并发
+sudo tools/stress-libvirt.sh d 20          # D 重启幂等 20 次 + 强制 kernel panic 一次
+sudo tools/stress-libvirt.sh check         # 收尾 keel-check
+sudo tools/stress-libvirt.sh down          # 销毁域与磁盘
+
 # 烧到目标盘
 sudo tools/burn.sh /dev/nvme0n1
 ```
@@ -451,6 +461,16 @@ sudo tools/burn.sh /dev/nvme0n1
       验证:`tools/build.sh --drill` 全链路复跑通过(check→fetch→stage→换槽 bless→rollback→
       坏载荷自动回滚 + `.failed`),verify 200 通过 / 0 失败;顺带修掉演练里一条**一直说谎的证据行**
       (p3 那条"迁移载荷的拒绝检查结果"因为变量跨不过重启,永远显示"未执行";现在从持久日志读回)
+- [x] **v1.1 发布前的压力测试(2026-09-27,`tools/stress-libvirt.sh`)**:四个阶段串行跑完,
+      **356 条断言 0 失败** —— A 循环 soak 25 轮(200 条:槽交替、state、ESP 余量恒定 710 MiB、
+      条目数恒定 2、`/data/ota` ≤2、**正式条目 == 载荷里的 UKI**);B 在 `stage` 写到一半硬断电 6 次
+      (60 条:每次都回到可用槽、`/data`+ESP 挂好、pending 清空);C 满盘 + 看门人三级 + 并发 fetch/定时器
+      (12 条);D 连续重启 20 次 firstboot 幂等 + `sysrq` 强制 panic(84 条,串口日志里确认
+      `Kernel panic` 且 panic=-1 把机器带回**同一个槽**)。
+      **压力测试直接抓出两个只有长期/粗暴使用才会现形的问题**,都已修 + 补断言:
+      坑 #70(stage 的候选条目与正式条目**同一个条目 ID** ⇒ 第 2 轮起引导器选中**旧 UKI**、
+      旧内核配新根违反不变量 3,且每次更新漏 156 MiB)与坑 #71(状态文件只 rename 不落盘 ⇒
+      硬断电留下**空文件**、整个 state 被打回原形)。证据与现场见 `docs/traps.md` #70/#71
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 
