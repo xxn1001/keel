@@ -64,7 +64,7 @@ fi
 #    删掉它两句 ok 照样打印(只是少检查 20 个文件)—— 又是坑 #67 那个坑型。
 #    这里**直接查那个数组**(第 5 节是前面跑的,`libs` 在本 shell 里还在),不是 grep 猜。
 libs_missing=""
-for m in mkosi.extra/usr/lib/keel/lib.sh tools/lib/verify/*.sh; do
+for m in mkosi.extra/usr/lib/keel/lib*.sh tools/lib/verify/*.sh; do
     [ -e "$m" ] || continue
     case " ${libs[*]-} " in
         *" $m "*) ;;

@@ -41,9 +41,11 @@ done < <(find mkosi.extra/usr/lib/keel mkosi.extra/usr/bin tools -type f 2>/dev/
 # `mkosi.extra/usr/lib/keel/lib.sh`(镜像里每个部件都 source 的运行库,还兼着 P1/P3 收进来的
 # 共用机制)与 `tools/lib/verify/*.sh`(门**自己**)**从来没被 lint 过**。
 # 这里把这两处显式补上(它们本来就干净,补上之后才是真的"一直干净")。
+# 用 `lib*.sh` 通配:`mkosi.extra/usr/lib/keel/` 下的库都按这个约定命名(现在有 lib.sh 与
+# lib-update.sh),以后再加库不用回来改这份名单。
 # 只列这两处,不做通配:mkosi.extra-test / mkosi.extra-initrd 里也有脚本,但它们不是产物代码;
 # 哪天真要一起 lint,把 find 的范围也扩过去,别只改这个数组。
-libs=(mkosi.extra/usr/lib/keel/lib.sh)
+libs=(mkosi.extra/usr/lib/keel/lib*.sh)
 while IFS= read -r f; do
     [ -n "$f" ] || continue
     libs+=("$f")

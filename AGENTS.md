@@ -442,6 +442,15 @@ sudo tools/burn.sh /dev/nvme0n1
       空间预算一度写成 6 GiB/10 GiB,20G 的演练盘(只剩 4.8 GiB)连演练自己都跑不起来 ⇒
       按实测载荷 1.1 GiB 改回 **2 GiB 硬下限 / 4 GiB 警告线**。`AGENTS.md` §4 与
       `docs/update.md` §9 都写了怎么调
+- [x] **更新链路分层(2026-09-27,P4)**:`os-update` 从 623 行拆成"**门面 104 行** +
+      **机制库 `mkosi.extra/usr/lib/keel/lib-update.sh` 550 行**" —— 决策 D8 说它就该是门面、
+      底层可替换(roadmap 2.5 可能换成 systemd-sysupdate)。门面只做"解析命令行 + 收集上下文 +
+      分发",机制(manifest 解析、下载校验、写分区/ESP、切槽、回滚、gc)全在库里;
+      两层之间的**契约**(哪些上下文变量由门面赋值、库只读)写在库的头部。
+      断言不再硬编码路径:`tools/lib/verify/common.sh` 的 `UPDATE_MECH` 是唯一引用点。
+      验证:`tools/build.sh --drill` 全链路复跑通过(check→fetch→stage→换槽 bless→rollback→
+      坏载荷自动回滚 + `.failed`),verify 200 通过 / 0 失败;顺带修掉演练里一条**一直说谎的证据行**
+      (p3 那条"迁移载荷的拒绝检查结果"因为变量跨不过重启,永远显示"未执行";现在从持久日志读回)
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 

@@ -19,3 +19,8 @@ tmpd() { local d; d=$(mktemp -d); TMPS+=("$d"); printf '%s' "$d"; }
 PROFILES="install slot-a slot-b"
 # shellcheck disable=SC2034  # WANT_SLOT 同上,由 20-cmdline-repart.sh 读取
 declare -A WANT_SLOT=([install]=root-a [slot-a]=root-a [slot-b]=root-b)
+# 更新链路的**机制**在哪个文件(给断言用):2026-09-27 起 `os-update` 拆成"门面 + 机制库"
+# (决策 D8 说它就该是门面、底层可替换)—— 机制全在 lib-update.sh,门面只剩参数解析与分发。
+# 断言统一引用这个变量:下次再拆、或真换成 systemd-sysupdate,只改这一行。
+# shellcheck disable=SC2034  # 由各校验模块读取,动态 source 让 shellcheck 看不见
+UPDATE_MECH=mkosi.extra/usr/lib/keel/lib-update.sh

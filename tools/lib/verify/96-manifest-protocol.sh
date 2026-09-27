@@ -11,7 +11,9 @@
 
 verify_manifest_protocol() {
 head1 "10. OTA manifest 协议(os-update ↔ build.sh)"
-mp_update=mkosi.extra/usr/bin/os-update
+# 协议本身由 os-update(门面)与 build.sh 两侧约定;但**消费这些名字的代码**在
+# lib-update.sh 里(P4 把机制拆出去了)—— 所以这一节引用的是机制库,见 common.sh 的 UPDATE_MECH。
+mp_update=$UPDATE_MECH
 mp_build=tools/build.sh
 mp_drill=tools/ota-drill-container.sh
 

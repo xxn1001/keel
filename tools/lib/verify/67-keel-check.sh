@@ -95,7 +95,7 @@ else
 fi
 
 # 便宜的检查必须在下载之前(坑 #51):迁移与 schema 检查只看 manifest,而下载是 GiB 级(erofs 后约 4 GiB)
-OU=mkosi.extra/usr/bin/os-update
+OU=$UPDATE_MECH
 n_mig=$(grep -n '没有迁移执行器' "$OU" | head -1 | cut -d: -f1)
 n_dl=$(grep -n 'for a in "${ARTIFACTS\[@\]}"' "$OU" | head -1 | cut -d: -f1)
 if [ -n "$n_mig" ] && [ -n "$n_dl" ] && [ "$n_mig" -lt "$n_dl" ]; then

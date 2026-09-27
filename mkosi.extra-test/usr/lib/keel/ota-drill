@@ -145,12 +145,12 @@ p2)
         set_source "$SRC_MIG"
         mig_out="$(os-update fetch 2>&1)" && mig_rc=0 || mig_rc=$?
         printf '%s\n' "$mig_out" | sed 's/^/  /'
+        # ⚠ 判定**只写进日志**:p3 隔着一次重启,变量传不过去,它从 $DRILL_LOG 里读回这一行
+        # (见 p3 那段的说明)。别再引入一个跨不过重启的 mig_ok。
         if [ "$mig_rc" != 0 ] && printf '%s' "$mig_out" | grep -q '迁移'; then
             log "判定:**拒绝生效** —— 带 migrate= 的载荷没有装进来(rc=$mig_rc)"
-            mig_ok=1
         else
             log "判定:**与预期不符** —— 带迁移的载荷居然被接受了(rc=$mig_rc)"
-            mig_ok=0
         fi
         set_source "$SRC_GOOD"
     else
@@ -197,7 +197,18 @@ p3)
     log "阶段 p3:坏载荷启动失败之后,应该**自动**回到旧槽"
     snapshot "坏载荷失败后自动回来的这一次启动"
     slot_now="$(keel_current_slot 2>/dev/null)"
-    log "迁移载荷的拒绝检查结果:${mig_ok:-未执行}"
+    # 迁移载荷的拒绝检查是 **p2** 跑的,而 p2 → p3 之间隔着一次重启 ⇒ `mig_ok` 这个变量
+    # 传不过来。原来这里写的是 `${mig_ok:-未执行}`,于是**哪怕 p2 判定"拒绝生效",p3 也永远
+    # 打印"未执行"**(2026-09-27 核对两轮旧演练日志时发现,不是这次改动引入的)。
+    # 结论改成从**持久日志**读回来 —— 它本来就是 `tee -a` 跨重启累加的那一份。
+    if grep -q '判定:\*\*拒绝生效\*\* —— 带 migrate=' "$DRILL_LOG" 2>/dev/null; then
+        mig_note="拒绝生效(p2:rc≠0,载荷没进来)"
+    elif grep -q '带迁移的载荷居然被接受了' "$DRILL_LOG" 2>/dev/null; then
+        mig_note="**与预期不符**(p2:迁移载荷被接受了)"
+    else
+        mig_note="未执行(p2 里那一项被跳过了)"
+    fi
+    log "迁移载荷的拒绝检查结果:${mig_note}"
     result="$(keel_state_get last_result 2>/dev/null)"
     bad_count=$(find "${KEEL_UKI_DIR:-/nonexistent}" -maxdepth 1 -name '*.failed' 2>/dev/null | wc -l)
     log "判定要素:当前槽=$slot_now(应为 a)、last_result=$result(应为 failed)、ESP 上 .failed 条目数=$bad_count(应 ≥1)"

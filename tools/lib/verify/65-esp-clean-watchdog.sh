@@ -40,14 +40,14 @@ fi
 
 # v1.1 ②:ESP 余量 —— 写 UKI 之前必须先问 ESP 空间(和 /data 的空间检查同一个道理,
 # 不变量 10;而 ESP 写不下时会留下半个 UKI 而根分区已经写好了 ⇒ 违反不变量 3)。
-if grep -q 'ESP \*\*空间\*\*也要在写根分区之前确认' mkosi.extra/usr/bin/os-update &&
-   grep -q 'os-rescue --clean-esp' mkosi.extra/usr/bin/os-update; then
+if grep -q 'ESP \*\*空间\*\*也要在写根分区之前确认' "$UPDATE_MECH" &&
+   grep -q 'os-rescue --clean-esp' "$UPDATE_MECH"; then
     ok "os-update stage 在动分区之前检查 ESP 空间,并指向 os-rescue --clean-esp"
 else
     no "os-update stage 没有 ESP 空间前置检查 ⇒ ESP 满时会写半个 UKI 而根已更新(内核与根不配对)"
 fi
 # v1.1 ②:清掉**所有**槽的 .failed/.bad 墓碑(不只目标槽)
-if grep -q 'keel-\*.efi.failed' mkosi.extra/usr/bin/os-update; then
+if grep -q 'keel-\*.efi.failed' "$UPDATE_MECH"; then
     ok "os-update stage 顺手清掉所有槽的 .failed/.bad 墓碑(ESP 空间自愈)"
 else
     no "os-update stage 只清目标槽的残留 ⇒ 别槽的 .failed 会一直占着 ESP 空间"
@@ -69,8 +69,8 @@ else
 fi
 
 # v1 不支持 /data 迁移:带 migrate= 的载荷必须在 fetch 阶段被拒(而不是装上)
-if grep -q 'migrate=' mkosi.extra/usr/bin/os-update &&
-   grep -q '还没有迁移执行器' mkosi.extra/usr/bin/os-update; then
+if grep -q 'migrate=' "$UPDATE_MECH" &&
+   grep -q '还没有迁移执行器' "$UPDATE_MECH"; then
     ok "os-update fetch 会拒绝声明了 /data 迁移的载荷(v1 没有迁移执行器,拒绝好过假装迁移过)"
 else
     no "os-update 没有拒绝带 migrate= 的载荷 ⇒ 可能装上一个要求迁移的版本(回滚后旧系统读不懂 /data)"

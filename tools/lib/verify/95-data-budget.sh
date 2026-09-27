@@ -99,7 +99,7 @@ else
 fi
 # 状态文件的写入点与呈现点:少了任何一环,"通知"就断了
 if grep -q 'keel_update_check_state' mkosi.extra/usr/lib/keel/lib.sh &&
-   grep -q 'keel_update_check_state' mkosi.extra/usr/bin/os-update &&
+   grep -q 'keel_update_check_state' "$UPDATE_MECH" &&
    grep -q 'update-check.state' mkosi.extra/usr/bin/os-status &&
    grep -q 'update-check.state' mkosi.extra/usr/share/keel/keel-check; then
     ok "update-check.state 链路完整:lib.sh 的 helper → os-update check 写入 → os-status/keel-check 呈现"
@@ -145,7 +145,7 @@ if grep -q 'etc.bak-\*' mkosi.extra/usr/lib/keel/mounts && grep -q 'tail -n +2' 
 else
     no "mounts 里没有清理旧 etc.bak-* 的逻辑"
 fi
-if grep -q 'free_bytes' mkosi.extra/usr/bin/os-update && grep -q 'os-update gc' mkosi.extra/usr/bin/os-update; then
+if grep -q 'free_bytes' "$UPDATE_MECH" && grep -q 'os-update gc' "$UPDATE_MECH"; then
     ok "os-update fetch 先查 /data 空间(载荷预算:两个 erofs 根镜像 + 两个 UKI)"
 else
     no "os-update fetch 没有检查 /data 可用空间"
@@ -153,13 +153,13 @@ fi
 # 预算的**具体数字**也钉住:它决定"多小的 /data 还能升级",而且 ⑤ 的演练盘尺寸依赖它。
 # 2026-09-26 踩过:③ 一度按"1.5–2 GiB/槽"估成 6 GiB/10 GiB,结果 20 GiB 的演练盘
 # (/data 只剩 4.8 GiB)连**演练自己**都跑不起来。实测载荷是 1.1 GiB ⇒ 2 GiB / 4 GiB。
-if grep -q 'need_hard=$((2 \* 1024 \* 1024 \* 1024))' mkosi.extra/usr/bin/os-update &&
-   grep -q 'need_warn=$((4 \* 1024 \* 1024 \* 1024))' mkosi.extra/usr/bin/os-update; then
+if grep -q 'need_hard=$((2 \* 1024 \* 1024 \* 1024))' "$UPDATE_MECH" &&
+   grep -q 'need_warn=$((4 \* 1024 \* 1024 \* 1024))' "$UPDATE_MECH"; then
     ok "fetch 的空间预算 = 2 GiB 硬下限 / 4 GiB 警告线(实测载荷 1.1 GiB,与 ⑤ 的 20G 演练盘相容)"
 else
     no "fetch 的空间预算被改过 —— 改之前先确认 20G 的演练盘(/data 约 4.8 GiB 可用)仍能 fetch(roadmap §0 ⑤)"
 fi
-if grep -q '自动清理旧载荷失败' mkosi.extra/usr/bin/os-update && grep -q 'cmd_gc >/dev/null' mkosi.extra/usr/bin/os-update; then
+if grep -q '自动清理旧载荷失败' "$UPDATE_MECH" && grep -q 'cmd_gc >/dev/null' "$UPDATE_MECH"; then
     ok "os-update stage 成功后自动清理旧载荷"
 else
     no "os-update stage 之后没有自动清理旧载荷"

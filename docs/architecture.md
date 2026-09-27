@@ -511,7 +511,9 @@ keel/
 ├── repart/slot-{a,b}/        ← 载荷布局(esp + 目标槽 root)
 ├── mkosi.extra/                    ← 进镜像的所有文件:
 │   ├── usr/bin/os-{status,update,rescue,install}  用户命令
-│   ├── usr/lib/keel/{lib.sh,mounts,firstboot,confirm,swapfile,data-guard}
+│   ├── usr/lib/keel/{lib.sh,lib-update.sh,mounts,firstboot,confirm,swapfile,data-guard}
+│   │        ↑ lib.sh = 公共库(分区/ESP/状态/预算…);lib-update.sh = 更新链路的**机制**
+│   │          (os-update 是门面、底层可替换 —— 决策 D8;门面只剩参数解析与分发)
 │   ├── usr/lib/keel/repart.d/40-data-grow.conf  首启扩容定义
 │   ├── usr/lib/systemd/system/keel-*.{service,timer}  六个单元 + 两个定时器
 │   ├── usr/lib/systemd/system-preset/00-keel.preset
