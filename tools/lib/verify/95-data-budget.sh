@@ -170,4 +170,67 @@ else
     no "os-status 没有 /data 看门人那一节"
 fi
 
+# ---------------------------------------------------------------------------
+# P2:两个状态文件的**呈现方**必须跟着产方走(不合并代码,只钉词表)
+#
+# `update-check.state` 与 `data-guard.state` 各有**两个呈现方**:os-status(给人看的总览)
+# 与 keel-check(装机后体检)。它们各自写一份文案 —— 这是**故意的**:keel-check 必须能在
+# 半坏的机器上独立跑(它连 lib.sh 读不到时都自己兜一份),合并成一个函数就等于把这个前提
+# 拆掉。所以这里不合并代码,而是把"**漂移**"变成红灯:
+#   * 正向:产方写的每一个 verdict,呈现方的 case 里都要有 —— 少一个,用户看到的就是
+#     原始字符串或"未知"(不崩、不报错,所以没人会发现);
+#   * 反向:呈现方的 case 里不许留着产方**已经不写**的标签(改名之后留下的僵尸分支)。
+# 词表从**代码**里抽(产方抽 `keel_update_check_state <v>` 与 `verdict=<v>`,
+# 呈现方抽它那个 case 的标签),不在这里抄一份常量 —— 抄一份就又多一个漂移点。
+# ---------------------------------------------------------------------------
+# case_labels <文件> <case 上的变量(带 $)> —— 打印那个 case 的标签;找不到那个 case 返回 1
+case_labels() {
+    local f=$1 var=$2 start
+    # ⚠ 必须 -F 定长匹配:`case "$uverdict" in` 里的 `$` 在 ERE 里是**行尾锚点**,
+    #   第一版用 -E 写,提取出来永远是空 ⇒ 反向检查静默失效(正是本文件要防的那种事)。
+    start=$(grep -nF "case \"$var\" in" "$f" 2>/dev/null | head -n1 | cut -d: -f1)
+    [ -n "$start" ] || return 1
+    sed -n "${start},/^[[:space:]]*esac/p" "$f" | sed -n 's/^[[:space:]]*\([a-z][a-z-]*\)).*/\1/p'
+    return 0
+}
+# 产方词表
+uv_emit=$(grep -ohE 'keel_update_check_state [a-z][a-z-]*' "$UPDATE_MECH" \
+          mkosi.extra/usr/lib/keel/update-check 2>/dev/null | awk '{print $2}' | sort -u)
+gv_emit=$(sed -n 's/^[[:space:]]*verdict=\([a-z][a-z-]*\).*/\1/p' \
+          mkosi.extra/usr/lib/keel/data-guard 2>/dev/null | sort -u)
+uv_n=$(printf '%s\n' "$uv_emit" | grep -c . || true)
+gv_n=$(printf '%s\n' "$gv_emit" | grep -c . || true)
+p2_bad=""
+# ① update-check:两个呈现方都要覆盖,且都不许留僵尸标签
+for spec in 'mkosi.extra/usr/bin/os-status:$uverdict' 'mkosi.extra/usr/share/keel/keel-check:$uv'; do
+    c=${spec%%:*}; var=${spec##*:}
+    if ! labels=$(case_labels "$c" "$var"); then
+        p2_bad="$p2_bad ${c##*/}(找不到 case \"$var\" in)"
+        continue
+    fi
+    for v in $uv_emit; do
+        printf '%s\n' "$labels" | grep -qx "$v" || p2_bad="$p2_bad ${c##*/}(缺 $v)"
+    done
+    for l in $labels; do
+        printf '%s\n' "$uv_emit" | grep -qx "$l" || p2_bad="$p2_bad ${c##*/}(多出 $l)"
+    done
+done
+# ② data-guard:os-status 有一张完整的"verdict → 文案"表;keel-check 只把原值打出来
+#    (它只报告、不判断,见那边的注释)⇒ 只要求 os-status 覆盖完整。
+if ! glabels=$(case_labels mkosi.extra/usr/bin/os-status '$gv'); then
+    p2_bad="$p2_bad os-status(找不到 case \"\$gv\" in)"
+else
+    for v in $gv_emit; do
+        printf '%s\n' "$glabels" | grep -qx "$v" || p2_bad="$p2_bad os-status(缺 $v)"
+    done
+    for l in $glabels; do
+        printf '%s\n' "$gv_emit" | grep -qx "$l" || p2_bad="$p2_bad os-status(多出 $l)"
+    done
+fi
+if [ "$uv_n" -ge 2 ] && [ "$gv_n" -ge 2 ] && [ -z "$p2_bad" ]; then
+    ok "verdict 词表两侧一致:update-check ${uv_n} 个(os-status + keel-check 都覆盖)、data-guard ${gv_n} 个(os-status)"
+else
+    no "verdict 词表漂移了:$p2_bad(产方 update-check=${uv_n} 个 / data-guard=${gv_n} 个)"
+fi
+
 }

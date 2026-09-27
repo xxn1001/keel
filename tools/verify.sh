@@ -62,11 +62,23 @@ verify_build_flags
 verify_find_part
 
 
-if grep -rn 'common-os' --include='*' . 2>/dev/null | grep -v '^\./\.git/' | grep -v '^\./tools/verify\.sh:' | grep -q .; then
+# ── 旧名字自检:除了这个文件自己的排除项,别处不许再出现 `common-os` ──
+# ⚠ 必须**跳过构建产物**:dist/ + mkosi.output/ + mkosi.*cache/ 一次构建就是十几个 GB
+#   (载荷镜像、安装镜像、解开的包树),而这里原来是"把整棵树当文本 grep 一遍"。
+#   2026-09-27 实测:加排除之前这一步 **60 秒都跑不完**(被 timeout 掐掉),加之后 **4 毫秒**。
+#   它跑在每一次 verify 里,而 `build.sh` 每次构建前都要先跑 verify。
+#   只排除**生成物**:它们是源码生成的,源码里真有残留照样会被抓到。
+#   顺带:原来同样的 grep 写了两遍(判空一遍、打印一遍),现在只跑一遍。
+common_os_hits=$(grep -rn 'common-os' --include='*' \
+    --exclude-dir=.git --exclude-dir=dist --exclude-dir=mkosi.output \
+    --exclude-dir=mkosi.cache --exclude-dir=mkosi.pkgcache --exclude-dir=mkosi.tools \
+    --exclude-dir=mkosi.workspace \
+    . 2>/dev/null | grep -v '^\./tools/verify\.sh:' || true)
+if [ -n "$common_os_hits" ]; then
     no "还有残留的旧名字 common-os:"
-    grep -rn 'common-os' --include='*' . 2>/dev/null | grep -v '^\./\.git/' | grep -v '^\./tools/verify\.sh:' | head -5 | sed 's/^/      /'
+    printf '%s\n' "$common_os_hits" | head -5 | sed 's/^/      /'
 else
-    ok "没有残留的旧名字"
+    ok "没有残留的旧名字(已跳过构建产物:dist/、mkosi.output/、mkosi.*cache/)"
 fi
 
 verify_packages
