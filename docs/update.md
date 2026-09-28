@@ -401,3 +401,13 @@ HTTP 源日志里**只有 `GET /manifest`(还有一次 `GET /manifest.sig` → 4
 (dist)里的签名覆盖成了 mig 清单的签名 ⇒ guest 在 p0 就"与预期不符"并 poweroff,宿主却因为
 VM 退出码 0 打印"演练跑到 p2"。现在签名先写临时文件再 `mv`(不碰链接目标),宿主也从控制台
 读回关键判定、缺一条即非 0 退出。
+
+> **v1.2 收尾复跑(2026-09-28,最终树 `478c728` 的构建;`DRILL_EXIT=0`)**:宿主侧汇总行比上面那次更长 ——
+> `宿主侧判定:Secure Boot 已启用 + nix 自检(B1)+ 签名三条路径 + 更新成功 + 回滚 + 自动回滚 + migrate 拒绝都在(真正全绿)`。
+> guest 逐条判定:`Secure Boot 已启用(自签 UKI 被固件接受)`、
+> `nix 来自本槽骨架(2.35.2, profile=/nix/store/irfrbndi…-nix-2.35.2)`、
+> `[无签名源]拒绝生效(rc=1,消息含「未签名」)` + 不留载荷、`[坏签名源]拒绝生效(rc=1,消息含「验签失败」)` + 不留载荷、
+> `好载荷验签通过(manifest.sig 真验了,不是跳过)`、p1 `更新成功`(槽 b、`last_result=success`)、
+> p2 `回滚生效` + `带 migrate= 的载荷没有装进来(rc=1)`、p3 `自动回滚成立`(`last_result=failed`、`.failed` ≥1)。
+> 与它同一棵树构建的带密码产物(`-p keel-tmp`,版本 `2026.09.28.1630`)随后跑了 `tools/stress-libvirt.sh all`:
+> **358 条断言 0 失败**(见 `roadmap.md` §0 的 v1.2 行)。

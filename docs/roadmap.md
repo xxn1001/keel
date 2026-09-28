@@ -1,7 +1,7 @@
 # keel 路线图:v1 之后要做的事
 
 > 这里只放**已经想清楚、但 v1 刻意不做**的事。每条都写清:为什么现在不做、做的时候要注意什么。
-> v1 的已知限制写在 [`release-notes-v1.md`](release-notes-v1.md)(并随构建进入 `dist/keel-<版本>/`)。
+> v1 的已知限制写在 [`release-notes-v1.md`](release-notes-v1.md)(并随构建进入 `output/keel-<版本>/`)。
 > 决策与理由见 [`decisions.md`](decisions.md),踩过的坑见 [`AGENTS.md`](../AGENTS.md) §3。
 
 ## 0. 版本计划(v1.1 / v1.2 / v2.0,2026-09 拍板)
@@ -12,14 +12,29 @@
 | 版本 | 主题 | 内容(对应下面的条目) | 粗估 |
 |---|---|---|---|
 | **v1.1** | 功能与运维 | **① ✅ erofs 只读根(2.9,已完成:载荷 6 GiB → 401 MiB,`dist/`、演练 qcow2 增长一起变小)** → **② ✅ ESP 余量 + `.failed` 清理(stage 动分区前先查 ESP 空间 + 自动清墓碑 + `os-rescue --clean-esp` 显式入口)** → **③ ✅ 更新检查(`keel-update-check.timer`:只 check + 通知;绝不 fetch/stage)** → **④ ✅ `os-install` 两个 TODO 结清(2.7)** → **⑤ ✅ 演练/开发磁盘收紧(镜像尺寸可配:默认 40G → 24G,下限 20G + `fetch` 预算按实测载荷改回 2 GiB)** → ⑥ **✅ 原生已实测;rootless 也实测了 —— 结论是"产物不等价"**,于是原生路径**直接拒绝非 root**(没 root 走容器适配器;见坑 #66),并写进文档 | 不赶时间,分多次 |
-| **v1.2** | 安全 | **更新签名**(1.1)→ **Secure Boot**(1.2,含 UKI 签名、自己的密钥库、解封 `pcrlock`);**nix 改由上游供给**(1.5,修掉 trixie 那 4 条 no-DSA);**发布包收紧**(2.10:压缩安装镜像 + `install.sh` + `burn.sh` 版本核对);initrd 冻结修复(3.0) | —— |
+| **v1.2** | 安全 | **✅ 更新签名**(1.1)→ **✅ Secure Boot**(1.2,含 UKI 签名、自己的密钥库、解封 `pcrlock`);**✅ nix 改由上游供给**(1.5,修掉 trixie 那 4 条 no-DSA);**✅ 发布包收紧**(2.10:压缩安装镜像 + `install.sh` + `burn.sh` 版本核对);**3.0 initrd 冻结:已查实根因、修复另排**(素材备好,接线刻意回退 —— 见 §3.0) | —— |
 | **v2.0** | 结构与可信 | **迁移执行器**(2.8,先做,它是下面一切的前提)→ **`/data` 加密 + TPM 封印**(1.3)+ **dm-verity**(1.4)+ **早期启动重排**(把 `/etc` overlay 提到 initrd,见 D19 方案 A —— **它才是 #24/#29/#37/#61 四条的真正解法**)→ 可选:`systemd-sysupdate` 底层(2.5)、`cache` 分区(2.4)、`server` profile(2.2) | —— |
 | 不排期 | 等上游 / 可选 | "连续三次"试用语义(2.5b,等 Debian 的 systemd ≥ 261)、`desktop` profile(2.1)、`/usr/lib/modules` 外置(2.3)、`machines/`(3.4) | —— |
 
+**v1.2 的验收实测(2026-09-28,最终树 `478c728` 的那次构建)**:
+
+* `tools/verify.sh` **282 通过 / 0 失败**(root);
+* `tools/build.sh --drill` `DRILL_EXIT=0`:宿主从 VM 控制台读回的关键判定一行不缺 ——
+  `Secure Boot 已启用 + nix 自检(B1)+ 签名三条路径 + 更新成功 + 回滚 + 自动回滚 + migrate 拒绝都在`,
+  guest 逐条判定见 [`update.md`](update.md) §9.2;
+* `tools/stress-libvirt.sh all` **358 条断言 0 失败** —— A 25 轮 a↔b(200 条:ESP 余量恒 710 MiB、
+  条目数恒 2、`/data/ota` ≤2、**正式条目 == 载荷里的 UKI**),B 6 次 `stage` 写到一半硬断电(60),
+  C 满盘 + 看门人三级 + 并发(12),D 20 次重启幂等(80)+ `sysrq` 强制 panic 回到同槽(4);
+* 装好的系统里 `keel-check` **52 ✓ / 0 ✗ / 1 ! / 3 -**(警告 = admin 家目录没有 authorized_keys ——
+  测试产物是 `-p` 构建的;跳过 = 微码 / 无 vTPM(⇒ pcrlock 单元被 `ConditionSecurity` 跳过)/ 可选的 nix 装包测试);
+* 发布产物:`output/keel-2026.09.28.1655/`(`keel.img.zst` 434,128,123 B + `.size`/`.sha256`,
+  两个 UKI `sbverify` 都是 `/CN=mkosi of root`)。
+
+**仍未做**:2.11 宿主侧安装器(可选);真机首装 —— 由所有者按 [`install.md`](install.md) **§2.7 逐条核对清单**做。
 **为什么 erofs 排在第一位**(2026-09 调整):验证用的服务器盘一共只有 100 GB,分给开发 VM 的是
-80–90 GB,而**当前形态一次构建就会产出 60 GiB 逻辑(`mkosi.output/`)+ 27 GiB 逻辑(`dist/`)**、
+80–90 GB,而**当时一次构建就会产出 60 GiB 逻辑(`mkosi.output/`)+ 27 GiB 逻辑(发布目录,v1.2 起叫 `output/`)**、
 演练时 guest 还会真写真占 13 GiB 载荷 —— 磁盘是这套流程里最紧的资源。erofs 一次改动同时缓解三处:
-根载荷(6 GiB → 约 1.5–2 GiB)、`dist/` 与 `mkosi.output/`、演练里 qcow2 的增长。
+根载荷(6 GiB → 约 1.5–2 GiB)、发布目录与 `mkosi.output/`、演练里 qcow2 的增长。
 **载荷压缩(`CompressOutput=zstd`)因此降级成备选**:如果 erofs 那条路被某个前置挡住,再回退到
 "先压缩、后换格式"。
 
@@ -57,7 +72,7 @@
 | 2.7 | **`os-install` 的两个 TODO** | ✅ **已结清(v1.1 ④,2026-09-26)**:① **根占用 vs 目标分区** —— 拷的是**整块设备**,所以判据是**分区容量**而不是文件系统占用(erofs 的 fs 大小写在超级块里、可远小于分区);并且**读不到容量就拒绝**(旧写法两个变量都空时会静默放行,那正是坑 #36 的形态)。② **`keel-confirm` 的 pending/running_slot 边界** —— 装机写入的 `pending_slot=a` + 空的 `running_slot`/`last_result` 现在被明确识别为"装机后首次启动",日志与"一次更新成功"分开报;装机路径实测 `last_result=success`、pending 清空、`running_slot=a` |
 | 2.8 | **`/data` schema 迁移执行器**(v1 明确不做) | v1 的行为是:带 `migrate=` 的载荷被 `fetch` **拒绝**(坑 #48),布局冻结在 schema 1。要做的时候:① 定义 manifest 的迁移语法(只增不破的 mkdir/权限/文件);② 想清楚 `schema`(载荷要求的布局版本)与 `schema_min`(载荷还能读的最低版本)的区别 —— 现在 `fetch` 那句 `schema > 本机 ⇒ 拒绝` 与"由旧系统迁移"的语义是**互相矛盾**的,得先理顺;③ 在 VM 里按 §4 演练(含**回滚**到旧版本后旧系统仍能读 /data);④ 第一次真实迁移前不要动布局 |
 
-| 2.10 | **发布包收紧**(v1.2) | ✅ **已做(v1.2,2026-09-28)** —— v1.1 的 `dist/keel-<版本>/` 里,`keel.raw` 是 **15 GiB 逻辑 / 562 MiB 实占**的稀疏文件 —— 拷到不支持稀疏的文件系统、传 release 资产、写 U 盘,全都按逻辑大小走,分发时很难受。 | ① **压缩安装镜像**(实测 `zstd -3`:562 MiB → **363 MiB**)+ `install.sh`(**v1**:解压 → 写到指定盘,**不需要宿主装 mkosi**)—— `burn.sh` 保留不动(它走 mkosi 的 burn,按目标盘容量修 GPT);② 发布目录定成 **`output/keel-<版本>/`**(保留版本号:一眼看出手上是哪版、能并存两版);③ `burn.sh` 烧之前**核对版本**(镜像里的 `IMAGE_VERSION` vs `dist/` 里最新 manifest 的 `version=`;现在它只烧 `mkosi.output/keel.raw` 而这个文件名里没有版本号,存在"烧出另一版而不知道"的真空档)。**已否决**:把更新载荷也打成一个 `payload.tar.zst` 喂给更新器 —— 解包那步确实简单,但要让 `fetch` 从"逐个平铺文件 + 逐件 sha256"改成"下一个包 + 解包 + 再逐件校验",而动的是全项目最安全攸关的一条路,只省 ~393 MiB(1118 → 725 MiB,zstd -3),且 D8 说这条底层将来可能换成 `systemd-sysupdate`(传输格式该由它定)。**替代做法**:发布包本身是**一个 `.tar.zst`**,里面含**原样的 `payload/` 目录**(更新源解出来即可用,更新器一行不改)+ 压缩安装镜像 + `install.sh` + 文档。**已落地(2026-09-28)**:发布目录改成 `output/keel-<版本>/`,里面只有 `keel.img.zst`(+`.size`/`.sha256`)+ `install.sh`,**不再放 14 GiB 的 `keel.raw`**;`install.sh` 支持 `--to`(写镜像文件,验证过逐字节一致)和整块盘(拒绝非磁盘/已挂载/当前系统盘/容量不足),宿主只需 `zstd`;`burn.sh` 烧前读安装镜像 UKI 的 `.osrel` 里的 `IMAGE_VERSION` 与 `output/` 最新发布比对,不一致拒烧(`--force` 才放行),另有 `--check-only`;`verify.sh` 第 15 节 10 条断言(含真实 zstd 压/解的端到端功能测试) |
+| 2.10 | **发布包收紧**(v1.2) | ✅ **已做(v1.2,2026-09-28)** —— v1.1 的 `dist/keel-<版本>/` 里,`keel.raw` 是 **15 GiB 逻辑 / 562 MiB 实占**的稀疏文件 —— 拷到不支持稀疏的文件系统、传 release 资产、写 U 盘,全都按逻辑大小走,分发时很难受。 | ① **压缩安装镜像**(实测:14 GiB 逻辑 / 562 MiB 稀疏的 `keel.raw` → `keel.img.zst` **434 MiB**)+ `install.sh`(**v1**:解压 → 写到指定盘,**不需要宿主装 mkosi**)—— `burn.sh` 保留不动(它走 mkosi 的 burn,按目标盘容量修 GPT);② 发布目录定成 **`output/keel-<版本>/`**(保留版本号:一眼看出手上是哪版、能并存两版);③ `burn.sh` 烧之前**核对版本**(镜像里的 `IMAGE_VERSION` vs `dist/` 里最新 manifest 的 `version=`;现在它只烧 `mkosi.output/keel.raw` 而这个文件名里没有版本号,存在"烧出另一版而不知道"的真空档)。**已否决**:把更新载荷也打成一个 `payload.tar.zst` 喂给更新器 —— 解包那步确实简单,但要让 `fetch` 从"逐个平铺文件 + 逐件 sha256"改成"下一个包 + 解包 + 再逐件校验",而动的是全项目最安全攸关的一条路,只省 ~393 MiB(1118 → 725 MiB,zstd -3),且 D8 说这条底层将来可能换成 `systemd-sysupdate`(传输格式该由它定)。**替代做法**:发布包本身是**一个 `.tar.zst`**,里面含**原样的 `payload/` 目录**(更新源解出来即可用,更新器一行不改)+ 压缩安装镜像 + `install.sh` + 文档。**已落地(2026-09-28)**:发布目录改成 `output/keel-<版本>/`,里面只有 `keel.img.zst`(+`.size`/`.sha256`)+ `install.sh`,**不再放 14 GiB 的 `keel.raw`**;`install.sh` 支持 `--to`(写镜像文件,验证过逐字节一致)和整块盘(拒绝非磁盘/已挂载/当前系统盘/容量不足),宿主只需 `zstd`;`burn.sh` 烧前读安装镜像 UKI 的 `.osrel` 里的 `IMAGE_VERSION` 与 `output/` 最新发布比对,不一致拒烧(`--force` 才放行),另有 `--check-only`;`verify.sh` 第 15 节 10 条断言(含真实 zstd 压/解的端到端功能测试)。**最终产物(版本 2026.09.28.1655)**:`keel.img.zst` = 434,128,123 B,`install.sh --to` 的解压结果与构建产物 sha256 逐字节一致,`burn.sh --check-only` 读出的 `IMAGE_VERSION` 与发布目录一致 |
 | 2.11 | **宿主侧安装器(可选)** | 目标是"在宿主上一条命令把 keel 装到指定盘"(不需要先烧 U 盘、也不需要 `os-install`)。**可行性**:素材现成(安装侧 repart 定义已在镜像里、`slot-a.root.raw`/`slot-a.uki.efi` 就是内容、data 骨架与 systemd-boot 的 `.efi` 能在构建时打进发布包);`os-install` **已经拒绝写到正在运行的那块盘**,所以"自己烧自己再 os-install"这条捷径是被设计挡掉的。 | 代价是**全项目最危险的一段代码**(分区 + 引导器),而且会和 `os-install` 形成"两份实现 ⇒ 漂移"(#62/#70/#71 都是这类)。要做就得:① 与 `os-install` **共享同一份定义/逻辑**;② 用**完整演练**钉住(install.sh 装 → 只挂目标盘启动 → `keel-check` → 一轮更新 → 回滚)。排 v1.2 中后段 |
 
 ## 2.95 已复核:控制台日志级别与日志落盘(D27 / 坑 #61)

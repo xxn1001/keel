@@ -548,6 +548,20 @@ sudo tools/burn.sh /dev/nvme0n1
       (D25)照旧生效,initrd 冻结仍是**已知限制**(`KEEL_DRILL_SABOTAGE=initrd` 修好前别用来验证回退)。
       **实测**:`tools/verify.sh` **282 通过 / 0 失败**(root);代码拆 UKI 的 `.initrd` 两段 zstd +
       两段内容清单;混合 `--initrd` 那次 drill 在 p0 前就 panic 循环(唯一一次启动级回归,已回退)。
+- [x] **v1.2 验收:静态校验 + 演练 + 压力测试 + 文档收口(2026-09-28)** ——
+     ① `tools/verify.sh` **282 通过 / 0 失败**(root);
+     ② `tools/build.sh --drill` `DRILL_EXIT=0`:宿主从 VM 控制台读回的关键判定一行不缺 ——
+     `Secure Boot 已启用 + nix 自检(B1)+ 签名三条路径 + 更新成功 + 回滚 + 自动回滚 + migrate 拒绝都在`
+     (guest 逐条判定见 `docs/update.md` §9.2;那条"假绿"已由控制台读回 + 符号链接修复堵掉,坑 #73/#74);
+     ③ `tools/stress-libvirt.sh all` **358 条断言 0 失败** —— A 25 轮 a↔b(200:ESP 余量恒 710 MiB、条目数恒 2、
+     `/data/ota` ≤2、**正式条目 == 载荷里的 UKI**)、B 6 次 `stage` 写到一半硬断电(60)、C 满盘 + 看门人三级 +
+     并发(12)、D 20 次重启幂等(80)+ `sysrq` panic 回到同槽(4);装好的系统里 `keel-check`
+     **52 ✓ / 0 ✗ / 1 ! / 3 -**(警告 = admin 家目录没有 authorized_keys,因为测试产物是 `-p` 构建的;
+     跳过 = 微码 / 无 vTPM(⇒ pcrlock 单元被 `ConditionSecurity` 跳过)/ nix 装包测试);
+     ④ **文档收口**:`docs/install.md` 新增 **§2.7 真机首装逐条核对清单(A 装前 / B 装机 / C 首启 / D 更新链路)**;
+     清掉两处 v1 的过时说法(`install.md` §4 与 `architecture.md` §10 还写着"pcrlock 已 mask",v1.2 ③ 已解封);
+     发布目录只留一份 `output/keel-2026.09.28.1655/`(`keel.img.zst` 434,128,123 B,两个 UKI 的 `sbverify`
+     都是 `/CN=mkosi of root`)。**仍未做**:2.11 宿主侧安装器(可选)、**真机首装**(所有者按 `install.md` §2.7 做)。
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 
