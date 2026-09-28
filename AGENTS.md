@@ -570,6 +570,11 @@ sudo tools/burn.sh /dev/nvme0n1
        (控制台反复出现 `keel-initrd-timeout: … ⇒ 强制复位`);③ `KEEL_DRILL_SABOTAGE=initrd` 的 drill
        走通 p3 自动回退(以前会挂到 1500 秒 VM 超时)。`tools/verify.sh` **286 通过 / 0 失败**,
        第 16 节 16 条断言(含**拆开 UKI 的 `.initrd`** 这条直接证据,以及"不许再出现 `Initrds=`/`--initrd`"的反向断言)。
+       同一棵树的 `sudo tools/stress-libvirt.sh all` **复跑:358 条断言 0 失败**(A 25 轮 200 条、
+       B 6 次硬断电 60 条、C 满盘/看门人/并发 12 条、D 20 次重启 + panic 84 条),
+       装好的系统里 `keel-check` **52 ✓ / 0 ✗ / 1 ! / 3 -**(那条警告仍是"admin 家目录没有 authorized_keys",
+       因为压力测试用的是 `-p` 构建的产物)。**定向变异**:第 16 节的 5 处改坏(去掉 `InitrdPackages=`、
+       超时脚本去掉 sysrq 复位、删启用链接、把 `Initrds=` 接回来、包内权限压成 0600)**全部精确变红**。
 - [x] **v1.2 验收:静态校验 + 演练 + 压力测试 + 文档收口(2026-09-28)** ——
      ① `tools/verify.sh` **282 通过 / 0 失败**(root);
      ② `tools/build.sh --drill` `DRILL_EXIT=0`:宿主从 VM 控制台读回的关键判定一行不缺 ——

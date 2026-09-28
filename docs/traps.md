@@ -16,10 +16,11 @@
    mkosi 的脚本设置(`FinalizeScripts` / `PostInstallationScripts` / …)默认值是按
    "源目录里有没有 `mkosi.<名字>` 文件"解析的,而默认 initrd 镜像与主镜像**共用同一个源目录**
    ⇒ 我们的 finalize 有可能被作用到 initrd 上,把它弄坏,报错还会很莫名其妙。
-   两道防护:
-   - `mkosi.initrd.conf` 里清空这些设置 —— **必须写在 `[Content]` 段**。写成 `[Config]` 时
-     mkosi 会报"Setting X should be configured in [Content]"然后**静默不生效**(这个坑真踩过);
-   - 两个脚本开头都 `[ -e "$BUILDROOT/etc/initrd-release" ] && exit 0`。
+   两道防护 —— **注意哪一道真的生效**(2026-09-28 查实,坑 #76):
+   - ✅ 两个脚本开头都 `[ -e "$BUILDROOT/etc/initrd-release" ] && exit 0`:**这一道是真的在拦**,别删;
+   - ❌ `mkosi.initrd.conf`(当年以为靠它清空设置):**mkosi 25.3 根本不读这个文件名** ——
+     那条防护从来没生效过,文件已在 v1.2 3.0 删除。(它还留下一个教训:写成 `[Config]` 段时
+     mkosi 会报"Setting X should be configured in [Content]"然后静默不生效 —— 但连"生效"都是幻觉。)
 
 2. **符号链接必须在最后一步(`mkosi.finalize`)才创建。**
    如果镜像树里 `/var` 提前变成符号链接,包管理器安装、`systemd-sysusers`、`systemd-tmpfiles`、
