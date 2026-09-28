@@ -189,6 +189,62 @@ v1.2 起 `mkosi.conf` 里写了 `SecureBoot=yes`:构建用仓库根目录的 **`
 > 调试要么走签名的 UKI addon,要么临时关掉 SB。
 > 证书(`mkosi.crt`)是**公开**的,可以随产物分发;私钥(`mkosi.key`)只在构建机上、只进备份。
 
+### 2.7 真机首装:逐条核对清单(v1.2)
+
+给「第一次把 keel 装到真机上」的那一次用。左边是你做的事,**右边是必须看到的东西** ——
+全部对上才算装好;任何一条不对就先停下来,把现场(那条命令的输出 + `os-status` 全文 +
+`journalctl -b`)交回来,不要继续往下走。
+
+#### A 装之前(在构建机上)
+
+| # | 命令 / 动作 | 必须看到 |
+|---|---|---|
+| A1 | `tools/verify.sh` | 末行 `结果: NNN 通过, 0 失败` |
+| A2 | 仓库根放 `authorized_keys`(你的 SSH 公钥;`.gitignore` 已排除),或 `mkosi.rootpw` | 构建日志里 `已把 authorized_keys 放进 /data 骨架…` |
+| A3 | `sudo tools/build.sh` | 末行 `完成:output/keel-<版本>`;日志里有 `manifest.sig(key_id=…)` 与公钥回读 |
+| A4 | **离线备份两把私钥**:`keys/update-key-<id>.key` 与 `mkosi.key` | 备份在本机之外 —— 丢了以后发不了更新、签不出新 UKI,只剩重装 |
+| A5 | `lsblk -o NAME,SIZE,MODEL` | 目标盘认得出来(认错盘不可逆) |
+| A6 | 固件:UEFI 模式、关 CSM;Secure Boot 按 §2.6 处理 | 事先把 `mkosi.crt` 登记进固件,或首装时临时关掉 SB |
+
+#### B 装机
+
+| # | 命令 / 动作 | 必须看到 |
+|---|---|---|
+| B1 | `sudo ./install.sh /dev/sdX`(或 `sudo tools/burn.sh /dev/sdX`) | `版本核对通过`;解压尺寸与 sha256 都对得上 |
+| B2 | U 盘 UEFI 启动进 live 环境 | keel 文本控制台出现;`findmnt -no SOURCE /` 指的是 **U 盘**那个分区 |
+| B3 | `lsblk -f` | 要擦的目标盘**没有被挂载** |
+| B4 | `sudo os-install /dev/nvme0n1` | `keel: 目标分区:root-a=… data=… esp=…` → 容量核对 → 复制根 → 建表/格式化 data → 完成 |
+| B5 | 关机,拔掉 U 盘 | —— |
+
+#### C 首启(从目标盘)
+
+| # | 命令 | 必须看到 |
+|---|---|---|
+| C1 | 控制台 / 串口看启动 | 内核日志刷出来(第一次真机跑不加 `quiet`,这是有意的);`cat /proc/cmdline` 里有 `panic=-1` |
+| C2 | `os-status` | 槽 `a`;ESP 挂载 `/boot`;`/data` 已扩到整盘;`schema-version` 已写 |
+| C3 | `findmnt -no FSTYPE /` | `erofs`(v1.1 起的只读根) |
+| C4 | `df -h /data` 与 `lsblk` 对照 | 文件系统尺寸 ≈ 目标盘剩余空间(首启两步扩容生效,坑 #42) |
+| C5 | `systemctl --failed` | **空**。⚠ v1.2 起 `systemd-pcrlock*` 不再 mask(决策 D20 的 v1.2 更新),它们会真的参与启动 —— 真机上的结果**尚未实测**(虚拟机没有固件测量日志);若失败,系统仍然可用,但请记下 `journalctl -b -u <单元>` 把现场交回 |
+| C6 | `bootctl status` | 登记了证书 ⇒ `Secure Boot: enabled (user)`;没登记 ⇒ `disabled`(§2.6) |
+| C7 | `hostnamectl` / `timedatectl` / `localectl` | `keel` / `Asia/Shanghai` / `C.UTF-8`(构建期就写死,决策 D22) |
+| C8 | `nix --version` | `2.35.2`(上游 B1;不再是 Debian 的 2.26.3) |
+| C9 | `sudo ~/keel-check` | 记下 通过 / 失败 / 警告 / 跳过 四个数字;**失败必须是 0** |
+| C10 | `nix-shell -p fastfetch`(要网) | 能进 shell 并跑起来(不变量 7) |
+
+#### D 更新链路(装完就试,别等一年后第一次更新)
+
+| # | 命令 / 动作 | 必须看到 |
+|---|---|---|
+| D1 | 把发布目录的 `manifest` `manifest.sig` `slot-a.root.raw` `slot-a.uki.efi` `slot-b.root.raw` `slot-b.uki.efi` 拷进 `/data/ota/import/`;把 `UPDATE_SOURCE=file:///data/ota/import` 写进 `/data/keel/config` | —— |
+| D2 | `sudo os-update check` | 认出更新;多打一行 `签名:通过` |
+| D3 | `sudo os-update fetch` | 验签通过 + 每个载荷 sha256 对得上。**v1.2 起强制**:缺 `manifest.sig`、本机没有那把公钥、验签不过 —— 三种都直接拒绝 |
+| D4 | `sudo os-update stage --reboot` | 起来后 `os-status`:槽 `b`、`last_result=success`;ESP 上是 `keel-b.efi` |
+| D5 | `sudo os-update rollback` + 重启 | 回到槽 `a`(版本回退,`last_result=failed`) |
+| D6 | 记下 `os-status` 里的 ESP 余量与 `/data` 余量 | 稳态 ESP 余量约 550 MiB(两个 UKI 之后,见 §3.2) |
+
+> 真机才能补上的那一部分:**固件**(UEFI 怪癖、Secure Boot 密钥库、真实 TPM 测量)、
+> **驱动**(网卡 / NVMe / 电源管理)与**物理介质**(U 盘枚举)。libvirt 能覆盖的软件全链路见 §8。
+
 ## 3. 装之前必须确认
 
 | 项 | 要求 | 不满足会怎样 |
@@ -236,7 +292,7 @@ v1.2 起 `mkosi.conf` 里写了 `SecureBoot=yes`:构建用仓库根目录的 **`
 | 找 IP | 控制台里 `ip a`、`networkctl status`,或直接 `os-status`(有「网络」一节);拿到 IP 后从别的机器 `ssh admin@<ip>` |
 | 主机名 / 时区 | `hostnamectl` → `keel`;`timedatectl` → `Asia/Shanghai`(决策 D22,构建期就写好了) |
 | 登录 | 控制台与 SSH 都只用 `admin`;root 锁定(§2.5)。`sudo` 需要密码,规则在 `/etc/sudoers.d/10-keel-admin` |
-| 失败单元 | 应为空(`systemctl --failed`)。`systemd-pcrlock*` 已被 mask(决策 D20),不再出现在这里 |
+| 失败单元 | 应为空(`systemctl --failed`)。⚠ v1.2 起 `systemd-pcrlock*` **不再 mask**(决策 D20 的 v1.2 更新):Secure Boot 打开后它们随 `sysinit` 正常参与启动,真机上的结果尚未实测 —— 按 §2.7 C5 记录现场 |
 | `/data` 余量 | `os-status` 的「空间看门人」一节;`keel-data-guard.timer` 每天看一次,低于阈值会自动回收(决策 D23) |
 
 > 进不去就用 U 盘 live 环境挂上来看(§7.1 B),或按 `docs/troubleshooting.md` §2.5 排查。

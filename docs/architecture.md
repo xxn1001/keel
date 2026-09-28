@@ -460,8 +460,10 @@ os-update gc               # 清理旧载荷(保留最近 2 个版本 + 当前)
 | `keel-nix-gc.service` + `.timer` | 每周 `nix-collect-garbage` + `nix-store --gc --max-freed=2G` | `OnCalendar=weekly`、`Persistent=true` |
 | `keel-update-check.service` + `.timer` | §4.6:只读检查更新源有没有新版本,写 `update-check.state`(v1.1 ③;**绝不** fetch/stage) | 定时器 `OnBootSec=5min` + `OnUnitActiveSec=6h`;服务 `ConditionPathIsMountPoint=/data`,永远 `exit 0` |
 
-辅助脚本放 `/usr/lib/keel/`,不要散在 `/usr/bin`。被 mask 掉的 `systemd-pcrlock*`
-(决策 D20)不在上表里 —— 它们不是我们的单元,只是被我们关掉。
+辅助脚本放 `/usr/lib/keel/`,不要散在 `/usr/bin`。`systemd-pcrlock*`(7 个服务 + socket +
+模板)不在上表里 —— 它们不是我们的单元。v1 曾按决策 D20 把它们 disable + mask;**v1.2 ③ 解封**
+(Secure Boot 打开):现在它们随 `sysinit` 正常参与启动,`tools/verify.sh` 第 8/14 节有反向断言
+盯着「不许再出现 mask」。
 
 ---
 
