@@ -171,6 +171,22 @@ U 盘本身是一套完整系统,留着就是救援盘(见 `troubleshooting.md`)
 admin 的账号与密码哈希都在**镜像的只读 `/etc`** 里,所以即使 `/data` 坏了、`/home` 是空的,
 控制台照样能以 admin 登录(只是没有家目录)。**代价**:系统级后路只剩救援 U 盘(§7.1 B)。
 
+### 2.6 Secure Boot(v1.2 起必读):产物是签名 UKI
+
+v1.2 起 `mkosi.conf` 里写了 `SecureBoot=yes`:构建用仓库根目录的 **`mkosi.key` + `mkosi.crt`**
+(自签 db)给 **systemd-boot 与每一个 UKI** 签名。`mkosi genkey` 生成一次即可(私钥在
+`.gitignore` 里,**必须离线备份** —— 丢了就再也签不出能引导的新 UKI)。
+
+| 场景 | 现象 | 做法 |
+|---|---|---|
+| **虚拟机**(`mkosi vm` / `--drill`) | 固件是空密钥库(setup mode),sd-boot 自动登记我们的证书 | 不用手工操作;drill 里 guest 会断言 `Secure Boot: enabled (user)` |
+| **真机首装** | 固件不信任 `mkosi.crt` ⇒ **签名的 U 盘/UKI 会被拒绝** | 两条路:①先关掉固件的 Secure Boot 完成首装,再把 `mkosi.crt` 登记进固件的 db(或 MOK),然后打开 SB;②先在固件里登记证书再装 |
+| 登记之后 | `bootctl status` 应显示 `Secure Boot: enabled (user)` | 若显示 disabled/setup,就是没登记成功 |
+
+> **注意**:Secure Boot 打开后,`systemd-stub` 会忽略任何外部传入的 kernel cmdline(坑 #4) ——
+> 调试要么走签名的 UKI addon,要么临时关掉 SB。
+> 证书(`mkosi.crt`)是**公开**的,可以随产物分发;私钥(`mkosi.key`)只在构建机上、只进备份。
+
 ## 3. 装之前必须确认
 
 | 项 | 要求 | 不满足会怎样 |
@@ -178,7 +194,7 @@ admin 的账号与密码哈希都在**镜像的只读 `/etc`** 里,所以即使 
 | 固件 | **UEFI 模式启动**,关掉 CSM/Legacy | v1 只有 systemd-boot;槽切换与 boot counting 依赖 EFI 变量(§2) |
 | 目标盘 | **会被完全擦除** | 盘上原有数据、其他系统全部消失 |
 | 盘容量 | 至少放得下 `esp` 1 GiB + `root-a` 6 GiB + `root-b` 6 GiB + 可用的 `data` | 布局常量见 §3.1/§3.2 |
-| Secure Boot | v1 关闭 | v1 不做 Secure Boot;关着也保住了引导菜单里 `e` 改 cmdline 的调试通道(§13.1 #5) |
+| Secure Boot | **v1.2 起产物是签名 UKI**(自签 db);真机要先登记 `mkosi.crt` 或在首装时临时关掉 SB,见 §2.6 | 固件不信任我们的证书 ⇒ 签名的 UKI/引导器会被拒绝,机器起不来;开着还会关掉引导菜单按 `e` 改 cmdline 的调试通道(坑 #4) |
 | 先跑虚拟机 | 按 §1 在 `mkosi vm` 里过一遍 | 真机首次启动失败,只能靠 U 盘 live 救 |
 
 ## 4. 首次启动会自动发生什么

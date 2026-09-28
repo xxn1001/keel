@@ -389,6 +389,7 @@ for pat in \
     '判定:[无签名源]没有在 /data/ota 留下任何载荷' \
     '判定:[坏签名源]没有在 /data/ota 留下任何载荷' \
     '判定:nix 来自本槽骨架' \
+    '判定:Secure Boot 已启用' \
     '判定:好载荷验签通过' \
     '判定:**更新成功**' \
     '判定:回滚生效' \
@@ -411,4 +412,4 @@ if [ -n "$verdict_missing" ]; then
     echo "   宿主侧判定:**演练失败** —— 控制台里缺少这些关键判定:$verdict_missing" >&2
     exit 1
 fi
-echo "   宿主侧判定:nix 自检(B1)+ 签名三条路径 + 更新成功 + 回滚 + 自动回滚 + migrate 拒绝都在(真正全绿)"
+echo "   宿主侧判定:Secure Boot 已启用 + nix 自检(B1)+ 签名三条路径 + 更新成功 + 回滚 + 自动回滚 + migrate 拒绝都在(真正全绿)"

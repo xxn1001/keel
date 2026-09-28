@@ -32,7 +32,7 @@
 
 - 桌面环境 / 显卡驱动 / 无线网络 → 留给 `desktop` profile
 - 虚拟化宿主(libvirt/qemu/vfio)→ 留给 `server` profile
-- 加密(LUKS)、Secure Boot、dm-verity
+- 加密(LUKS)、dm-verity、TPM 封印的密钥(Secure Boot 已在 **v1.2 1.2** 打开:自签 db + UKI 签名 + `pcrlock` 解封)
 - BIOS/GRUB 引导(只支持 UEFI,因为 boot counting 与槽切换依赖 EFI 变量)
 - 休眠(只做 swapfile)
 - 图形化安装器

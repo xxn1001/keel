@@ -34,7 +34,7 @@ done
 # ---------------------------------------------------------------------------
 # 启动现场(一次性)—— 决策 D20/D21/D22/D23 的验证点
 #
-# 账号、系统标识、pcrlock 的 mask 状态、/data 的预算这些**不随时间变化**,
+# 账号、系统标识、pcrlock 的解封状态、/data 的预算这些**不随时间变化**,
 # 打一次就够;放进 10 轮循环里只会把控制台日志淹没。
 # ---------------------------------------------------------------------------
 echo
@@ -60,9 +60,9 @@ echo "  /etc/hostname  = $(cat /etc/hostname 2>&1)"
 echo "  /etc/localtime -> $(readlink /etc/localtime 2>&1)"
 echo "  /etc/locale.conf = $(tr '\n' ' ' </etc/locale.conf 2>&1)"
 echo "  hostnamectl --static = $(hostnamectl --static 2>&1)"
-echo "--- pcrlock(决策 D20:应当全部 masked,不再是 failed)"
+echo "--- pcrlock(决策 D20 在 v1.2 解封:不再 mask;TPM 存在时会真的跑)"
 systemctl is-enabled systemd-pcrlock-file-system.service systemd-pcrlock.socket 2>&1 | sed 's/^/  /'
-echo "  /etc/systemd/system 下的 pcrlock mask 链接数 = $(find /etc/systemd/system -maxdepth 1 -name 'systemd-pcrlock*' 2>/dev/null | wc -l)"
+echo "  /etc/systemd/system 下的 pcrlock mask 链接数 = $(find /etc/systemd/system -maxdepth 1 -name 'systemd-pcrlock*' 2>/dev/null | wc -l)(v1.2 起应为 0)"
 echo "--- 磁盘与分区尺寸(验「dd 到更大的盘 → 首启把 data 扩到整盘」,不变量 14)"
 lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS 2>&1 | sed 's/^/  /'
 data_dev="$(keel_part_dev data 2>/dev/null || true)"

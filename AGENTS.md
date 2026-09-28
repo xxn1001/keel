@@ -516,6 +516,16 @@ sudo tools/burn.sh /dev/nvme0n1
       `nix-daemon` 正常起来;载荷因 nix 闭包每槽 +31 MiB(401 → 451 MiB,一份 ~1.2 GiB)。
       途中踩了坑 #75(`Before=keel-firstboot` 却忘 `DefaultDependencies=no` ⇒ 到 sysinit 的环,
       systemd 丢掉的是 keel-firstboot ⇒ /data 没扩容 ⇒ fetch 被空间检查拒)。
+- [x] **v1.2 ③:Secure Boot(自签 db + UKI 签名 + pcrlock 解封,2026-09-28)** —— `mkosi.conf`
+      的 `[Validation]` 段:`SecureBoot=yes` + `SecureBootAutoEnroll=yes`,用仓库根 `mkosi.key`/
+      `mkosi.crt`(`sudo mkosi genkey` 生成,gitignore,**必须离线备份**)签 systemd-boot 与每个 UKI;
+      `build.sh` 缺钥直接拒绝。**pcrlock 解封**(决策 D20 的代价兑现):preset 不再 disable、
+      postinst 不再 mask(改成反向回读断言),verify 第 8 节的 mask 断言已翻转。
+      **实测**:`tools/verify.sh` **262 通过 / 0 失败**(root;非 root 259/0/3;+8 条断言);
+      `--drill` 全绿,guest `bootctl status` = `Secure Boot: enabled (user)`(自签 UKI 被固件接受),
+      `sbverify --list` 两个 UKI 都有 `/CN=mkosi of root` 签名;7 个 pcrlock 服务在 vTPM 无固件
+      event log 时仍失败(预期),`keel-check` 只在**虚拟机**里把"失败全是 pcrlock*"降级为警告
+      (真机仍算失败)。真机首装要先登记证书或临时关 SB,步骤见 `docs/install.md` §2.6。
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 

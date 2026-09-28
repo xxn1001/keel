@@ -19,21 +19,20 @@ else
 fi
 
 PRESET=mkosi.extra/usr/lib/systemd/system-preset/00-keel.preset
+# v1.2 起**解封**(决策 D20 写着"将来做 Secure Boot 时解封",现在兑现):
+# preset 里不许再有 disable;postinst 反过来要断言"镜像里没有 mask"。
 pcr_disabled=$(grep -c '^disable systemd-pcrlock' "$PRESET" || true)
-if [ "$pcr_disabled" -eq 8 ]; then
-    ok "preset 里 disable 了 8 个 systemd-pcrlock 单元(7 服务 + socket)"
+if [ "$pcr_disabled" -eq 0 ]; then
+    ok "preset 里没有 disable 任何 systemd-pcrlock 单元(v1.2 已解封,决策 D20)"
 else
-    no "preset 里 disable 的 systemd-pcrlock 条目是 $pcr_disabled 个(应为 8)"
+    no "preset 里还有 $pcr_disabled 条 systemd-pcrlock disable ⇒ v1.2 必须解封(决策 D20)"
 fi
-if grep -q 'ln -sfn /dev/null' mkosi.postinst && grep -q 'systemd-pcrlock.socket' mkosi.postinst; then
-    # 只看 mask 循环里的条目行(注释里提到 @.service 不算)
-    if grep -qE '^[[:space:]]+systemd-pcrlock@\.service[[:space:]]*\\?[[:space:]]*$' mkosi.postinst; then
-        no "postinst 把 systemd-pcrlock@.service(模板)也 mask 了 —— preset-all 会为此报一条失败"
-    else
-        ok "postinst 把 8 个 systemd-pcrlock 单元 mask 成 /dev/null(7 服务 + socket;刻意不碰模板)"
-    fi
+if grep -q 'ln -sfn /dev/null' mkosi.postinst; then
+    no "postinst 还在建 /dev/null mask ⇒ v1.2 起 pcrlock 必须解封"
+elif grep -q 'systemd-pcrlock 单元未被 mask' mkosi.postinst && grep -q 'pcrlock_masks' mkosi.postinst; then
+    ok "postinst 反向回读断言:pcrlock 不许有 mask(解封的构建期判据)"
 else
-    no "postinst 里缺少 systemd-pcrlock 的 mask"
+    no "postinst 没有「pcrlock 不许被 mask」的回读断言"
 fi
 
 }

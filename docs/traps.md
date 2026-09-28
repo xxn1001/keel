@@ -41,7 +41,11 @@
      但 `systemd-stub` 文档明确说,**一旦启用了 Secure Boot,`.cmdline` 非空时任何外部传入都会被忽略**
      —— 也就是说 Secure Boot 开启后这条调试路径自动关闭。
    - **UKI addon**:`<uki>.efi.extra.d/*.addon.efi` 可以给 UKI 追加 cmdline/initrd/微码,不需要重建 UKI。
-     适合"某台机器的专属参数",代价是这份差异只存在于 ESP 上、不参与镜像校验,而且 a/b 槽各要一份。
+     适合"某台机器的专属参数",代价是这份差异只存在于 ESP 上、不参与镜像校验,而且 a/b 槽各要一份;
+     Secure Boot 下 addon 本身也必须被信任的密钥签过。
+   **v1.2 更新(2026-09-28)**:keel 现在真的开了 Secure Boot(`mkosi.conf` 的 `SecureBoot=yes`,
+   自签 `mkosi.key`/`mkosi.crt`),所以**按 e 这条路已经关闭**;要么用签名的 UKI addon,
+   要么临时在固件里关掉 Secure Boot 再调试。
 
 5. **repart 的分区名 = 配置文件去掉数字前缀的文件名。**
    `repart/install/10-root-a.conf` → PARTLABEL `root-a`。槽的身份就靠它,

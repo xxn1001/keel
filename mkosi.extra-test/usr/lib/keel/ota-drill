@@ -142,6 +142,15 @@ p0)
         log "判定:**与预期不符** —— nix 自检失败(命令='${nix_ver:-无}' profile='${nix_live:-无}' 骨架='${nix_skel:-无}')"
     fi
 
+    # ── Secure Boot(v1.2 1.2)自检:固件确实以 Secure Boot 模式接受了自己签的 UKI ──
+    # 真机首装时这条同样适用(登记了自己的 db 之后 bootctl 应该报 enabled)。
+    sb_line="$(bootctl status 2>/dev/null | grep -i 'Secure Boot' | head -n1 | sed 's/^[[:space:]]*//')" || sb_line=""
+    log "Secure Boot:$sb_line"
+    case "$sb_line" in
+        *enabled*) log "判定:Secure Boot 已启用(自签 UKI 被固件接受)" ;;
+        *)         log "判定:**与预期不符** —— Secure Boot 未启用或读不到(bootctl 说:'${sb_line}')" ;;
+    esac
+
     # ── 签名 fail-closed 的三条路径(v1.2 1.1)──────────────────────────────
     # 只测 good 源的话,"跳过验签"也会变绿 —— 必须让**坏的两个源**真的被 fetch 拒绝:
     #   unsigned = 源里没有 manifest.sig;badsig = manifest.sig 被改过。

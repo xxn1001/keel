@@ -268,6 +268,13 @@
   `docs/roadmap.md`,并在 `mkosi.postinst` 的注释里标了"解封是那个工作项的一部分"。
 - **否决**:留着当"预期噪音"(会让"失败单元为空"这条检查失去意义);
   加更严的 `Condition`(条件已经是上游给的最严的那条,再收紧就会挡住将来合法的用法)。
+- **v1.2 更新(2026-09-28)**:本决策的"将来做 Secure Boot 时解封"已兑现 —— Secure Boot 打开
+  (`mkosi.conf` 的 `SecureBoot=yes`,自签 `mkosi.key`/`mkosi.crt`),`pcrlock` **两道保险都撤了**:
+  `00-keel.preset` 不再 disable、`mkosi.postinst` 不再 mask(改成"回读断言没有 mask"),
+  `tools/verify.sh` 第 8 节的断言已翻转。**实测**:drill 的 VM 里 `bootctl status` =
+  `Secure Boot: enabled (user)`(自签 UKI 被固件接受);7 个 pcrlock 服务在 vTPM 没有真实固件
+  event log 时仍然失败 —— 预期之内(实验环境没有测量链),`keel-check` 在**虚拟机**里把
+  "失败单元全是 pcrlock*"降级为警告,真机上仍算失败。
 
 ## D21 账号模型:`admin` 是唯一交互账号,root 锁定
 

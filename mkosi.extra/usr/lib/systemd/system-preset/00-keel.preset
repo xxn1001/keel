@@ -38,19 +38,10 @@ enable nix-daemon.socket
 enable keel-nix-sync.service
 
 # ---------------------------------------------------------------------------
-# 明确**不启用**的:systemd-pcrlock-*(决策 D20:v1 不做 Secure Boot / measured boot)
+# systemd-pcrlock-*:**v1.2 起解封**(决策 D20 的"将来做 Secure Boot 时解封"已兑现)
 #
-# 这些单元由发行版自己的 preset 启用,会在 TPM 存在的机器上真的跑起来
-# (2026-09 实测:mkosi 的 QEMU 带 vTPM ⇒ 6 个单元失败、1 个成功;原因见
-#  mkosi.postinst 里那段注释)。这里显式 disable 是为了不留悬空的 enable 链接;
-# mkosi.postinst 还会把它们 mask 成 /dev/null,双保险。
-# 将来做 Secure Boot / TPM 封印时要把这段删掉(见 docs/roadmap.md)。
+# v1 曾经在这里 disable 8 个 pcrlock 单元(没有 Secure Boot/measured boot 时它们只会失败)。
+# v1.2 开了 Secure Boot、并且要为 TPM 封印做准备 ⇒ **不要**再 disable/mask:
+# 发行版 preset 会把 7 个服务挂进 sysinit.target.wants,由 ConditionSecurity=measured-uki
+# 在真机/带 vTPM 的机器上决定跑不跑。verify 的第 8 节会断言这里不再有 disable。
 # ---------------------------------------------------------------------------
-disable systemd-pcrlock-file-system.service
-disable systemd-pcrlock-firmware-code.service
-disable systemd-pcrlock-firmware-config.service
-disable systemd-pcrlock-machine-id.service
-disable systemd-pcrlock-make-policy.service
-disable systemd-pcrlock-secureboot-authority.service
-disable systemd-pcrlock-secureboot-policy.service
-disable systemd-pcrlock.socket

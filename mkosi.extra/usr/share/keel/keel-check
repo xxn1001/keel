@@ -249,7 +249,19 @@ systemctl is-active --quiet systemd-resolved && ok "systemd-resolved 在跑" || 
 head1 "6. 服务健康与失败单元"
 # ---------------------------------------------------------------------------
 failed=$(systemctl --failed --no-legend --no-pager 2>/dev/null | wc -l)
-if [ "${failed:-1}" -eq 0 ]; then ok "systemctl --failed 为空"; else no "有 $failed 个失败单元:$(systemctl --failed --no-legend --no-pager 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"; fi
+failed_names="$(systemctl --failed --no-legend --no-pager 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
+# v1.2:systemd-pcrlock-* 已解封(决策 D20)。它们在"有 vTPM 但没有真实固件 event log"的
+# 环境里(比如 mkosi 的 QEMU)会真跑并失败 —— 那是实验环境没有测量链,不是配置错。
+# 只在"失败的全是 pcrlock* 且本机是虚拟机"时降级为警告;真机上仍然算失败(真机失败往往
+# 意味着 TPM 策略/测量链真有问题,不能吞)。
+pcr_failed=$(systemctl --failed --no-legend --no-pager 2>/dev/null | awk '{print $1}' | grep -c '^systemd-pcrlock' || true)
+if [ "${failed:-1}" -eq 0 ]; then
+    ok "systemctl --failed 为空"
+elif [ "${failed:-0}" = "${pcr_failed:-0}" ] && is_vm; then
+    wn "有 $failed 个失败单元,全是 systemd-pcrlock-*(虚拟机没有真实固件 event log;v1.2 已解封,真机上才有完整测量链):$failed_names"
+else
+    no "有 $failed 个失败单元:$failed_names"
+fi
 for u in keel-mounts.service keel-firstboot.service keel-confirm.service ssh.service systemd-networkd.service systemd-resolved.service systemd-timesyncd.service nix-daemon.service; do
     if ! systemctl list-unit-files "$u" >/dev/null 2>&1; then sk "$u 不存在(这个变体里没有?)"; continue; fi
     st=$(systemctl is-active "$u" 2>/dev/null || true)
@@ -347,9 +359,9 @@ fi
 if [ -e /dev/tpm0 ] || [ -e /dev/tpmrm0 ]; then
     ok "TPM 存在($(ls /dev/tpm* 2>/dev/null | tr '\n' ' '))"
 elif is_vm; then
-    sk "虚拟机($(virt))里没有 vTPM(宿主没给);v1 不需要 TPM,pcrlock 已按决策 D20 关掉"
+    sk "虚拟机($(virt))里没有 vTPM(宿主没给);Secure Boot 不依赖 TPM,pcrlock 单元会被 ConditionSecurity 跳过"
 else
-    wn "没有 TPM(v1 不需要它;pcrlock 已按决策 D20 关掉;将来 Secure Boot 密封密钥才需要)"
+    wn "没有 TPM(Secure Boot 不依赖它;pcrlock 与将来的 TPM 封印(1.3)才需要)"
 fi
 wd=$(ls /dev/watchdog* 2>/dev/null | tr '\n' ' ')
 rw=$(systemctl show -p RuntimeWatchdogUSec --value 2>/dev/null || true)

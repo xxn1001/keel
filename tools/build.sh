@@ -115,6 +115,15 @@ NIX_FETCH=tools/nix-fetch.sh
 [ -x "$NIX_FETCH" ] || die "找不到可执行的 $NIX_FETCH"
 "$NIX_FETCH" fetch || die "上游 nix 取用失败(网络或哈希;见 $NIX_FETCH)"
 
+# ---------------------------------------------------------------------------
+# Secure Boot 密钥(v1.2 1.2):mkosi.conf 里写了 SecureBoot=yes,密钥是根目录的
+# mkosi.key / mkosi.crt(mkosi 自动识别)。这里提前给出人话错误,免得埋进 mkosi 的日志。
+# ---------------------------------------------------------------------------
+if [ ! -s mkosi.key ] || [ ! -s mkosi.crt ]; then
+    die "没有 Secure Boot 密钥(mkosi.key / mkosi.crt):先生成一次 —— cd 仓库根 && sudo mkosi genkey;私钥必须离线备份,丢了就再也不能签新 UKI"
+fi
+log "Secure Boot:用 mkosi.key/mkosi.crt 签 systemd-boot 与每个 UKI"
+
 # 初始密码(可选,默认没有 = admin 与 root 都没有密码;给了就归 admin,root 仍锁定 —— 决策 D21)。
 # 口令只从命令行/环境变量来 —— 这是公开仓库,配置里硬编码的密码等于公开的,所以**不写进 mkosi.conf**。
 #   tools/build.sh -p <密码>                      ← 原生路径(推荐)
