@@ -43,5 +43,8 @@ __pycache__/
 # tools/build.sh 的组装产物(v1.2 2.10 起叫 output/,里面是压缩后的发布包)
 output/
 
+# tools/initrd-watchdog-pkg.sh 造出来的本地包(每次构建现造;.gitkeep 保住目录)
+mkosi.packages/*.deb
+
 # 个人的首启 SSH 公钥(不要提交)
 authorized_keys

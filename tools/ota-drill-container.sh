@@ -341,14 +341,16 @@ printf 'X' | dd of=/tmp/drill-serve/badsig/manifest.sig bs=1 seek=0 conv=notrunc
     { echo "   错误:改不动 badsig 的 manifest.sig" >&2; exit 1; }
 echo "   签名演练源就绪:unsigned(无 .sig)+ badsig(manifest.sig 第 1 字节已改)"
 
-# initrd 阶段的看门狗:**已知缺口,不再假装检查**(v1.2 3.0 查实 → docs/traps.md #76/#77):
-#   * v1.1 以为 mkosi.initrd.conf + ExtraTrees 把配置塞进了 initrd —— 实测没有:
-#     mkosi 25.3 根本不读 mkosi.initrd.conf,initrd 里既没有 RuntimeWatchdogSec 也没有 softdog;
-#   * "用 mkosi --initrd 追加一个未压缩 cpio"这条路**也不通**:实测会打破 initramfs 链
-#     (内核 `VFS: Unable to mount root fs`,连正常槽都起不来)。
-# 所以这个演练的坏槽仍然走 userspace 破坏(默认),`KEEL_DRILL_SABOTAGE=initrd` 覆盖不到
-# 自动回退 —— 修复路线(往 mkosi 默认 initrd 注入文件的正确出口)记在 docs/roadmap.md §3.0。
-echo "   注意:initrd 冻结兜底仍是已知缺口(主系统看门狗生效;详见 docs/roadmap.md §3.0)"
+# initrd 阶段的看门狗(v1.2 3.0 已修;根因与坑见 docs/traps.md #76/#77):
+#   * 两个配置文件(`RuntimeWatchdogSec=60` + softdog 加载项)现在由 tools/initrd-watchdog-pkg.sh
+#     打成小包,经 mkosi 的 `InitrdPackages=` 装进**默认 initrd**(`Initrds=` 是替换语义,
+#     设了它内置 initrd 就不进来 —— 那正是以前"VFS: Unable to mount root fs"的真实原因);
+#   * initrd 里 PID1 冻住时(实测 `[!!!!!!] Switch root target contains no usable init.`)会被
+#     看门狗复位 ⇒ "坏槽起不来 ⇒ 自动回退"在 initrd 阶段也成立。
+# >>> 因此 `KEEL_DRILL_SABOTAGE=initrd` 现在**可以**用来验自动回退(以前会挂到 VM 超时):
+#     它在坏槽根镜像里删掉 PID1 与 init 兜底 ⇒ 候选槽的 initrd 在切根那一步冻住 ⇒
+#     60 秒后复位 ⇒ 引导器回旧槽 ⇒ p3 判定"自动回滚成立"。
+echo "   注意:本模式(userspace 型)走主系统看门狗;initrd 型由 InitrdPackages 装进默认 initrd 的看门狗兜底(3.0)"
 
 # 控制台同时落一份到文件:下面要从中**读回 guest 的关键判定**(只靠 VM 退出码不够,
 # 见末尾那段说明)。tee 是必须的:mkosi/QEMU 给 QEMU 的 stdio 副本没有 O_APPEND(坑 #64),

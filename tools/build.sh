@@ -119,12 +119,20 @@ NIX_FETCH=tools/nix-fetch.sh
 "$NIX_FETCH" fetch || die "上游 nix 取用失败(网络或哈希;见 $NIX_FETCH)"
 
 # ---------------------------------------------------------------------------
-# initrd 补充层(v1.2 3.0):**刻意还没接进构建** —— 见 docs/traps.md #77
+# initrd 的看门狗兜底(v1.2 3.0):打本地小包,由 mkosi 装进**默认 initrd**
 #
-# 根因已查实:mkosi 25.3 不读 mkosi.initrd.conf,initrd 里从来没有我们的看门狗配置;
-# 而"用 --initrd 追加一个未压缩 cpio"会打破 initramfs 链(实测:内核 VFS unable to mount
-# root ⇒ 连正常槽都起不来)。在找到"往 mkosi 默认 initrd 里注入文件"的正确出口之前,
-# 产物保持现状(主系统看门狗生效;initrd 冻结仍是已知限制)。修复路线见 docs/roadmap.md 3.0。
+# mkosi 往默认 initrd 里放文件只有 `InitrdPackages=` 这一条"追加"的口子。
+# 坑 #77 的真实根因是:`Initrds=` 是**替换** —— 一旦设了,内置 initrd 整个不进来,
+# UKI 里只剩我们那个几 KB 的 cpio,内核 `VFS: Unable to mount root fs`(正常槽都起不来)。
+# 所以走包:mkosi.packages/ 由 mkosi.conf.d/20-packages.conf 的 PackageDirectories=/
+# InitrdPackages= 消费,这里在构建**之前**生成它 —— 生成不出来就直接停。
+# 少了它:initrd 里没有 `RuntimeWatchdogSec=` 与 softdog 加载项,而 initrd 里 PID1 冻住时
+# (`[!!!!!!] Switch root target contains no usable init.`)**只有看门狗复位能救** ——
+# 自动回退永远不会发生(决策 D25 / 坑 #50)。
+# ---------------------------------------------------------------------------
+INITRD_PKG=tools/initrd-watchdog-pkg.sh
+[ -x "$INITRD_PKG" ] || die "找不到可执行的 $INITRD_PKG"
+"$INITRD_PKG" || die "生成 initrd 看门狗包失败(initrd 冻结兜底会静默失效)"
 
 # ---------------------------------------------------------------------------
 # Secure Boot 密钥(v1.2 1.2):mkosi.conf 里写了 SecureBoot=yes,密钥是根目录的

@@ -1,0 +1,29 @@
+#!/bin/sh
+# keel:initrd 阶段的总超时 —— 决策 D26 的 **initrd 孪生兄弟**(v1.2 3.0)
+#
+# 为什么需要它(2026-09-28 两次实测,各跑 300s/636s 都没有复位):
+#   * **运行时看门狗救不了这一类**:PID1 活着、还在喂狗,只是"卡在等人" ——
+#     实测 `root=PARTLABEL=不存在` 时 initrd 直接进 emergency,屏幕停在
+#     `Press Enter for system maintenance` 上,机器会永远等下去;
+#   * 而 `[!!!!!!] Switch root target contains no usable init.` 那种**冻结**:
+#     systemd 冻住执行时看门狗也不会复位(实测 636 秒无动作) —— 冻结路径把狗收了。
+# ⇒ 覆盖这两类的唯一办法是"自己数秒,到点强制复位":本脚本就是那个秒表。
+#
+# 正常路径:切根成功 ⇒ switch_root 把 initrd 里剩下的进程全部杀掉(包括本脚本)⇒
+# 什么都不会发生。卡住:本脚本活着 ⇒ 到点用 sysrq 强制复位 ⇒ 引导器消费掉那次
+# one-shot、下次启动走持久默认(旧槽)⇒ keel-confirm 记 last_result=failed。
+#
+# 用 sysrq 而不是 `systemctl reboot`:PID1 冻住时 D-Bus 调用会一起挂住,
+# 而 sysrq 是内核路径,不需要任何用户态配合(sysrq 掩码先显式打开)。
+#
+# 超时值:initrd 正常只要 3–6 秒(实测),120 秒对慢介质也足够宽松;
+# 卡住时人只需要等两分钟,而且**每次启动只多等这一次**(one-shot 只试一次)。
+set -u
+N=${KEEL_INITRD_TIMEOUT:-120}
+sleep "$N"
+echo "keel-initrd-timeout: initrd 阶段超过 ${N} 秒还没切根(卡在 emergency / 切根 / 等设备)⇒ 强制复位" >/dev/console 2>/dev/null || true
+echo 1 >/proc/sys/kernel/sysrq 2>/dev/null || true
+echo b >/proc/sysrq-trigger 2>/dev/null || true
+systemctl reboot -ff 2>/dev/null || true
+# 走到这里说明两条复位路径都没成(极罕见):继续挂着,别让单元变成 failed 噪音
+sleep 3600

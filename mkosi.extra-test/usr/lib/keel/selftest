@@ -127,6 +127,15 @@ for (( i = 1; i <= rounds; i++ )); do
         | grep -E 'Current DNS Server|DNS Servers|Default Route' | head -n5 | sed 's/^[[:space:]]*/  /'
     echo "--- systemd-networkd 最近日志(找 DHCPv4 / ENOPKG)"
     journalctl -b -u systemd-networkd --no-pager 2>/dev/null | tail -n12 | sed 's/^/  /'
+    echo "--- 看门狗(决策 D25):**配置 ≠ 武装**,判据是 /sys 里的 state"
+    echo "  RuntimeWatchdogUSec = $(systemctl show -p RuntimeWatchdogUSec --value 2>/dev/null)"
+    for w in /sys/class/watchdog/watchdog*; do
+        [ -e "$w" ] || continue
+        echo "  $(basename "$w"): state=$(cat "$w/state" 2>/dev/null) identity=$(cat "$w/identity" 2>/dev/null) timeout=$(cat "$w/timeout" 2>/dev/null)s"
+    done
+    echo "  /sys/module/softdog = $([ -d /sys/module/softdog ] && echo 已加载 || echo 未加载);/dev/watchdog* = $(ls /dev/watchdog* 2>/dev/null | tr "\n" " ")"
+    echo "  内核日志里的 watchdog/softdog(时间戳 <5s 的是 initrd 阶段 —— 能看出模块到底在哪个阶段加载)"
+    journalctl -k -b -o short-monotonic --no-pager 2>/dev/null | grep -iE "softdog|watchdog" | head -n8 | sed "s/^/    /"
     echo "--- 失败的单元"
     systemctl --failed --no-pager 2>/dev/null | sed 's/^/  /'
     echo "--- keel-swapfile / keel-firstboot 的日志(失败原因在这里)"

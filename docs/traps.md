@@ -1461,24 +1461,32 @@
     initrd 是用内置 `--include=mkosi-initrd` 构建的;② 拆开安装镜像 UKI 的 `.initrd`
     (`objcopy --only-section=.initrd`),里面是**两段 zstd**(默认 initrd 31.4M + 内核模块 initrd),
     base 段 184 个 `/etc` 文件里**没有**任何 keel 的东西;模块段里倒是有 `softdog.ko.xz`。
-    ⇒ 配置从未进过 initrd。素材改放 `mkosi.initrd-extra/`(`tools/mkinitrd-extra.sh` 打成 cpio),
-    等找到正确的注入出口再接(见 #77)。**在那之前不要相信任何"配置在不在"的静态断言** ——
-    只有证明它进了 `.initrd` 才算数。
+    ⇒ 配置从未进过 initrd。`mkosi.initrd.conf` 已**删除**(留着一个死配置只会让人再信一次),
+    路径改走"本地包 → `InitrdPackages=` → 默认 initrd"(见 #77 的正确做法)。
+    **不要相信任何"配置在不在"的静态断言** —— 只有**拆开产物的 `.initrd`** 看见它才算数;
+    verify 第 16 节现在就是这么做的(顺手把当年那两条空断言换成了真证据)。
     **教训**:① "我写了个配置文件"和"它真的到了目标"之间隔着一个**别人家的加载机制**,
     而那个机制可能根本不认识你的文件名;② 这次是**拆开产物**才看见真相,grep 源码永远看不出来。
 
-77. **`mkosi --initrd` 追加一个未压缩 cpio 会打破 initramfs 链:内核 `VFS: Unable to mount root fs`,连正常槽都起不来(2026-09-28,修 #76 时踩到)。**
+77. **mkosi 的 `Initrds=` 是「替换」不是「追加」:设了它,内置 initrd 整个不进来,UKI 里只剩你给的那几个文件 ⇒ 内核 `VFS: Unable to mount root fs`(2026-09-28,修 #76 时踩到;同日复查源码后改正了当时的错误结论)。**
     做法:把 `mkosi.initrd-extra/` 打成 newc cpio,`build.sh` 给 mkosi 加
     `--initrd mkosi.output/keel-initrd-extra.cpio`。构建、签名、postinst 全绿,但 drill 一启动
     就是 panic 循环:`/dev/root: Can't open blockdev` → `mount_root_generic` → panic → 重启,
-    **一个 keel-ota-drill 阶段都没跑到**(连 p0 都没进)。根因:`.initrd` 是多个 initrd 拼接的,
-    原有两段都是 **zstd 压缩帧**,而我们追加的是**未压缩 cpio** —— 内核的 initramfs 解包器在
-    这种混合拼接下没有继续解后面的压缩帧 ⇒ 找不到 `/init` ⇒ 内核直接去 mount root ⇒ panic。
-    **现状**:3.0 的修复**没有接进构建**(reverse 断言守着,防止有人再偷偷接上);
-    `tools/mkinitrd-extra.sh` 与 `mkosi.initrd-extra/` 作为素材保留,等正确的注入出口。
-    **教训**:① "构建成功"不能证明"能启动" —— 这次唯一抓住它的是 drill 的**启动**;
-    ② 往别人的产物里追加东西之前,先看清那个产物的**格式约定**(是不是同一种压缩);
-    ③ 下次先本地拼一个混合 `.initrd` 用 QEMU 单测,比花 25 分钟跑整条 drill 便宜得多。
+    **一个 keel-ota-drill 阶段都没跑到**(连 p0 都没进)。
+    **真实根因(复查 mkosi 25.3 源码 + man)**:`Initrds=` 的语义是"**用**用户给的 initrd" ——
+    `finalize_initrds()` 只要看到 `config.initrds` 非空就**直接返回它**,内置的
+    `build_default_initrd()` 根本不跑(man 里也写着:没有指定 initrds 时 mkosi 才自动构建默认 initrd)。
+    于是那份 UKI 的 `.initrd` 里只有我们那个 **3.5 KB** 的 cpio —— 内置 initrd 与内核模块 initrd
+    全都不在 ⇒ initramfs 里没有 `/init` ⇒ 内核直接去 mount root ⇒ panic。
+    ⚠ 当时记的"未压缩 cpio 打破了压缩帧拼接"是**错的方向**:拼接是 ukify 的 `join_initrds()` 干的,
+    它给每一段补到 4 字节对齐,混合压缩/未压缩本来就被内核支持。**结论要写机制,不要写当时的猜测。**
+    **正确做法(v1.2 3.0 已落地)**:唯一能"追加"的口子是 `InitrdPackages=` —— 把两个配置文件打成
+    本地 .deb(`tools/initrd-watchdog-pkg.sh` → `mkosi.packages/`),经 `PackageDirectories=` +
+    reprepro 本地仓库装进**默认 initrd**。verify 第 16 节有反向断言盯着"不许再出现 `Initrds=`/`--initrd`",
+    还有一条**直接证据**:拆开手边那份 UKI 的 `.initrd`,确认两个文件真的在里面。
+    **教训**:① 一个"看起来像追加"的配置项,先读它的**实现对偶**(`finalize_*` 函数)再信它的名字;
+    ② "构建成功"不能证明"能启动" —— 这次唯一抓住它的是 drill 的**启动**;
+    ③ 23 分钟的 drill 很贵,但比"把错的根因写进文档、后人照着错方向修"便宜。
 
 75. **`Before=... sysinit.target` 的早期单元忘了 `DefaultDependencies=no` ⇒ 依赖环,systemd 丢掉的是**别的**单元(2026-09-28,v1.2 nix B1 的第一次演练)。**
     现象:drill 的 guest 在 p0 就"与预期不符"——三个更新源全部被拒,报的却是

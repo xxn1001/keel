@@ -1,0 +1,24 @@
+# keel:initrd 阶段的总超时(v1.2 3.0;决策 D25/D26 的 initrd 侧兜底)
+#
+# 为什么要自己数秒:看门狗只覆盖"PID1 不再喂狗";initrd 停在 emergency(等人按键)时
+# PID1 是健康的、还在喂狗,机器会永远等下去(2026-09-28 实测 300 秒无动作)。
+# 细节与证据写在 /usr/lib/keel/initrd-timeout 的头部。
+#
+# 两个 WantedBy 都是必需的,而且**靠包里带的 .wants 符号链接生效**(不依赖 preset):
+#   * sysinit.target          —— 早启动:emergency 那类"没走到切根"的卡住也要覆盖;
+#   * initrd-switch-root.target —— 让本单元属于切根 target 的依赖树,
+#     `initrd-cleanup.service` 做 isolate 时**不会把它停掉**(停掉就没有秒表了)。
+# 切根成功时 switch_root 会杀掉 initrd 里所有剩余进程,本单元自然消失 —— 这正是判据。
+[Unit]
+Description=keel: initrd 阶段总超时(到点强制复位;D25/D26 的 initrd 侧兜底)
+DefaultDependencies=no
+After=sysinit.target
+Before=initrd-switch-root.service
+Conflicts=shutdown.target
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/keel/initrd-timeout
+
+[Install]
+WantedBy=sysinit.target initrd-switch-root.target

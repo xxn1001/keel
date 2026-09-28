@@ -548,6 +548,28 @@ sudo tools/burn.sh /dev/nvme0n1
       (D25)照旧生效,initrd 冻结仍是**已知限制**(`KEEL_DRILL_SABOTAGE=initrd` 修好前别用来验证回退)。
       **实测**:`tools/verify.sh` **282 通过 / 0 失败**(root);代码拆 UKI 的 `.initrd` 两段 zstd +
       两段内容清单;混合 `--initrd` 那次 drill 在 p0 前就 panic 循环(唯一一次启动级回归,已回退)。
+- [x] **v1.2 ⑥:initrd 阶段的兜底真的修好了(2026-09-28)** —— 上面 ⑤ 查实了"配置从来没进 initrd",
+     这一条把它修完,并**改正了 ⑤ 里那条错误根因**:
+     * **#77 的真实机制**:`Initrds=` 是**替换**不是追加(mkosi 的 `finalize_initrds()` 见到它就直接返回,
+       内置 initrd 根本不构建)⇒ UKI 里只剩我们那个 3.5 KB 的 cpio ⇒ `VFS: Unable to mount root fs`。
+       当时记的"未压缩 cpio 打破拼接"是错方向(拼接是 ukify 的 `join_initrds()` 干的,每段补 4 字节对齐,
+       混合压缩/未压缩内核本来就支持)。**唯一能"追加"的口子是 `InitrdPackages=`。**
+     * **交付**:`tools/initrd-watchdog-pkg.sh` 把 `mkosi.initrd-extra/`(4 个文件 + 2 个 `.wants` 链接)
+       打成 `mkosi.packages/keel-initrd-watchdog_1.0_all.deb`(`dpkg-deb --root-owner-group`,时间戳固定,
+       内容没变就不动 mtime —— 否则 mkosi 增量缓存每次全失效),mkosi 经 reprepro 本地仓库
+       (`PackageDirectories=mkosi.packages`)由 `InitrdPackages=` 装进**默认 initrd**;
+       initrd 构建**不跑 preset**,所以启用只能靠包里自带的符号链接。`build.sh` 构建前生成包,fail-closed。
+     * **两类失败、两套手段**(同日实测,缺一不可):**PID1 冻住** ⇒ 看门狗(`RuntimeWatchdogSec=60` +
+       softdog);**PID1 活着但卡住**(initrd 进 emergency 等人按键)⇒ 看门狗**不会**动作,靠
+       `keel-initrd-timeout.service` + `/usr/lib/keel/initrd-timeout`:切根前最多等 120 秒,到点
+       `echo b > /proc/sysrq-trigger` 强制复位(PID1 冻住时 D-Bus 走不通,sysrq 是内核路径)。
+       正常路径不用"取消":切根成功时 `switch_root` 会把 initrd 里剩下的进程全杀掉,秒表自然消失。
+     * **实测**:① 正常启动里 initrd **真的**武装了看门狗(`Watchdog running with a hardware timeout of 1min`,
+       实测 1.8–1.9s;`softdog: initialized`;主系统 `/sys/class/watchdog/watchdog0/state = active`);
+       ② 故意给一个不存在的 `root=`:以前**永久挂住**(实测 300 秒无动作),现在**每 120 秒自动复位一次**
+       (控制台反复出现 `keel-initrd-timeout: … ⇒ 强制复位`);③ `KEEL_DRILL_SABOTAGE=initrd` 的 drill
+       走通 p3 自动回退(以前会挂到 1500 秒 VM 超时)。`tools/verify.sh` **286 通过 / 0 失败**,
+       第 16 节 16 条断言(含**拆开 UKI 的 `.initrd`** 这条直接证据,以及"不许再出现 `Initrds=`/`--initrd`"的反向断言)。
 - [x] **v1.2 验收:静态校验 + 演练 + 压力测试 + 文档收口(2026-09-28)** ——
      ① `tools/verify.sh` **282 通过 / 0 失败**(root);
      ② `tools/build.sh --drill` `DRILL_EXIT=0`:宿主从 VM 控制台读回的关键判定一行不缺 ——

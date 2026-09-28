@@ -96,9 +96,10 @@ else
     no "演练没有覆盖「带迁移的载荷被拒绝」这一项"
 fi
 
-# 运行时看门狗(决策 D25 / 坑 #50):主镜像与 initrd 各一份,且两边的值必须一致
+# 运行时看门狗(决策 D25 / 坑 #50):主镜像与 initrd 各一份,且两边的值必须一致。
+# initrd 那份的**交付路径**(本地包 → InitrdPackages → 默认 initrd)由第 16 节专门核对。
 WD_MAIN=mkosi.extra/etc/systemd/system.conf.d/keel-watchdog.conf
-WD_INITRD=mkosi.initrd-extra/etc/systemd/system.conf.d/keel-watchdog.conf
+WD_INITRD=mkosi.initrd-extra/usr/lib/systemd/system.conf.d/keel-watchdog.conf
 if [ -f "$WD_MAIN" ] && [ -f "$WD_INITRD" ] &&
    grep -q '^RuntimeWatchdogSec=60' "$WD_MAIN" &&
    grep -q '^RuntimeWatchdogSec=60' "$WD_INITRD"; then
@@ -110,20 +111,8 @@ if [ -f "$WD_MAIN" ] && [ -f "$WD_INITRD" ] &&
 else
     no "缺少看门狗配置(或两边不一致)⇒ initrd 冻结时机器会一直挂着,自动回退不会发生(坑 #50)"
 fi
-# 交付路径(2026-09-28 实测,坑 #76):mkosi 25.3 **不读 mkosi.initrd.conf**,所以旧的
-# "ExtraTrees 挂 mkosi.extra-initrd" 断言是**空断言**。真正生效的是 --initrd + cpio。
-if grep -qF '刻意还没接进构建' tools/build.sh && grep -qF 'traps.md #77' tools/build.sh; then
-    ok "initrd 补充层**尚未**接进构建:根因与「--initrd 会打破 initramfs」都写在 build.sh(坑 #76/#77)"
-else
-    no "build.sh 没有说明 initrd 补充层为何没接进去 ⇒ 后人会重复踩坑"
-fi
-if grep -qF '不读这个文件' mkosi.initrd.conf; then
-    ok "mkosi.initrd.conf 已标注「mkosi 25.3 不读它」(防止后人再信一次)"
-else
-    no "mkosi.initrd.conf 还显得像生效的配置 ⇒ 后人会再信一次(坑 #76)"
-fi
 if grep -q '^softdog$' mkosi.extra/etc/modules-load.d/keel-watchdog.conf &&
-   grep -q '^softdog$' mkosi.initrd-extra/etc/modules-load.d/keel-softdog.conf; then
+   grep -q '^softdog$' mkosi.initrd-extra/usr/lib/modules-load.d/keel-watchdog.conf; then
     ok "主镜像与 initrd 都会加载 softdog 兜底"
 else
     no "softdog 兜底不完整(主镜像或 initrd 缺)"

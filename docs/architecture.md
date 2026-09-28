@@ -510,7 +510,7 @@ keel/
 ├── AGENTS.md  README.md  .gitignore  schema-version
 ├── docs/{architecture,decisions,install,update,troubleshooting,roadmap,traps}.md
 ├── mkosi.conf                      mkosi.conf.d/*.conf
-├── mkosi.initrd.conf               ← 只影响默认 initrd(清空脚本类设置,见坑 #1)
+├── mkosi.initrd-extra/            ← initrd 看门狗载荷(装进 initrd 后的路径),由本地包装进去
 ├── mkosi.profiles/{install,slot-a,slot-b}.conf   产物形态
 ├── mkosi.profiles/test.conf       可叠加:仅虚拟机测试用(keel-selftest 把现场打到控制台)
 ├── repart/install/                   ← 安装镜像布局(esp + root-a + root-b + data)
@@ -542,7 +542,7 @@ keel/
 
 | # | 内容 | 完成标志 |
 |---|---|---|
-| 1 | `mkosi.conf` + `mkosi.conf.d/` + `mkosi.initrd.conf` | `mkosi --profile install summary` 通过 |
+| 1 | `mkosi.conf` + `mkosi.conf.d/` | `mkosi --profile install summary` 通过 |
 | 2 | `repart/install/` + `repart/slot-{a,b}/` + 三个 profile | repart dry-run 报出预期分区表 |
 | 3 | `mkosi.extra/` + `postinst` + `finalize` | `systemd-analyze verify` 全过;finalize 幂等可重入 |
 | 4 | `mkosi.extra/usr/bin/os-*` + `/usr/lib/keel/*` | `shellcheck` 全过;`--help` 可用 |
@@ -576,6 +576,8 @@ keel/
 - ⚠️ 发现并已修掉:`Profiles=` 默认值会让两个产物 profile 同时被解析(见上一节)。
 - ⚠️ 发现并已修掉:`mkosi.initrd.conf` 里清空脚本设置必须写在 `[Content]` 段
   (写成 `[Config]` 会被拒绝且**静默不生效**)。
+- ⚠️ **v1.2 3.0 起 `mkosi.initrd.conf` 已删除**:mkosi 25.3 根本不读这个文件名(坑 #76),
+  留着只会让人以为它生效。initrd 里的看门狗配置改走「本地包 → `InitrdPackages=`」(坑 #77)。
 
 **仍需真机/虚拟机验证的**:
 

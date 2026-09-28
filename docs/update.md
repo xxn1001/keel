@@ -340,9 +340,11 @@ userspace 型(能进 initrd、起不来),**验证决策 D26 并挖出坑 #51**�
 #50 "起不来"分三类,而坏槽实测是**永久冻结**(看门狗才救得回来)、
 #51 迁移/schema 检查排在下载之后(13 GiB 下完才轮到拒绝)。
 
-**还没做**:initrd 阶段的冻结(看门狗覆盖不到,见 `docs/roadmap.md` 3.0)、
-真机(U 盘 + 笔记本)那一趟、`--mark-bad` 在**真正的候选槽启动**上的正面用例
+**还没做**:真机(U 盘 + 笔记本)那一趟、`--mark-bad` 在**真正的候选槽启动**上的正面用例
 (这轮只验证了它"没有计数时说的是真话")。
+(initrd 阶段的冻结 **v1.2 3.0 已修**:两个配置文件经 `InitrdPackages=` 装进默认 initrd,
+冻住 ⇒ 60 秒复位 ⇒ 回退;见 `docs/roadmap.md` 3.0 与决策 D25 的 v1.2 更新。
+同一轮还顺手改正了坑 #77 的错误根因:`Initrds=` 是替换不是追加。)
 
 **装机路径**:`os-install` 装到整盘之后的第一轮体检由项目所有者在 libvirt 里跑过
 (`sudo ~/keel-check`,49 ✓ / 1 ✗ —— 那条 ✗ 是体检脚本自己的 bug,坑 #52;详见 `docs/install.md` §9)。
@@ -411,3 +413,12 @@ VM 退出码 0 打印"演练跑到 p2"。现在签名先写临时文件再 `mv`(
 > p2 `回滚生效` + `带 migrate= 的载荷没有装进来(rc=1)`、p3 `自动回滚成立`(`last_result=failed`、`.failed` ≥1)。
 > 与它同一棵树构建的带密码产物(`-p keel-tmp`,版本 `2026.09.28.1630`)随后跑了 `tools/stress-libvirt.sh all`:
 > **358 条断言 0 失败**(见 `roadmap.md` §0 的 v1.2 行)。
+
+> **initrd 破坏模式的复跑(2026-09-28,`KEEL_DRILL_SABOTAGE=initrd`,`DRILL_EXIT=0`)**:这个模式以前**跑不完**
+>(机器在 initrd 冻住,挂到 1500 秒 VM 超时)—— 它正是 v1.2 3.0 要修的那个场景。现在:坏槽的 initrd 在切根处
+> 冻住(`[!!!!!!] Switch root target contains no usable init.`)→ 120 秒后
+> `keel-initrd-timeout: initrd 阶段超过 120 秒还没切根(卡在 emergency / 切根 / 等设备)⇒ 强制复位` →
+> 内核 `sysrq: Resetting` → 固件重新引导(one-shot 已被消费)⇒ 回旧槽 ⇒ guest 自己 poweroff,`VM 退出码:0`。
+> p3 判定要素全中:**当前槽=a、`last_result=failed`、ESP 上 `.failed` 条目数=1**;宿主侧汇总行:
+> `宿主侧判定:Secure Boot 已启用 + nix 自检(B1)+ 签名三条路径 + 更新成功 + 回滚 + 自动回滚 + migrate 拒绝都在(真正全绿)`。
+> (上面那次 `good/badsig/unsigned` 三条源的证据仍然有效 —— 两种破坏模式各自完整跑过一轮。)

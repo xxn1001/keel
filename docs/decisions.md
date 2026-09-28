@@ -377,22 +377,37 @@
   **⚠ 2026-09-28 修正(坑 #76)**:原文写的 `mkosi.initrd.conf` + `ExtraTrees=mkosi.extra-initrd`
   **从来没生效过** —— mkosi 25.3 源码里根本不读 `mkosi.initrd.conf`;拆开 UKI 的 `.initrd`
   证实里面既没有看门狗配置、也没有 softdog(那个"核对两边一致"的断言因此一直是空断言)。
-  修复尝试(2026-09-28):素材已备好 —— `tools/mkinitrd-extra.sh` 把 `mkosi.initrd-extra/` 打成
-  cpio,但**没有接进构建**:实测 mkosi `--initrd` 追加未压缩 cpio 会打破 initramfs 链
-  (内核 `VFS: Unable to mount root fs`),见坑 #77。两份配置的值仍由 `tools/verify.sh` 核对,
-  cpio 素材有功能测试;正确的注入出口留待后续(roadmap 3.0)。
+  **✅ v1.2 3.0 修法(2026-09-28 当日落地)**:mkosi 往**默认 initrd** 里放文件只有两条路 ——
+  `Initrds=` 是**替换**(设了它,内置 initrd 整个不进来 ⇒ UKI 里只剩我们那个 3.5 KB 的 cpio ⇒
+  内核 `VFS: Unable to mount root fs`;这是坑 #77 的**真实**根因,当时错记成"未压缩 cpio 打破拼接");
+  `InitrdPackages=` 才能**追加**。于是 4 个文件 + 2 个 `.wants` 链接被打成一个小 .deb
+  (`tools/initrd-watchdog-pkg.sh` → `mkosi.packages/keel-initrd-watchdog_1.0_all.deb`),经
+  `PackageDirectories=` + mkosi 的 reprepro 本地仓库装进默认 initrd;`build.sh` 构建前生成它,
+  生成不出来就停(fail-closed)。`mkosi.initrd.conf` 与 `tools/mkinitrd-extra.sh` 都已删除(死路),
+  verify 第 16 节改成**直接证据**:拆开 UKI 的 `.initrd` 确认文件与链接逐字节在里面,
+  另有反向断言禁止 `Initrds=`/`--initrd` 再出现在构建路径上。
+  **⚠ 只把看门狗配置塞进去还不够(同日两次实测)**:① 看门狗只覆盖"PID1 不再喂狗";
+  initrd 停在 emergency 等人按键时 PID1 是健康的 —— 实测给一个不存在的 `root=` 会永远等下去(300 秒无动作)。
+  ② `Switch root target contains no usable init.` 那种 systemd **冻结**同样没有复位(实测 636 秒)。
+  ⇒ 本决策的兜底必须**两件一起**:看门狗(冻住)+ `keel-initrd-timeout`(活着但卡住)。
+  后者是 D26 的 initrd 孪生兄弟:一个 `Type=simple` 的单元在切根前最多等 120 秒,到点
+  `echo b > /proc/sysrq-trigger` 强制复位(sysrq 是内核路径,PID1 冻住时也走得通);
+  正常路径靠 `switch_root` 杀掉 initrd 里剩余进程来"取消"它。
 - **代价**:正常启动的早期阶段要在 60 秒内喂到第一次狗(远用不到),卡住时人要等一分钟;
   看门狗复位**不写 journal**(相当于硬断电),所以"那次失败"的证据仍然只有
   引导计数/`.failed` 条目与 `last_result=failed`。
 - **实测结果(2026-09,分两半说)**:
   * 主系统这一半**生效**:演练快照里 `RuntimeWatchdogUSec = 1min`、
     `/dev/watchdog /dev/watchdog0 /dev/watchdog1` 都在 ⇒ 用户态的挂死/卡住会被复位;
-  * **initrd 这一半没生效**:把候选槽做成"没有可用 init"之后,initrd 冻结,
-    机器挂住 **650+ 秒没有被复位**(那次演练只能人工终止)。
-    原因是配置没真正进 initrd,还是 initrd 里没有 `/dev/watchdog` **还没查清**
-    —— 我们那份"从 UKI 抽 `.initrd` 再查文件名"的检查本身也可能误报(和坑 #47 同一类问题)。
-  ⇒ 结论:**v1 不承诺覆盖 initrd 阶段的冻结**;这条已知限制记在 `docs/roadmap.md` 3.0,
-  下一步是先把"配置到底进没进 initrd / initrd 里有没有看门狗设备"这两件事查实。
+  * **initrd 这一半**(v1 时**没生效**,v1.2 3.0 **已修**):v1 时把候选槽做成"没有可用 init"
+    之后 initrd 冻结,机器挂住 **650+ 秒没有被复位**(那次演练只能人工终止)—— 后来查实是配置
+    从未进过 initrd(坑 #76),而 `softdog.ko` 一直躺在 initrd 的模块段里,**缺的只是那两份配置**。
+    v1.2 3.0 用「本地包 → `InitrdPackages=`」把配置装进默认 initrd 之后,实测正常启动里 initrd
+    **真的**武装了看门狗(`Watchdog running with a hardware timeout of 1min`,1.8–1.9s),冻结那一类
+    由它覆盖;而"PID1 活着但卡住"(emergency 等人)由同一批交付的 `keel-initrd-timeout`(120 秒后
+    sysrq 强制复位)覆盖 —— 实测给一个不存在的 `root=` 时机器**每 120 秒自动复位一次**,不再永久挂着。
+  ⇒ 结论:v1.2 起**三类失败全都有兜底** —— panic ⇒ D24;冻住 ⇒ 本节(主系统 + initrd 两段);
+  进 emergency/rescue 等人 ⇒ D26(主系统)/ `keel-initrd-timeout`(initrd)。
 - **否决**:只依赖 `panic=-1`(覆盖不到挂住;这正是演练暴露的问题);
   不启用看门狗、靠人发现(那就不是"自动"回滚)。
 
@@ -414,7 +429,8 @@
 - **代价**:真出问题时机器默认会重启(而不是停在提示符等你)。这是项目所有者拍板的取向:
   目标是服务器(无人值守、尽量避免手工重装),所以"自己退回上一个好版本"优先于"停下来等人"。
 - **不覆盖**:initrd 阶段的冻结(`Switch root target contains no usable init.`)——
-  那时根里的单元根本还没机会跑,已记 `docs/roadmap.md` 3.0。
+  那时根里的单元根本还没机会跑。**v1.2 3.0 起这一格由 D25 的 initrd 看门狗补上**
+  (配置经 `InitrdPackages=` 装进默认 initrd:冻住 ⇒ 60 秒复位 ⇒ 回退;见 D25 的 v1.2 更新)。
 
 ## D27 控制台日志级别 + 启动早期顺序(sysctl / journald / journal-flush 排在 keel-mounts 之后)
 
