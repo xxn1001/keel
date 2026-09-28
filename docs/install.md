@@ -242,12 +242,14 @@ ip a          # 确认网络,再看 sshd 能不能连
 # 在目标机器上:把发布目录里除了 keel.raw/install.md/update.md 之外的文件
 # 放进一个本地目录(例如从 U 盘拷进 /data/ota/import),然后:
 sudo mkdir -p /data/ota/import
-sudo cp /path/to/release/manifest /path/to/release/slot-*.root.raw /path/to/release/slot-*.uki.efi \
+# v1.2 起 manifest.sig 是**必须**的(缺了 fetch 会拒绝),别漏拷
+sudo cp /path/to/release/manifest /path/to/release/manifest.sig \
+     /path/to/release/slot-*.root.raw /path/to/release/slot-*.uki.efi \
      /data/ota/import/
 sudo sed -i 's#^UPDATE_SOURCE=.*#UPDATE_SOURCE=file:///data/ota/import#' /data/keel/config
 
 sudo os-update check          # 应认出这个版本
-sudo os-update fetch          # 校验 sha256(没有 manifest.sig 会有醒目告警,v1 允许)
+sudo os-update fetch          # 强制验签 + 校验 sha256(v1.2:发布目录必须带 manifest.sig)
 sudo os-update stage          # 写进非活动槽 + 把 UKI 放到 ESP + 把候选条目设成 one-shot
 sudo systemctl reboot
 os-status                     # 起来后:当前槽变成 b,last_result=success

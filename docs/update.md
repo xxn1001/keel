@@ -3,9 +3,9 @@
 > **状态(2026-09-26)**:`os-update` 的 `check` / `fetch` / `stage` / `switch` / `rollback` / `gc`
 > 六个子命令都已实现(见 `mkosi.extra/usr/bin/os-update`),**完整的 OTA 闭环已经实测跑通**
 > (libvirt 真装机路径 + VM 演练,证据见 §9 与 §9.1)。
-> 已知未做的两处:v1 **不验签**(`manifest.sig` 与 `/usr/share/keel/update-key.pub` 的接口留着,
-> 见 §6)、**没有自动更新**。v1.1 起有 `keel-update-check.timer` 定期**检查并通知**,
-> 但**不自动下载、不自动安装** —— 自动更新必须排在 v1.2 的更新签名之后(§8)。
+> **v1.2 起更新强制验签**(fail-closed:`manifest.sig` + 镜像内公钥 `update-keys/<key_id>.pub`,
+> 见 §6.1/§6.2);**仍然没有自动更新** —— `keel-update-check.timer` 只定期**检查并通知**,
+> **不自动下载、不自动安装**(§8)。
 
 ## 1. 更新模型(一段话)
 
@@ -141,11 +141,12 @@ sudo os-rescue --mark-bad   # 把当前槽标记为 bad(systemd-bless-boot bad)
 
 ## 6. 更新源怎么配
 
-更新源 URL 在 `/data/keel/config` 里(§4.2、§8),支持三种形式:
+更新源 URL 在 `/data/keel/config` 里(§4.2、§8),支持四种形式:
 
 | 形式 | 例子 | 用途 |
 |---|---|---|
-| `https://` | `https://example.invalid/keel/` | 正式发布 |
+| `https://` | `https://example.invalid/keel/` | 正式发布(推荐) |
+| `http://` | `http://192.168.1.10/keel/` | 只在你完全控制的局域网用:**明文会暴露元数据**(版本、请求时刻);签名保证内容不被篡改/伪造,但不保密 |
 | `file://` | `file:///data/ota/local/` | 本机/离线目录,自测 |
 | 挂载的 U 盘目录 | U 盘挂到 `/mnt`,指向 `/mnt/keel-<version>/` | 无网环境装机后升级 |
 
@@ -160,9 +161,63 @@ SWAPFILE_SIZE=            # 可留空:默认 min(内存, 8G) 且不小于 1G
 (不是 `slot-a/` 子目录 —— 见 `architecture.md` §6 的发布目录结构)。
 `manifest` 刻意是最朴素的 `key=value` 文本:镜像里没有 jq,清单不该依赖它。
 
-下载后所有校验都在本地完成:`fetch` 逐个文件验 sha256、再检查 schema 兼容性;
-`manifest.sig` 存在时会用 `/usr/share/keel/update-key.pub` 验签(公钥缺失直接报错,
-不做静默降级),不存在时打印醒目警告后继续 —— 这是 v1 的权宜策略。
+下载后所有校验都在本地完成。**v1.2 起签名是强制的**(fail-closed),见下面三小节。
+
+### 6.1 签名:强制、先验、四种拒绝
+
+`fetch` 现在**必须**能验签,四种情况一律拒绝 —— v1.1 那条"源没有 `.sig` 就打印警告后继续"
+的 fail-open 路径已经删除(能撕掉签名的中间人等于把更新降级回"只靠 sha256"):
+
+| 情况 | 结果 |
+|---|---|
+| 更新源没有 `manifest.sig` | 拒绝("未签名的更新源") |
+| `manifest` 里没有合法的 `key_id=` | 拒绝 |
+| 本机没有该 `key_id` 的公钥 `/usr/share/keel/update-keys/<key_id>.pub` | 拒绝(并提示轮换步骤) |
+| `openssl dgst -sha256 -verify` 验不过 | 拒绝(什么都没写进槽) |
+
+**验签排在下载载荷之前**(只需要 `manifest` 与 `manifest.sig` 两个小文件,没必要先下 1 GiB
+才发现源不可信);随后才解析 `schema`/`migrate`、下载四个载荷、逐个验 sha256。
+manifest 里的 `sha256_<载荷>=` 覆盖四个载荷,签名又覆盖 manifest 的全部字节 ⇒
+**签 manifest 就传递地覆盖了全部载荷**,不存在第二套校验。
+
+**拒降级(防重放)**:签名只证明"这份 manifest 是我们签的",**不证明它比本机新** —— 拿一份
+历史公开发布的 `dist/keel-<旧版本>/` 当更新源就能重放,全程不需要私钥。所以 `fetch` 还会
+**拒绝比当前版本旧的载荷**(同版本允许,用于修复一次坏掉的下载);要回退旧版本请用
+`sudo os-update rollback`(槽切换),不要从源上装旧载荷。
+
+`os-update check` 自己对"源里没有 manifest / 下载失败 / 没有 `version=`"会非 0 退出;
+包装它的 `update-check`(定时器)那条**永远 exit 0**(失败只记 `verdict=error`)。check 会多打
+一行"签名:通过/缺失/验证失败",并把这行结论写进 `/data/keel/update-check.state` ——
+`os-status` 会把未签名的源显示成"有新版本 … —— 源签名:缺失(fetch 会拒绝)",
+不会再看起来像"正常可用"。
+
+### 6.2 密钥放哪、怎么轮换
+
+* **公钥**(公开):构建期由 `tools/sign.sh sync` 放进
+  `mkosi.extra/usr/share/keel/update-keys/<key_id>.pub`,随镜像烤进每个槽。
+  `mkosi.postinst` 回读断言 —— 缺公钥的产物会被**构建直接拒绝**(否则会装出一台
+  "什么更新都装不上"的机器,而那要等下一次更新才暴露)。
+* **私钥**:`keys/`(已在 `.gitignore` 里,**绝不进 git**)。丢了就再也没法给已装机器发更新 ⇒ 备份到离线介质。
+* **算法**:RSA-3072 / SHA-256。签发侧 `openssl dgst -sha256 -sign` 与镜像里的
+  `openssl dgst -sha256 -verify` 是同一参数对(见 `tools/sign.sh`)。
+* **轮换是两跳**(`tools/sign.sh rotate` 会打印同样的步骤,别跳步):
+  1. `tools/sign.sh rotate` 生成新钥,**当前签名钥仍是旧的**。此时 `sync` + 构建发布的
+     **过渡版本**里同时带旧+新两把公钥,manifest 仍由**旧钥**签名 ⇒ 只信旧钥的已装机器能正常装上;
+  2. 确认机器都跑过过渡版本之后,`tools/sign.sh use <新 key_id>` —— 从此新版本用新钥签;
+  3. `tools/sign.sh retire <旧 key_id>`:私钥与公钥**一起**移进 `keys/retired/`,此后的
+     `sync` 不再把它的公钥放进新镜像。
+  直接换钥会让只信旧公钥的机器拒绝一切新更新,所以**第 1 步不能省**。
+* **信任库的审计**:`sync` 会写一个 `active-key-id` 标记,`mkosi.postinst` 断言**当前签名钥**
+  的 `.pub` 真的进了镜像(只数"至少一个 .pub"发现不了"带错了信任库");`sync` 还会校验
+  active 公钥与私钥**配对**(公钥被换过时拒绝构建)。
+* **撤销是"从下一个镜像开始"**:公钥随槽更新。已经装过带某把公钥镜像的机器,要更新到
+  `retire` 之后构建的镜像才会不再信任它 —— **没有在线撤销**(也不该有:更新源不该能改信任库)。
+
+### 6.3 从 v1.1 升上来:首跳没有签名保护
+
+v1.1 机器里没有公钥、`fetch` 是 fail-open 的 ⇒ **第一次**从 v1.1 升到 v1.2 时,
+验签在旧系统那一侧发生不了。这一跳只能靠你自己核对更新源(HTTPS 或本地介质 + sha256);
+装上 v1.2 之后,后续每一跳都由上面这套强制验签保护。
 
 ## 7. 给将来维护者:发一个新版本要做什么
 
@@ -171,8 +226,8 @@ SWAPFILE_SIZE=            # 可留空:默认 min(内存, 8G) 且不小于 1G
 | 1 | `tools/verify.sh` | 静态校验必须全绿(§12) |
 | 2 | 有 `/data` schema 变更? | 先在 manifest 里写声明式迁移步骤、bump `schema-version`,并在本文档 §4 的表里加一行 —— **这步不能跳过** |
 | 3 | `tools/build.sh` | 一次跑 `install` / `slot-a` / `slot-b` 三个 profile,产出 `dist/keel-<version>/`(§6) |
-| 4 | 检查产物目录 | `manifest`(版本、构建时间、Debian 快照、内核版本、槽位尺寸、schema 版本、迁移步骤、各产物 sha256)、`keel.raw`、`slot-a/`、`slot-b/`、`install.md` |
-| 5 | 上传整个目录 | 放到 `/data/keel/config` 指向的更新源;版本号由 `mkosi.version` + 构建时 `-B` 自动 bump(§6) |
+| 4 | 检查产物目录 | `manifest`(版本、`key_id`、构建时间、Debian 快照、内核版本、槽位尺寸、schema 版本、迁移步骤、各产物 sha256)、**`manifest.sig`(v1.2 起必须)**、`keel.raw`、`slot-a/`、`slot-b/`、`install.md` |
+| 5 | 上传整个目录(含 `manifest.sig`) | 放到 `/data/keel/config` 指向的更新源。版本号来自可执行的 `mkosi.version`(打印时间戳);刻意**不用** `-B` 自动 bump —— 那会改写一个被 git 跟踪的文件 ⇒ 工作区变脏、`git pull` 冲突 |
 | 6 | 在真机演练 | 至少一次 `check → fetch → stage --reboot`;**有 schema 变更时必须加一次回滚演练**(§4) |
 | 7 | 回写文档 | 踩到的坑进 `AGENTS.md`;新决策进 `decisions.md`;命令或单元的行为变化同步到本文档 |
 
@@ -181,13 +236,14 @@ SWAPFILE_SIZE=            # 可留空:默认 min(内存, 8G) 且不小于 1G
 ### 8.1 更新源在哪、长什么样
 
 `UPDATE_SOURCE` 在 `/data/keel/config`(§4.2)里,三种形式:`https://…`、`file://…`、
-或一个挂载好的目录。源目录里就是 `dist/keel-<版本>/` 的内容:`manifest` + 四个产物
+或一个挂载好的目录。源目录里就是 `dist/keel-<版本>/` 的内容:`manifest` + `manifest.sig` + 四个产物
 (`slot-a.root.raw` / `slot-a.uki.efi` / `slot-b.root.raw` / `slot-b.uki.efi`),
 **不要**放 `keel.raw`。
 
-`os-update fetch` 把四个产物下到 `/data/ota/<版本>/`,逐个验 sha256;`manifest.sig` 存在时
-用 `/usr/share/keel/update-key.pub` 验签(公钥缺失直接报错,不做静默降级),
-不存在时打印醒目警告后继续 —— 这是 v1 的权宜策略(§6)。schema 兼容性也在这一步查(§4)。
+源目录里除了 `manifest` 还必须有 `manifest.sig`(v1.2 起强制;见 §6.1)。
+
+`os-update fetch` 先把 `manifest` + `manifest.sig` 下到临时目录并**验签**,然后才把四个产物
+下到 `/data/ota/<版本>/`、逐个验 sha256。schema 兼容性也在这一步查(§4)。
 
 ### 8.2 保留策略:`os-update gc`
 
@@ -309,7 +365,7 @@ userspace 型(能进 initrd、起不来),**验证决策 D26 并挖出坑 #51**�
 
 **「迁移/schema 载荷必须在下载前被拒」(坑 #51)的行为复验**:两个假载荷(只有 manifest,
 产物根本不存在)分别声明 `migrate=` 与 `schema=99`;`os-update fetch` 都立刻失败,
-HTTP 源日志里**只有 `GET /manifest`(还有一次 `GET /manifest.sig` → 404,签名是可选的)**,
+HTTP 源日志里**只有 `GET /manifest`(还有一次 `GET /manifest.sig` → 404 —— 那时签名还是可选的,这是 v1.1 行为)**,
 **一个产物请求都没有** —— 修好之后守门确实排在下载之前。
 
 这一轮(含准备工作)一共挖出并修掉 7 个坑,共同点是"**写下来了,但从没跑过**":
@@ -319,3 +375,29 @@ HTTP 源日志里**只有 `GET /manifest`(还有一次 `GET /manifest.sig` → 4
 #59 演练差点把 live 系统的结论当成装好的系统的(外加 `os-install` 无人值守要 `--yes`)、
 #60 `systemd-bless-boot` 不在 `PATH` 里(`--mark-bad` 永远报"找不到")。
 每个坑的细节与教训见 `docs/traps.md`。
+
+### 9.2 v1.2 签名演练:三条路径 + 自动回滚(2026-09-28,原生 `tools/build.sh --drill`)
+
+`drill` 现在会摆**三个更新源**,宿主还会从 VM 控制台**读回关键判定**(不再只看 VM 退出码;
+为什么必须这样见 `docs/traps.md` #73/#74):
+
+| 源 | 构造 | guest 侧的实测判定 |
+|---|---|---|
+| `unsigned` | 除 `manifest.sig` 外全部符号链接到 good 载荷 | `判定:[无签名源]拒绝生效(rc=1,消息含「未签名」)` + `没有在 /data/ota 留下任何载荷` |
+| `badsig` | `manifest.sig` 是副本且第 1 字节被改 | `判定:[坏签名源]拒绝生效(rc=1,消息含「验签失败」)` + 不留载荷 |
+| `good` | `tools/build.sh` 产出的签名载荷 | `判定:好载荷验签通过(manifest.sig 真验了,不是跳过)` |
+
+之后 good 源走完整链路,宿主逐个读回:p1 **更新成功**(槽 b、`last_result=success`、
+`keel-b.efi` 已 bless)、p2 手动回滚生效(回槽 a)、`migrate=` 载荷在下载前被拒、p3
+**自动回滚成立**(坏槽起不来后回到旧槽,`last_result=failed` 且 ESP 上 `.failed` ≥1)。
+宿主最后打印:
+
+```
+宿主侧判定:签名三条路径 + 更新成功 + 回滚 + 自动回滚 + migrate 拒绝都在(真正全绿)
+```
+
+同一轮还实测到一个**假绿**(已修 + 已加断言,见 `traps.md` #73/#74):演练 step 6 给
+`bad`/`mig` 目录摆 `manifest.sig` 时用了符号链接,而 `openssl -out` 会**写穿**链接,把 good 载荷
+(dist)里的签名覆盖成了 mig 清单的签名 ⇒ guest 在 p0 就"与预期不符"并 poweroff,宿主却因为
+VM 退出码 0 打印"演练跑到 p2"。现在签名先写临时文件再 `mv`(不碰链接目标),宿主也从控制台
+读回关键判定、缺一条即非 0 退出。

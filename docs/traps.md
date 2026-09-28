@@ -1,4 +1,4 @@
-# keel 已知的坑(65 条,都是真踩过的)
+# keel 已知的坑(74 条,都是真踩过的)
 
 > 这份清单原来在 `AGENTS.md` §3。2026-09 拆出来,是因为 `AGENTS.md` 长到 65 KB 之后
 > **超出"工作区指令"的加载预算、末尾会被静默截断**(实测被砍掉过"下一步要验证的事"那一段),
@@ -1417,3 +1417,33 @@
     再看 pool 里的版本分布,再看 backports,最后看 security-tracker 的**逐发行版状态**;
     ③ 别用二手转述判断 CVE(这次转述里的"NAR 解析栈溢出"和"≥2.28.7"对上了,但条数与具体描述对不上),
     `security-tracker.debian.org` 上一眼就能看全,连"no DSA"这种态度信息都在。
+
+73. **`openssl -out` 会写穿符号链接 —— 演练把自己的发布产物签成了别人的清单(2026-09-28,第一次 v1.2 签名演练,由只读对抗复核 subagent 抓出)。**
+    现象:演练在 p0 就打印「**与预期不符** —— 好载荷 fetch 失败」然后 poweroff,而宿主打印
+    「VM 退出码:0(0 = 演练跑到 p2 并自己 poweroff)」—— 看起来全绿,实际上 stage/重启/回滚/
+    自动回滚整段都没跑。更糟的是 `dist/keel-<版本>/manifest.sig` 被换成了 **mig 清单的签名**
+    (拿它发布,所有 v1.2 机器都会拒绝这个更新)。
+    根因:演练 step 6 构造 `/tmp/drill-serve/bad`、`/mig` 时,把 good 载荷目录里"除 manifest 与
+    目标根镜像之外的所有文件"都 `ln -sfn` 过去 —— **包括 manifest.sig**;随后
+    `tools/sign.sh sign /tmp/drill-serve/bad` 用 `openssl dgst -sha256 -sign -out "$dir/manifest.sig"`,
+    而 openssl 打开输出文件时**跟随符号链接**(实测:截断并覆盖目标文件,链接本身保留)⇒
+    "给 bad/mig 签名"实际签的是 good 的 dist。讽刺的是同一段代码对 `badsig` 特意用 `cp` 并注释了
+    "符号链接会让 dd 顺着改到 good 的签名上",bad/mig 两处却漏了。
+    **修法**:`tools/sign.sh sign` 一律先写 `$dir/.manifest.sig.XXXXXX` 再 `mv -f` 到
+    `manifest.sig`(rename 替换的是**链接本身**,永远不碰目标);`tools/verify.sh` 加了一条
+    功能断言:让 `manifest.sig` 指向一个诱饵文件,签名后诱饵内容必须不变、目录里必须是普通文件。
+    **教训**:① `-out`/`dd`/`tee` 这类"按名字打开写"的工具**默认跟随符号链接**,凡是往
+    "可能是链接的目标名"写东西,要么先写临时文件再 rename,要么先 `rm` 掉链接;
+    ② 演练里"用符号链接省空间"很方便,但**被签/被改的文件绝不能是链接** —— 省下的那点空间
+    远不及一次假绿 + 一个被污染的发布产物。
+
+74. **guest 干净 poweroff ⇒ `mkosi vm` 返回 0 —— 宿主只看退出码的演练永远不会失败(同一次演练暴露)。**
+    现象:guest 的 ota-drill 把每一步结论写成 `keel-ota-drill[...] 判定:...` 日志,判错了也只是
+    `systemctl poweroff`;宿主把 `timeout mkosi vm` 的 rc=0 解释成"演练跑到 p2 并自己 poweroff",
+    于是 **p0 就中止的演练照样全绿**(当时静态门 `tools/verify.sh` 222 通过 / 0 失败,也抓不到)。
+    **修法(两层)**:① `tools/ota-drill-container.sh` 把 VM 控制台 `tee` 到文件,逐个 `grep -F`
+    必须出现的关键判定(三条签名路径 / 更新成功 / 回滚 / 自动回滚 / migrate 拒绝),出现
+    「与预期不符」或没跑到「演练结束」时 `exit 1`;② 静态门断言那些关键判定在 guest 脚本里
+    真的存在(改了文案不改断言时 verify 会提醒)。
+    **教训**:判定"只打印不返回"等于没判 —— 特别是当**正常路径与失败路径的退出码相同**
+    (都是 poweroff)时。任何自动化验证都要有一条宿主侧判据:"关键产物/关键字符串必须出现,否则失败"。

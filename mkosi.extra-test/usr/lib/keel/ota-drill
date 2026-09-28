@@ -29,6 +29,8 @@ DRILL_LOG=/data/keel/ota-drill.log
 SRC_GOOD="${KEEL_DRILL_SRC:-http://10.0.2.2:8000/good}"
 SRC_BAD="${KEEL_DRILL_SRC_BAD:-http://10.0.2.2:8000/bad}"
 SRC_MIG="${KEEL_DRILL_SRC_MIG:-http://10.0.2.2:8000/mig}"
+SRC_UNSIGNED="${KEEL_DRILL_SRC_UNSIGNED:-http://10.0.2.2:8000/unsigned}"
+SRC_BADSIG="${KEEL_DRILL_SRC_BADSIG:-http://10.0.2.2:8000/badsig}"
 
 step="$(cat "$STATE" 2>/dev/null || true)"
 [ -n "$step" ] || step=p0
@@ -60,6 +62,27 @@ wait_source() {
         sleep 3
     done
     return 1
+}
+
+# 签名守卫(v1.2 1.1):fetch 必须**拒绝**这个源(rc≠0 且消息里有关键字),
+# 并且不能在 /data/ota 留下载荷目录 —— 判据写进持久日志,p3 之后也能回读。
+guard_reject() {
+    local url=$1 want=$2 name=$3 out rc left
+    log "========== 签名守卫[$name]:$url(期望被拒绝)=========="
+    set_source "$url"
+    out="$(os-update fetch 2>&1)" && rc=0 || rc=$?
+    printf '%s\n' "$out" | sed 's/^/  /'
+    if [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "$want"; then
+        log "判定:[$name]拒绝生效(rc=$rc,消息含「$want」)"
+    else
+        log "判定:[$name]**与预期不符**(rc=$rc,期望非 0 且消息含「$want」)"
+    fi
+    left="$(find "${KEEL_OTA:-/nonexistent}" -mindepth 1 -maxdepth 1 2>/dev/null | head -n5)"
+    if [ -n "$left" ]; then
+        log "判定:[$name]**与预期不符** —— 被拒的源在 /data/ota 留下了东西:$(printf '%s' "$left" | tr '\n' ' ')"
+    else
+        log "判定:[$name]没有在 /data/ota 留下任何载荷"
+    fi
 }
 
 advance() {
@@ -102,12 +125,33 @@ p0)
         exit 0
     fi
     log "更新源可达:$SRC_GOOD;当前版本(引导镜像)=$(keel_version) —— 载荷版本应该比它新"
+
+    # ── 签名 fail-closed 的三条路径(v1.2 1.1)──────────────────────────────
+    # 只测 good 源的话,"跳过验签"也会变绿 —— 必须让**坏的两个源**真的被 fetch 拒绝:
+    #   unsigned = 源里没有 manifest.sig;badsig = manifest.sig 被改过。
+    guard_reject "$SRC_UNSIGNED" "未签名" "无签名源"
+    guard_reject "$SRC_BADSIG" "验签失败" "坏签名源"
+
     set_source "$SRC_GOOD"
     snapshot "更新前"
     log "========== os-update check =========="
     os-update check 2>&1 | sed 's/^/  /'
-    log "========== os-update fetch =========="
-    os-update fetch 2>&1 | sed 's/^/  /'
+    log "========== os-update fetch(必须验签通过)=========="
+    if fetch_out="$(os-update fetch 2>&1)"; then
+        printf '%s\n' "$fetch_out" | sed 's/^/  /'
+        if printf '%s' "$fetch_out" | grep -q '验签通过'; then
+            log "判定:好载荷验签通过(manifest.sig 真验了,不是跳过)"
+        else
+            log "判定:**与预期不符** —— fetch 成功但没有「验签通过」的证据(验签可能被跳过)"
+        fi
+    else
+        printf '%s\n' "$fetch_out" | sed 's/^/  /'
+        log "判定:**与预期不符** —— 好载荷 fetch 失败,后面的 stage/重启无法继续"
+        printf 'done\n' >"$STATE"
+        sleep 3
+        systemctl poweroff
+        exit 0
+    fi
     log "========== os-update stage =========="
     os-update stage 2>&1 | sed 's/^/  /'
     snapshot "stage 之后(重启前)"

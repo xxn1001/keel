@@ -341,7 +341,7 @@ dist/keel-<version>/
 ├── slot-b.uki.efi
 ├── manifest               os-update 消费的清单(key=value;含每个产物的 sha256、
 │                          version、schema、声明式迁移步骤)
-├── manifest.sig           可选签名(v1 只做 sha256,验签接口已留)
+├── manifest.sig           manifest 的 RSA-3072/SHA-256 签名(v1.2 起强制验签)
 ├── install.md             从 docs/install.md 复制,离线可读
 └── update.md
 ```
@@ -423,7 +423,7 @@ os-update gc               # 清理旧载荷(保留最近 2 个版本 + 当前)
 | 命令 | 子命令 | 作用 |
 |---|---|---|
 | `os-status` | — | 当前槽/版本/内核、`/data` 用量、schema 版本、pending 状态、上次更新结果、槽位占用 |
-| `os-update` | `check` / `fetch` / `stage [--reboot] [--force]` | `check` 比对版本,`fetch` 下载并校验 sha256(+ 可选验签),`stage` 写入非活动槽并安排下次启动 |
+| `os-update` | `check` / `fetch` / `stage [--reboot] [--force]` | `check` 比对版本,`fetch` **先验 manifest.sig(fail-closed)**再下载并校验 sha256,`stage` 写入非活动槽并安排下次启动 |
 | | `switch a\|b` | 手动把"首选条目"指向指定槽(切回上一个版本用) |
 | | `rollback` | 等价于 `switch <另一个槽>`,并清掉 pending、把上次结果记成 failed |
 | | `gc` | 清理 `/data/ota/` 里过期的载荷(保留 pending 版本 + 最近 2 个) |

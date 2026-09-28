@@ -18,6 +18,8 @@ mkosi.passphrase
 keys/
 *.key
 *.pem
+# tools/sign.sh sync 把公钥放进镜像树的落地目录(构建期生成,源码里不该有)
+mkosi.extra/usr/share/keel/update-keys/
 
 # 镜像产物
 *.raw

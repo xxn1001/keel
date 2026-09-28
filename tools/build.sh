@@ -7,7 +7,8 @@
 #   dist/keel-<version>/slot-a.uki.efi    A 槽 UKI(放到 ESP 的 EFI/Linux/keel-a.efi)
 #   dist/keel-<version>/slot-b.root.raw
 #   dist/keel-<version>/slot-b.uki.efi
-#   dist/keel-<version>/manifest          os-update 消费的 key=value 清单(含 sha256)
+#   dist/keel-<version>/manifest          os-update 消费的 key=value 清单(含 sha256 与 key_id)
+#   dist/keel-<version>/manifest.sig      manifest 的 RSA-3072/SHA-256 签名(fetch 强制验签)
 #
 # 这是**原生路径**(宿主本身是 mkosi 支持的发行版,例如 Debian/Ubuntu/Fedora/Arch/CachyOS)。
 # 宿主不被 mkosi 支持时(NixOS 等)走适配器 tools/build-container.sh ——
@@ -88,6 +89,20 @@ fi
 VERSION=$(./mkosi.version 2>/dev/null | head -1)
 [ -n "$VERSION" ] || die "mkosi.version 没有输出(它应该是一个可执行脚本,打印版本号)"
 log "本次版本:$VERSION"
+
+# ---------------------------------------------------------------------------
+# 更新签名(v1.2 1.1):产物必须带 manifest.sig,公钥必须进镜像
+#
+# 没有密钥就**直接拒绝构建**:fetch 在 v1.2 是 fail-closed,一份没带公钥的镜像
+# 装上去之后什么更新都装不上,而那种坏要等真机更新那一刻才暴露(见 docs/update.md §6)。
+# sync 把 keys/*.pub 放进 mkosi.extra/usr/share/keel/update-keys/(gitignore),
+# mkosi.postinst 会回读断言公钥真的进了镜像。
+# ---------------------------------------------------------------------------
+SIGN_TOOL=tools/sign.sh
+[ -x "$SIGN_TOOL" ] || die "找不到可执行的 $SIGN_TOOL"
+KEYID="$("$SIGN_TOOL" id)" || die "没有更新签名密钥(私钥在 keys/,不进 git)。先跑:tools/sign.sh gen"
+log "更新签名钥:key_id=$KEYID"
+"$SIGN_TOOL" sync || die "把公钥同步进镜像树失败(mkosi.extra/usr/share/keel/update-keys)"
 
 # 初始密码(可选,默认没有 = admin 与 root 都没有密码;给了就归 admin,root 仍锁定 —— 决策 D21)。
 # 口令只从命令行/环境变量来 —— 这是公开仓库,配置里硬编码的密码等于公开的,所以**不写进 mkosi.conf**。
@@ -196,6 +211,9 @@ SCHEMA=$(cat schema-version 2>/dev/null || echo 1)
 {
     echo "# keel 更新清单(os-update 消费;格式刻意是最朴素的 key=value,镜像里没有 jq)"
     echo "version=$VERSION"
+    # key_id 指定用哪把公钥验签(镜像里 /usr/share/keel/update-keys/<key_id>.pub);
+    # 轮换时同一份 manifest 只能有一把签名钥,公钥可以有新旧多把(见 docs/update.md §6)。
+    echo "key_id=$KEYID"
     echo "image_id=keel"
     echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "schema=$SCHEMA"
@@ -205,6 +223,10 @@ SCHEMA=$(cat schema-version 2>/dev/null || echo 1)
     echo "sha256_slot-b.root.raw=$(sha slot-b.root.raw)"
     echo "sha256_slot-b.uki.efi=$(sha slot-b.uki.efi)"
 } >"$D/manifest"
+
+# 签名 manifest:签名覆盖 manifest 的**全部字节**,而 manifest 里的 sha256_<载荷>=
+# 已经覆盖四个载荷 ⇒ 签 manifest 就传递地覆盖了全部载荷,不另造第二套校验。
+"$SIGN_TOOL" sign "$D" || die "manifest 签名失败(更新会因缺 manifest.sig 被机器拒绝)"
 
 ( cd "$D" && sha256sum keel.raw >keel.raw.sha256 )
 

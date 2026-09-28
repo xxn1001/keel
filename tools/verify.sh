@@ -50,6 +50,7 @@ cd "$(dirname "$0")/.." || exit 1
 . "$verify_dir/lib/verify/95-data-budget.sh"
 . "$verify_dir/lib/verify/96-manifest-protocol.sh"
 . "$verify_dir/lib/verify/97-gate-env.sh"
+. "$verify_dir/lib/verify/98-update-signing.sh"
 
 # ── 按原顺序调用(顺序即输出顺序)──
 verify_mkosi
@@ -93,6 +94,7 @@ verify_identity
 verify_data_budget
 verify_manifest_protocol
 verify_gate_env
+verify_update_signing
 
 # ---------------------------------------------------------------------------
 printf '\n\033[1m结果: %d 通过, %d 失败' "$pass" "$fail"

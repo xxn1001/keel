@@ -169,7 +169,11 @@ vm)
     for _p in $EXTRA_PROFILES; do
         EXTRA_PROFILE_Q+="--profile $(printf '%q' "$_p") "
     done
+    # tools/sign.sh sync 把更新签名公钥放进镜像树(v1.2 1.1):vm 模式**绕过 build.sh**
+    # 直接调 mkosi,不 sync 的话 mkosi.postinst 会因为镜像里没有公钥而拒绝构建 —— 那是对的,
+    # 但这里得先把该做的事做掉(build 模式里是 build.sh 自己 sync)。
     PAYLOAD="tools/verify.sh \
+        && tools/sign.sh sync \
         && mkosi --profile install --profile test $EXTRA_PROFILE_Q$EXTRA_Q$ROOTPW_Q --force build \
         && mkosi --profile install --profile test $EXTRA_PROFILE_Q$EXTRA_Q$ROOTPW_Q vm"
     ;;

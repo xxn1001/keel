@@ -479,6 +479,29 @@ sudo tools/burn.sh /dev/nvme0n1
       修了洞又兼容 trixie 的中间版本;trixie-backports 根本没有 nix)⇒ 当前把纪律做成可见:
       `keel-check` 在 nix < 2.34.7 时警告"只从受信源装东西",`os-status` 报版本(判据只有一份);
       **v1.2 走 B1**:上游固定版本+哈希的 tarball 进数据骨架 + 加性同步(见 `roadmap.md` §1.5、决策 D29)
+- [x] **v1.2 ①:更新签名(fail-closed,2026-09-28)** —— `os-update fetch` **强制**验签:无 `manifest.sig`、
+      无 `key_id=`、本机没有该公钥、`openssl` 验不过 —— 四种情况全拒;v1.1 的"没签名就只警告"
+      fail-open 路径已删除(verify 有反向断言守着,防止以后写回来)。验签排在**下载载荷之前**;
+      `check` 仍然只读、永远 exit 0,但会多打一行"签名:通过/缺失/验证失败"。
+      **公钥来源**:构建期 `tools/sign.sh sync` 烤进镜像 `/usr/share/keel/update-keys/<key_id>.pub`,
+      `mkosi.postinst` 回读断言(缺公钥的产物被构建拒绝 —— 否则会装出一台"永远更新不了"的机器);
+      `tools/sign.sh` 提供 gen/use/rotate/sync/sign/verify,轮换走两跳(旧钥签"带新旧两把公钥"的
+      过渡版本 → `tools/sign.sh use <新 id>`;跳步会让只信旧钥的机器拒绝更新)。v1.1→v1.2 首跳
+      没有签名保护,已如实写进 `docs/update.md` §6.3。
+      **演练**:新增 `unsigned`(无 .sig)/`badsig`(签名被改)两个源 + guest 侧 `guard_reject`
+      (必须被拒、且 `/data/ota` 不留载荷),good 源必须出现"验签通过"证据;原来的 `bad`/`mig`
+      载荷改为**合法签名**(不签的话会被验签拦下,测到的就不是坏槽回滚/migrate 拒绝了)。
+      宿主侧改成从 VM 控制台**读回关键判定**(缺一条或出现"与预期不符"即非 0 退出;此前 guest
+      正常 poweroff 会让 p0 就中止的演练显示成全绿,见坑 #73/#74)。
+      **实测**:`tools/verify.sh` **232 通过 / 0 失败**(root;非 root 229/0/3,3 条是 chown 类跳过),
+      第 12 节共 27 条断言,其中 10 处做过定向变异(复活 fail-open / 改验签调用点 / 删 unsigned 守卫 /
+      把签名换成 cp / 弱化 postinst 回读 / 弱化防重放判据 / manifest_get 退化成包含匹配 /
+      删 retire / 删 schema 校验 —— 每次都精确变红);`--drill` 三种源 + 更新/回滚/自动回滚全绿(§9.2)。
+      私钥在构建机 `keys/`(gitignore,**丢失=再也发不了更新,必须离线备份**)。
+      同一轮按对抗复核加固:`fetch` 拒绝**比本机旧**的版本(签名挡不住重放历史版本)、
+      `check` 把签名结论写进状态文件(os-status 能看到)、`sign.sh retire`(私钥+公钥一起退场)、
+      `sync` 校验 active 公钥与私钥配对、`manifest_get` 改精确前缀匹配、`schema-version` 写坏当 0
+      (不再静默放行)。
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 

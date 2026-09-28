@@ -15,16 +15,20 @@
 #   CURRENT_SLOT / CURRENT_VERSION / CURRENT_SCHEMA
 #   PENDING_SLOT / PENDING_VERSION
 #   UPDATE_SOURCE / SRC / LOCAL_SRC / REMOTE / OTA_PAYLOAD_VERSION
-# 反过来,库里只对外提供函数与几个常量(ARTIFACTS / MANIFEST / MANIFEST_SIG / PUBKEY /
-# TRIES),不改调用方的状态。lib.sh 里的东西(keel_* 函数、KEEL_ESP / KEEL_UKI_DIR /
-# KEEL_OTA / KEEL_STATE_DIR)由 lib.sh 提供,os-update 已经先 source 过它。
+# 反过来,库里只对外提供函数与几个常量(ARTIFACTS / MANIFEST / MANIFEST_SIG /
+# UPDATE_KEYS_DIR / TRIES),不改调用方的状态。lib.sh 里的东西(keel_* 函数、
+# KEEL_ESP / KEEL_UKI_DIR / KEEL_OTA / KEEL_STATE_DIR)由 lib.sh 提供,
+# os-update 已经先 source 过它。
 #
 # shellcheck shell=bash
 # shellcheck disable=SC2154  # 见上面的契约:上下文由调用方赋值,在这里"没被赋值"是正常的
 readonly ARTIFACTS=(slot-a.root.raw slot-a.uki.efi slot-b.root.raw slot-b.uki.efi)
 readonly MANIFEST="manifest"
 readonly MANIFEST_SIG="manifest.sig"
-readonly PUBKEY="/usr/share/keel/update-key.pub"
+# 更新签名公钥的落地目录(镜像里):/usr/share/keel/update-keys/<key_id>.pub。
+# key_id 来自 manifest 的 key_id= 行 ⇒ 轮换时镜像可以同时带新旧两把公钥(见 docs/update.md §6)。
+# 公钥在构建期由 tools/sign.sh sync 放进镜像树,mkosi.postinst 回读断言。
+readonly UPDATE_KEYS_DIR="/usr/share/keel/update-keys"
 readonly TRIES=3
 
 die_usage() {
@@ -47,17 +51,23 @@ free_bytes() {
 # 刻意不用 `. manifest` 引入:那是"执行"而不是"读取",一个被篡改的 manifest
 # 就能在解析阶段拿到代码执行。这里只用 grep + cut 取值,值原样返回。
 # ---------------------------------------------------------------------------
+# 精确前缀匹配:旧实现用 grep -E "^${key}=",而 key 里的 . 是 ERE 通配
+# (sha256_slot-a.root.raw 也能匹配 sha256_slot-aXrootYraw=)—— 虽然签名覆盖全部字节、
+# 攻击者无法签名,但那是一种"解析与直觉不一致"的歧义,去掉不要。这里按行做**字面前缀**匹配。
 manifest_get() {
     local file="$1" key="$2" line v
-    line="$(grep -m1 -E "^${key}=" "$file" 2>/dev/null)" || line=""
-    if [ -z "$line" ]; then
-        printf '%s\n' ""
-        return 0
-    fi
-    v="${line#*=}"
-    # 去掉可能的 \r(更新源在 FAT 文件系统/U 盘上时很常见)
-    v="${v%$'\r'}"
-    printf '%s\n' "$v"
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            "$key"=*)
+                v="${line#"$key"=}"
+                # 去掉可能的 \r(更新源在 FAT 文件系统/U 盘上时很常见)
+                v="${v%$'\r'}"
+                printf '%s\n' "$v"
+                return 0
+                ;;
+        esac
+    done <"$file" 2>/dev/null || true
+    printf '%s\n' ""
 }
 
 # 版本号会直接当目录名用,所以必须是单层安全路径分量:
@@ -69,6 +79,49 @@ validate_version() {
         */*|*..*) keel_die "manifest 里的 version 不合法:'${v}'(不允许含 / 或 ..)" ;;
         *) : ;;
     esac
+}
+
+# ---------------------------------------------------------------------------
+# 更新签名(v1.2 的 1.1;背景与轮换步骤见 docs/update.md §6)
+#
+# v1.1 只在"源带了 manifest.sig"时才验签,源**不带**签名时只打印一句警告就继续 ——
+# 那是 fail-open:能撕掉 .sig 的中间人等于把我们降级回"只靠 sha256"的世界(sha256 只能
+# 防传输损坏,防不住替换更新源的人)。v1.2 起:
+#   * 没有 manifest.sig            → 拒绝
+#   * manifest 没有合法 key_id=    → 拒绝
+#   * 本机没有该 key_id 的公钥     → 拒绝(并提示轮换步骤)
+#   * openssl 验签不通过           → 拒绝
+# 验签**排在下载载荷之前** —— 只需要 manifest 与 sig 两个小文件,没必要先下 1 GiB。
+# ---------------------------------------------------------------------------
+
+# manifest 里的 key_id(非法/缺失时输出空串)。它会被当文件名拼进路径 ⇒ 白名单字符。
+manifest_key_id() {
+    local v
+    v="$(manifest_get "$1" key_id)"
+    case "$v" in
+        ""|.*|-*|*[!A-Za-z0-9._-]*) printf '%s\n' "" ; return 0 ;;
+    esac
+    printf '%s\n' "$v"
+}
+
+# 验签,失败一律 keel_die(fail-closed)。$1 = 存放 manifest 与 manifest.sig 的目录。
+verify_manifest_signature() {
+    local dir="$1" key_id pubkey
+    key_id="$(manifest_key_id "$dir/$MANIFEST")"
+    if [ -z "$key_id" ]; then
+        keel_die "manifest 里缺少合法的 key_id=(签名密钥标识)。v1.2 起更新必须带签名,拒绝安装来源不明的载荷(docs/update.md §6)。"
+    fi
+    pubkey="$UPDATE_KEYS_DIR/$key_id.pub"
+    if [ ! -f "$pubkey" ]; then
+        keel_die "本机没有 key_id=${key_id} 的公钥(期望 $pubkey),无法验证更新来源,拒绝安装。如果这是密钥轮换,请先安装带这把新公钥的过渡版本(两跳步骤见 docs/update.md §6)。"
+    fi
+    if ! command -v openssl >/dev/null 2>&1; then
+        keel_die "镜像里没有 openssl,无法验签(构建缺陷:见 mkosi.conf.d/20-packages.conf;v1.2 起没有它就不能更新)。"
+    fi
+    if ! openssl dgst -sha256 -verify "$pubkey" -signature "$dir/$MANIFEST_SIG" "$dir/$MANIFEST" >/dev/null 2>&1; then
+        keel_die "${MANIFEST} 验签失败(key_id=${key_id}):更新源可能被篡改,已中止(什么都没写进槽)。"
+    fi
+    keel_log "manifest 验签通过(key_id=${key_id})"
 }
 
 # 本地源 → 拷贝;https:// → curl。更新源允许 file:// 与裸路径(docs/update.md §6)。
@@ -100,11 +153,14 @@ volume_schema() {
     local v
     v="$(cat /data/keel/schema-version 2>/dev/null)" || v=""
     v="${v//[[:space:]]/}"
-    if [ -z "$v" ]; then
-        printf '0\n'
-    else
-        printf '%s\n' "$v"
-    fi
+    # 只认十进制整数;空/被写坏一律当 0(= 比任何 manifest 都旧 ⇒ 会拒绝)。
+    # 旧实现把非数字原样返回,而 cmd_fetch 里的 [ "$rs" -gt "$schema" ] 遇到非数字会报错
+    # 走 else 分支 ⇒ schema 检查**静默放行**(对抗复核 2026-09-28 发现;需要本机 /data 被写坏,
+    # 源侧触发不了,但那正是"本机能坏"的场景)。
+    case "$v" in
+        ""|*[!0-9]*) printf '0\n' ;;
+        *) printf '%s\n' "$v" ;;
+    esac
 }
 
 # 远端版本严格比当前版本新 → 0;否则非 0。
@@ -122,7 +178,7 @@ version_is_newer() {
 # check —— 只读,打印远端版本与当前版本,说明有没有更新
 # ---------------------------------------------------------------------------
 cmd_check() {
-    local mf="$SRC/$MANIFEST" rv rs tmp=""
+    local mf="$SRC/$MANIFEST" rv rs tmp="" sigtmp="" sigf="" kid="" sig_note=""
     case "$SRC" in
         https://*|http://*) ;;
         *) [ -e "$LOCAL_SRC/$MANIFEST" ] || keel_die "更新源里找不到 $MANIFEST:${LOCAL_SRC}" ;;
@@ -143,31 +199,69 @@ cmd_check() {
         keel_die "manifest 里没有 version=(格式不对?)"
     fi
 
+    # 签名状态(v1.2 1.1):check 是**只读**的,不阻止 check 本身,但必须说清这个源
+    # 能不能被 fetch 接受 —— fail-closed 之后"未签名"意味着 fetch 一定会拒绝。
+    if [ "$REMOTE" -eq 1 ]; then
+        sigtmp="$(mktemp -t keel-manifest-sig.XXXXXX)"
+        if curl -fL --retry 2 --connect-timeout 15 -o "$sigtmp" "$SRC/$MANIFEST_SIG" 2>/dev/null; then
+            sigf="$sigtmp"
+        else
+            rm -f "$sigtmp"; sigtmp=""
+        fi
+    else
+        [ -f "$LOCAL_SRC/$MANIFEST_SIG" ] && sigf="$LOCAL_SRC/$MANIFEST_SIG"
+    fi
+    if [ -z "$sigf" ]; then
+        sig_note="缺失(fetch 会拒绝:未签名的源)"
+    else
+        kid="$(manifest_key_id "$mf")"
+        if [ -z "$kid" ]; then
+            sig_note="无法验证(manifest 缺少 key_id=)"
+        elif [ ! -f "$UPDATE_KEYS_DIR/$kid.pub" ]; then
+            sig_note="无法验证(本机没有 key_id=$kid 的公钥)"
+        elif ! command -v openssl >/dev/null 2>&1; then
+            sig_note="无法验证(镜像里没有 openssl)"
+        elif openssl dgst -sha256 -verify "$UPDATE_KEYS_DIR/$kid.pub" -signature "$sigf" "$mf" >/dev/null 2>&1; then
+            sig_note="通过(key_id=$kid)"
+        else
+            sig_note="**验证失败**(key_id=$kid)—— 这个源不可信,fetch 会拒绝"
+        fi
+    fi
+
     echo "更新源       : ${SRC}"
     echo "远端版本     : ${rv}(schema ${rs:-未声明})"
+    echo "签名         : ${sig_note}"
     echo "当前版本     : ${CURRENT_VERSION}(槽 ${CURRENT_SLOT:-未知})"
 
     # 顺手把结论写进 /data/keel/update-check.state(v1.1 ③):手动 check 也刷新状态,
     # 定时器(keel-update-check.timer)走的是同一条路径 —— 只有一个写入点,不会两处漂移。
+    # 签名结论也写进状态文件(对抗复核 2026-09-28:原来只打印,os-status 看不到)——
+    # 只有"通过"才留空;其余情况让 os-status 与巡检日志都能看到"这个源 fetch 用不了"。
+    case "$sig_note" in
+        通过*) sig_state="" ;;
+        *)     sig_state="源签名:${sig_note}" ;;
+    esac
     if version_is_newer "$rv" "$CURRENT_VERSION"; then
         echo "结论         : 有新版本可用 → sudo os-update fetch"
-        keel_update_check_state update-available "$rv"
+        keel_update_check_state update-available "$rv" "$sig_state"
     elif [ "$rv" = "$CURRENT_VERSION" ]; then
         echo "结论         : 已经是最新版本(远端与当前相同)"
-        keel_update_check_state up-to-date "$rv"
+        keel_update_check_state up-to-date "$rv" "$sig_state"
     else
         echo "结论         : 远端版本比当前旧(检查更新源是否指错了目录)"
-        keel_update_check_state source-older "$rv"
+        keel_update_check_state source-older "$rv" "$sig_state"
     fi
 
     [ -n "$tmp" ] && rm -f "$tmp"
+    [ -n "$sigtmp" ] && rm -f "$sigtmp"
     return 0
 }
 
 # ---------------------------------------------------------------------------
 # fetch —— 下载 + 校验到 $KEEL_OTA/<version>/
 #
-# 这一步不写任何槽,所以失败可以直接重来。三道闸:sha256、签名(可选)、schema。
+# 这一步不写任何槽,所以失败可以直接重来。三道闸:**签名(强制,fail-closed)**、
+# schema/迁移(只读 manifest,排在下载前)、sha256(下载后防传输损坏)。
 # ---------------------------------------------------------------------------
 cmd_fetch() {
     local rv rs schema h actual a fb mig need_hard need_warn
@@ -203,14 +297,24 @@ cmd_fetch() {
 
     keel_log "从 ${SRC} 取 manifest"
     fetch_one "$MANIFEST" || keel_die "下载 manifest 失败:${SRC}/${MANIFEST}"
-    # 签名是可选的,所以它的失败不能直接 die
-    if fetch_one "$MANIFEST_SIG" 2>/dev/null; then :; else
-        keel_log "更新源没有分布 $MANIFEST_SIG"
+    # 签名**不是可选的**(v1.2 1.1,fail-closed)。取不到就直接拒,而且发生在下载任何
+    # 载荷之前 —— 只下两个小文件就能判"这个源配不配被信任"。
+    if ! fetch_one "$MANIFEST_SIG" 2>/dev/null; then
+        rm -f "$DEST/$MANIFEST_SIG"
+        keel_die "更新源没有提供 ${MANIFEST_SIG}(未签名的更新源)。v1.2 起拒绝安装没有签名的更新:只靠 sha256 防得住传输损坏,防不住能替换更新源的人。请让更新源提供 ${MANIFEST_SIG}(tools/sign.sh sign,见 docs/update.md §6)。"
     fi
+    verify_manifest_signature "$DEST"
 
     rv="$(manifest_get "$DEST/$MANIFEST" version)"
     rs="$(manifest_get "$DEST/$MANIFEST" schema)"
     validate_version "$rv"
+    # 防重放降级(对抗复核 2026-09-28 提出):验签只证明"这份 manifest 是我们签的",
+    # 不证明"它比本机新" —— 攻击者拿任意一份**历史公开发布**的 dist/ 当源就能重放,
+    # 全程不需要私钥。所以这里把 check 的版本判据搬进 fetch:比当前旧的一律拒绝。
+    # 同版本允许(修一次坏掉的下载,不是降级);要回退旧版本走 sudo os-update rollback(槽切换)。
+    if [ "$rv" != "$CURRENT_VERSION" ] && ! version_is_newer "$rv" "$CURRENT_VERSION"; then
+        keel_die "更新源给的版本($rv)比本机($CURRENT_VERSION)旧:拒绝安装。验签防得住伪造,防不住重放历史版本(降级);要回退请用 sudo os-update rollback。"
+    fi
     keel_log "远端版本:${rv}"
 
     # ⚠ 这两项检查(迁移、schema)刻意放在**下载之前**:它们只需要 manifest,
@@ -274,21 +378,9 @@ cmd_fetch() {
     keel_log "sha256 全部匹配(4 个产物)"
 
     # --- 签名 -------------------------------------------------------------
-    if [ -f "$DEST/$MANIFEST_SIG" ]; then
-        if [ ! -f "$PUBKEY" ]; then
-            keel_die "更新源提供了 $MANIFEST_SIG,但本机没有公钥 $PUBKEY,无法验签"
-        fi
-        if ! openssl dgst -sha256 -verify "$PUBKEY" -signature "$DEST/$MANIFEST_SIG" "$DEST/$MANIFEST"; then
-            keel_die "manifest 验签失败 —— 更新源可能被篡改,已中止(什么都没写进槽)"
-        fi
-        keel_log "manifest 验签通过"
-    else
-        echo "  ************************************************************"
-        echo "  警告:本次更新没有签名保护(更新源没有 $MANIFEST_SIG)"
-        echo "        只靠 sha256 防传输损坏,防不住恶意替换更新源。"
-        echo "        v1 策略:继续,但请只使用自己控制的更新源。"
-        echo "  ************************************************************"
-    fi
+    # 已经在**下载载荷之前**验过(verify_manifest_signature,见上)。这里原来是 v1 的
+    # fail-open 段落:"源没有 .sig 就打印一句警告后继续"。v1.2 删掉了它 ——
+    # tools/verify.sh 有反向断言守着("没签名也继续"的分支不许存在),别再写回来。
 
     # --- 落盘到正式目录 ---------------------------------------------------
     # 先删旧的同版本目录:上一次 fetch 可能留下半份坏载荷,cp 不清理多余文件。

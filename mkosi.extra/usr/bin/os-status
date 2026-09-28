@@ -324,10 +324,10 @@ if [ -r "$uchk" ]; then
         *) uwhen=" (上次检查 $(date -d "@$uat" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '%s' "$uat"))" ;;
     esac
     case "$uverdict" in
-        update-available) echo "更新检查     : 有新版本 ${uremote} 可用${uwhen}" ;;
-        up-to-date)       echo "更新检查     : 已是最新(${uremote})${uwhen}" ;;
-        source-older)     echo "更新检查     : 源上的版本(${uremote})比本机旧${uwhen} —— 检查 UPDATE_SOURCE 是否指错目录" ;;
-        no-source)        echo "更新检查     : 没有配置更新源${uwhen}" ;;
+        update-available) echo "更新检查     : 有新版本 ${uremote} 可用${uwhen}${unote:+ —— $unote}" ;;
+        up-to-date)       echo "更新检查     : 已是最新(${uremote})${uwhen}${unote:+ —— $unote}" ;;
+        source-older)     echo "更新检查     : 源上的版本(${uremote})比本机旧${uwhen} —— 检查 UPDATE_SOURCE 是否指错目录${unote:+ —— $unote}" ;;
+        no-source)        echo "更新检查     : 没有配置更新源${uwhen}${unote:+ —— $unote}" ;;
         error)            echo "更新检查     : 上次检查失败${uwhen}${unote:+ —— $unote}" ;;
         *)                echo "更新检查     : ${uverdict:-未知}${uwhen}" ;;
     esac

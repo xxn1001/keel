@@ -290,6 +290,11 @@ sed -e "s/^version=.*/version=${GOOD_VER}.bad/" \
     -e "s|^sha256_slot-$BAD_SLOT.root.raw=.*|sha256_slot-$BAD_SLOT.root.raw=$BAD_SHA|" \
     "$REPO/$DRILL_PAYLOAD/manifest" >/tmp/drill-serve/bad/manifest
 echo "   坏载荷版本:${GOOD_VER}.bad(slot-$BAD_SLOT.root.raw 的 sha256 已更新)"
+# 坏载荷也必须**合法签名**:v1.2 起 fetch 强制验签,没签名的坏载荷会在验签那步被拒,
+# 演练就测不到"坏槽起不来 ⇒ 自动回滚"这一段。签名钥与 good 载荷相同(key_id 从 good 继承)。
+tools/sign.sh sign /tmp/drill-serve/bad >/dev/null ||
+    { echo "   错误:坏载荷签名失败(看上面 tools/sign.sh 的输出)" >&2; exit 1; }
+echo "   坏载荷已签名(manifest.sig 就位)"
 
 # 再做一个"声明了 /data 迁移"的载荷:它的产物都是符号链接(内容没变),只是 manifest 里
 # `migrate=` 非空。v1 没有迁移执行器 ⇒ os-update fetch **必须拒绝**它(这一项也在演练里验)。
@@ -304,6 +309,37 @@ sed -e "s/^version=.*/version=${GOOD_VER}.mig/" \
     -e 's/^migrate=.*/migrate=mkdir:\/data\/keel\/migtest:0755/' \
     "$REPO/$DRILL_PAYLOAD/manifest" >/tmp/drill-serve/mig/manifest
 echo "   迁移载荷版本:${GOOD_VER}.mig(manifest 里 migrate=mkdir:/data/keel/migtest:0755)"
+# 迁移载荷同样要合法签名,否则它会在验签那步被拒 —— 那测试的就成了签名而不是 migrate=。
+tools/sign.sh sign /tmp/drill-serve/mig >/dev/null ||
+    { echo "   错误:迁移载荷签名失败" >&2; exit 1; }
+
+# ── 签名的三条路径(v1.2 1.1):guest 的 p0 会依次 fetch 这三个源 ──────────────
+#   good      build.sh 签好的(就是 $DRILL_PAYLOAD 本身)
+#   unsigned  除 manifest.sig 外都符号链接到 good(模拟"源里没有签名")
+#   badsig    manifest.sig 是副本且第 1 字节被改(模拟"签名被篡改")
+# 断言在 guest 里(见 mkosi.extra-test/usr/lib/keel/ota-drill 的 guard_reject):
+# 后两个必须被拒,而且 /data/ota 不能留下载荷。
+rm -rf /tmp/drill-serve/unsigned /tmp/drill-serve/badsig
+mkdir -p /tmp/drill-serve/unsigned /tmp/drill-serve/badsig
+for f in "$REPO/$DRILL_PAYLOAD"/*; do
+    b=$(basename "$f")
+    [ "$b" = "manifest.sig" ] && continue
+    ln -sfn "$f" "/tmp/drill-serve/unsigned/$b"
+done
+for f in "$REPO/$DRILL_PAYLOAD"/*; do
+    b=$(basename "$f")
+    if [ "$b" = "manifest.sig" ]; then
+        # 必须复制:**符号链接会让 dd 顺着改到 good 载荷的签名上**,那会毁掉 good 源
+        cp --reflink=auto "$f" "/tmp/drill-serve/badsig/$b"
+    else
+        ln -sfn "$f" "/tmp/drill-serve/badsig/$b"
+    fi
+done
+[ -s /tmp/drill-serve/badsig/manifest.sig ] ||
+    { echo "   错误:good 载荷里没有 manifest.sig(构建没有签名?)" >&2; exit 1; }
+printf 'X' | dd of=/tmp/drill-serve/badsig/manifest.sig bs=1 seek=0 conv=notrunc status=none ||
+    { echo "   错误:改不动 badsig 的 manifest.sig" >&2; exit 1; }
+echo "   签名演练源就绪:unsigned(无 .sig)+ badsig(manifest.sig 第 1 字节已改)"
 
 # 额外的一次"回读确认":看门狗配置**必须真的进了 initrd**(否则坏槽冻结时没人复位,
 # 演练会卡死在黑屏 —— 坑 #50 的现场)。这里直接从 UKI 里抽 .initrd 出来查文件名。
@@ -324,15 +360,54 @@ if command -v objcopy >/dev/null 2>&1 || apt-get install -y -qq --no-install-rec
     fi
 fi
 
+# 控制台同时落一份到文件:下面要从中**读回 guest 的关键判定**(只靠 VM 退出码不够,
+# 见末尾那段说明)。tee 是必须的:mkosi/QEMU 给 QEMU 的 stdio 副本没有 O_APPEND(坑 #64),
+# 用 > 重定向会被串口输出从头盖掉。
+DRILL_CONSOLE="$(mktemp "${TMPDIR:-/tmp}/keel-drill-console.XXXXXX.log")"
 step "7/7 起 VM(演练状态机自己跑;p3 结束时会 poweroff,所以这次 VM 会自己退出)"
 set +e
 timeout "$DRILL_VM_TIMEOUT" mkosi --profile install --profile test \
-    "${ROOTPW_ARGS[@]+"${ROOTPW_ARGS[@]}"}" vm
-rc=$?
+    "${ROOTPW_ARGS[@]+"${ROOTPW_ARGS[@]}"}" vm 2>&1 | tee "$DRILL_CONSOLE"
+rc=${PIPESTATUS[0]}
 set -e
 if [ "$rc" = 124 ]; then
-    echo "   注意:VM 到了 ${DRILL_VM_TIMEOUT}s 超时上限被结束 —— 演练可能卡在某个阶段,"
-    echo "         把上面控制台输出里最后一段 keel-ota-drill[...] 的内容发出来。"
+    echo "   注意:VM 到了 ${DRILL_VM_TIMEOUT}s 超时上限被结束 —— 演练卡在某个阶段;"
+    echo "         完整控制台在 $DRILL_CONSOLE,看最后一段 keel-ota-drill[...]。"
 else
-    echo "   VM 退出码:$rc(0 = 演练跑到 p2 并自己 poweroff)"
+    echo "   VM 退出码:$rc(0 = guest 自己 poweroff)"
 fi
+
+# ── 宿主侧判定:从控制台读回 guest 的关键判定 ─────────────────────────────────
+# 为什么不能只看退出码(2026-09-28 实测的**假绿**):guest 的断言只往控制台喊,而它在
+# "与预期不符"之后照样 systemctl poweroff,mkosi vm 于是返回 0、上面那行还打印
+# "0 = guest 自己 poweroff",看起来全绿 —— 实际 p0 的 good 载荷验签失败,stage/重启/
+# 回滚/自动回滚整段都没跑(那次是 tools/sign.sh 写穿符号链接,把 dist 的签名覆盖了)。
+verdict_missing=""
+for pat in \
+    '判定:[无签名源]拒绝生效' \
+    '判定:[坏签名源]拒绝生效' \
+    '判定:[无签名源]没有在 /data/ota 留下任何载荷' \
+    '判定:[坏签名源]没有在 /data/ota 留下任何载荷' \
+    '判定:好载荷验签通过' \
+    '判定:**更新成功**' \
+    '判定:回滚生效' \
+    '判定:**自动回滚成立**' \
+    '迁移载荷的拒绝检查结果:拒绝生效'
+do
+    grep -qF "$pat" "$DRILL_CONSOLE" || verdict_missing="$verdict_missing
+      - $pat"
+done
+if [ "$rc" = 124 ] || ! grep -qF '演练结束' "$DRILL_CONSOLE"; then
+    echo "   宿主侧判定:**演练没有跑到 p3 结束**(完整控制台:$DRILL_CONSOLE)" >&2
+    exit 1
+fi
+if grep -qF '与预期不符' "$DRILL_CONSOLE"; then
+    echo "   宿主侧判定:**演练失败** —— guest 报了「与预期不符」:" >&2
+    grep -nF '与预期不符' "$DRILL_CONSOLE" | head -5 | sed 's/^/      /' >&2
+    exit 1
+fi
+if [ -n "$verdict_missing" ]; then
+    echo "   宿主侧判定:**演练失败** —— 控制台里缺少这些关键判定:$verdict_missing" >&2
+    exit 1
+fi
+echo "   宿主侧判定:签名三条路径 + 更新成功 + 回滚 + 自动回滚 + migrate 拒绝都在(真正全绿)"
