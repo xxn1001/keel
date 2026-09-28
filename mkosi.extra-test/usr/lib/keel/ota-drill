@@ -126,6 +126,22 @@ p0)
     fi
     log "更新源可达:$SRC_GOOD;当前版本(引导镜像)=$(keel_version) —— 载荷版本应该比它新"
 
+    # ── 上游 nix(B1)自检:命令在、版本对、profile 指向本槽骨架 ─────────────
+    # 判据直接对着 keel-check 的那两条(第 9 节),但演练里先跑一遍:这样"镜像构建成功、
+    # 装上去 nix 却是旧的/没有"这类问题会在 OTA 演练就现形,而不是等真机 keel-check。
+    nix_ver="$(nix --version 2>/dev/null | head -n1)" || nix_ver=""
+    nix_skel="$(readlink /usr/share/keel/data-skeleton/nix/var/nix/profiles/default 2>/dev/null)" || nix_skel=""
+    nix_live="$(readlink /nix/var/nix/profiles/default 2>/dev/null)" || nix_live=""
+    case "$nix_ver" in
+        *2.35.2*) nix_ver_ok=1 ;;
+        *)        nix_ver_ok=0 ;;
+    esac
+    if [ "$nix_ver_ok" = 1 ] && [ -n "$nix_skel" ] && [ "$nix_live" = "$nix_skel" ]; then
+        log "判定:nix 来自本槽骨架(2.35.2,profile=$nix_live)"
+    else
+        log "判定:**与预期不符** —— nix 自检失败(命令='${nix_ver:-无}' profile='${nix_live:-无}' 骨架='${nix_skel:-无}')"
+    fi
+
     # ── 签名 fail-closed 的三条路径(v1.2 1.1)──────────────────────────────
     # 只测 good 源的话,"跳过验签"也会变绿 —— 必须让**坏的两个源**真的被 fetch 拒绝:
     #   unsigned = 源里没有 manifest.sig;badsig = manifest.sig 被改过。

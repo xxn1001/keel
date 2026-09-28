@@ -30,9 +30,12 @@ enable systemd-timesyncd.service
 # 远程访问
 enable ssh.service
 
-# nix(Debian 的 nix-setup-systemd 提供;哪个存在就启用哪个)
+# nix(v1.2 起由上游 tarball 供给,决策 D29/B1;单元在本仓库里)
 enable nix-daemon.service
 enable nix-daemon.socket
+# 启动早期把本槽的 nix **加性**同步进 /data/nix(store path 不存在才拷 + profile 重指),
+# 排在 nix-daemon 之前:daemon 的可执行文件就在 profile 里。
+enable keel-nix-sync.service
 
 # ---------------------------------------------------------------------------
 # 明确**不启用**的:systemd-pcrlock-*(决策 D20:v1 不做 Secure Boot / measured boot)

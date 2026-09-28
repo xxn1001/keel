@@ -20,6 +20,8 @@ keys/
 *.pem
 # tools/sign.sh sync 把公钥放进镜像树的落地目录(构建期生成,源码里不该有)
 mkosi.extra/usr/share/keel/update-keys/
+# tools/nix-fetch.sh 把上游 nix 解进数据骨架的落地目录(同上)
+mkosi.extra/usr/share/keel/data-skeleton/nix/
 
 # 镜像产物
 *.raw

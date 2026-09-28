@@ -152,6 +152,11 @@ if [ -s "$sd/manifest.sig" ]; then
         ok "manifest 改一个字节后验签失败(定向变异:验签断言非空)"
     fi
 fi
+if [ -s "$sd/manifest.sig" ] && [ "$(stat -c %a "$sd/manifest.sig")" = 644 ]; then
+    ok "签出来的 manifest.sig 是 0644(发布目录能被非 root 的 HTTP 服务读)"
+else
+    no "manifest.sig 权限不是 0644(mktemp 的 0600 被 mv 带过去了?)"
+fi
 if KEEL_KEYS_DIR="$kd" KEEL_UPDATE_KEYS_STAGE="$stage" bash "$SIGN" sync >/dev/null 2>&1 &&
    [ -s "$stage/verifytest.pub" ]; then
     ok "tools/sign.sh sync 把公钥按 <key_id>.pub 落进镜像树(机制库就查这个名字)"

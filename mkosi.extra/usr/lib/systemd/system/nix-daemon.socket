@@ -1,0 +1,15 @@
+[Unit]
+Description=Nix Daemon Socket
+Documentation=man:nix-daemon https://nixos.org/manual
+Before=multi-user.target
+RequiresMountsFor=/nix/store
+ConditionPathIsReadWrite=/nix/var/nix/daemon-socket
+
+[Socket]
+ListenStream=/nix/var/nix/daemon-socket/socket
+# 目录是骨架里预建的 0755 root:root(skel 的 /data/nix/var/nix/daemon-socket),
+# socket 自身 0666 与上游一致:allowed-users 默认放行所有本地用户。
+SocketMode=0666
+
+[Install]
+WantedBy=sockets.target

@@ -140,7 +140,7 @@
 │   ├── lib/systemd/  cache/  spool/  tmp/  opt/  local/
 ├── home/                             ← /home 的 bind 源
 │   └── root/                         ← /root 的目标
-├── nix/                              ← nix store(首启由 nix 的 tmpfiles 补齐子目录)
+├── nix/                              ← nix store(骨架自带上游 nix 闭包,首启由 keel-nix-sync 加性同步;v1.2 B1)
 ├── overlayfs/etc/{upper,work}/       ← /etc 的 overlay 层
 ├── modules/                          ← 预留:将来"第三方内核模块外置"用,main 留空
 ├── ota/                              ← 下载的更新载荷(按版本分目录)
@@ -216,7 +216,7 @@ workdir  = /data/overlayfs/etc/work
 | 消费者 | 预算 | 谁执行 |
 |---|---|---|
 | journald | `SystemMaxUse=256M`、`SystemKeepFree=2G`、`MaxRetentionSec=1month` | `/etc/systemd/journald.conf.d/keel.conf` |
-| nix store | 每周清 30 天前的 generation + `--max-freed=2G` | `keel-nix-gc.timer`(Debian 的 `nix-setup-systemd` **没有** GC 定时器) |
+| nix store | 每周清 30 天前的 generation + `--max-freed=2G` | `keel-nix-gc.timer`(上游也只提供 daemon;GC 定时器一直由我们带) |
 | OTA 载荷 | 保留最近 2 个版本 + pending;`fetch` 前先查空间 | `os-update`(`stage` 成功后自动 `gc`) |
 | `/etc` 备份 | `os-rescue --reset-etc` 的 `etc.bak-*` 只留最近一份 | `keel-mounts` |
 | 应急空间 | 宽裕时预留 256 MiB 到 `/data/keel/.reserve`,临界时交还 | `keel-firstboot` 第 6 步创建,`keel-data-guard` 交还 |
@@ -453,6 +453,8 @@ os-update gc               # 清理旧载荷(保留最近 2 个版本 + 当前)
 | `keel-swapfile.service` | 创建/启用 swapfile | `After=keel-mounts.service` |
 | `keel-confirm.service` | 启动成功后确认/回滚更新,写 state | `After=boot-complete.target systemd-bless-boot.service`、`WantedBy=boot-complete.target` |
 | `keel-data-guard.service` + `.timer` | §4.6 的看门人:查 `/data` 空间、必要时回收可再生数据 | 定时器 `OnBootSec=3min` + `OnUnitActiveSec=1d`;服务 `ConditionPathIsMountPoint=/data` |
+| `keel-nix-sync.service` | 把**本槽骨架**里的上游 nix 加性同步进 `/data/nix`(只拷缺失 + 问空间 + `load-db` + profile 重指;v1.2 B1) | `DefaultDependencies=no`、`After=keel-mounts.service`、`Before=keel-firstboot.service sysinit.target`、`WantedBy=sysinit.target`(坑 #75) |
+| `nix-daemon.service` + `.socket` | 上游 nix 的 daemon(替代 Debian 的 `nix-setup-systemd`) | `After=keel-nix-sync.service systemd-sysusers.service`;`ExecStart=/usr/bin/nix-daemon`(→ profile) |
 | `keel-nix-gc.service` + `.timer` | 每周 `nix-collect-garbage` + `nix-store --gc --max-freed=2G` | `OnCalendar=weekly`、`Persistent=true` |
 | `keel-update-check.service` + `.timer` | §4.6:只读检查更新源有没有新版本,写 `update-check.state`(v1.1 ③;**绝不** fetch/stage) | 定时器 `OnBootSec=5min` + `OnUnitActiveSec=6h`;服务 `ConditionPathIsMountPoint=/data`,永远 `exit 0` |
 
@@ -481,7 +483,7 @@ Packages=
     openssh-server
     sudo                              # admin 唯一的提权途径(决策 D21;Debian 上不是 Essential)
     tzdata                            # Timezone=Asia/Shanghai 靠它解析(决策 D22;少了会静默回落 UTC)
-    nix-bin nix-setup-systemd
+    # nix:v1.2 起不再装 Debian 的包(决策 D29/B1);上游 tarball 由 tools/nix-fetch.sh 进数据骨架
     firmware-misc-nonfree             # 有线网卡/存储控制器固件
 RemovePackages=
     initramfs-tools                   # mkosi 自己造 initrd,留着只会生成多余文件

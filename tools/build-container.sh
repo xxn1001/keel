@@ -174,6 +174,7 @@ vm)
     # 但这里得先把该做的事做掉(build 模式里是 build.sh 自己 sync)。
     PAYLOAD="tools/verify.sh \
         && tools/sign.sh sync \
+        && tools/nix-fetch.sh fetch \
         && mkosi --profile install --profile test $EXTRA_PROFILE_Q$EXTRA_Q$ROOTPW_Q --force build \
         && mkosi --profile install --profile test $EXTRA_PROFILE_Q$EXTRA_Q$ROOTPW_Q vm"
     ;;

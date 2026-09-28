@@ -210,6 +210,9 @@ cmd_sign() {
         rm -f "$tmpout"
         die "签出来的 manifest.sig 是空的"
     fi
+    # 签名是**公开**数据,发布目录经常由非 root 的 HTTP 服务读;mktemp 建的是 0600,
+    # mv 会把它带过去 ⇒ 显式摆正。
+    chmod 0644 "$tmpout" || { rm -f "$tmpout"; die "chmod manifest.sig 失败"; }
     mv -f "$tmpout" "$dir/manifest.sig" || { rm -f "$tmpout"; die "替换 $dir/manifest.sig 失败"; }
     cmd_verify "$dir" >/dev/null || die "自检失败(刚签出来的 manifest.sig 验不过,这不该发生)"
     log "已签名:$dir/manifest.sig(key_id=$id)"

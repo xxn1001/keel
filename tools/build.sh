@@ -104,6 +104,17 @@ KEYID="$("$SIGN_TOOL" id)" || die "没有更新签名密钥(私钥在 keys/,不�
 log "更新签名钥:key_id=$KEYID"
 "$SIGN_TOOL" sync || die "把公钥同步进镜像树失败(mkosi.extra/usr/share/keel/update-keys)"
 
+# ---------------------------------------------------------------------------
+# 上游 nix(v1.2 B1/决策 D29):固定版本 + sha256 的官方 tarball → 数据骨架
+#
+# 基底**不再有** nix-bin / nix-setup-systemd(见 mkosi.conf.d/20-packages.conf);
+# 没有这一步,mkosi.postinst 会因为骨架里没有 nix 而拒绝出产物。tarball 缓存在
+# mkosi.pkgcache/,每次都用钉死的哈希校验。
+# ---------------------------------------------------------------------------
+NIX_FETCH=tools/nix-fetch.sh
+[ -x "$NIX_FETCH" ] || die "找不到可执行的 $NIX_FETCH"
+"$NIX_FETCH" fetch || die "上游 nix 取用失败(网络或哈希;见 $NIX_FETCH)"
+
 # 初始密码(可选,默认没有 = admin 与 root 都没有密码;给了就归 admin,root 仍锁定 —— 决策 D21)。
 # 口令只从命令行/环境变量来 —— 这是公开仓库,配置里硬编码的密码等于公开的,所以**不写进 mkosi.conf**。
 #   tools/build.sh -p <密码>                      ← 原生路径(推荐)

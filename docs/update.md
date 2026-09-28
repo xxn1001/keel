@@ -33,7 +33,7 @@ sudo os-update stage --reboot  # 同上,并立即重启
 | `os-update fetch` | 下载到 `/data/ota/<ver>/`,校验 sha256、签名(v1 只留接口)、schema 兼容性(§8) | 什么都没写进槽,重试即可 |
 | `os-update stage` | §5.3 的 ①–⑦(见下表) | 写分区阶段失败只是白写了一遍非活动槽,当前系统不受影响 |
 | `os-update stage` 装的是哪一版 | **`/data/ota/` 下版本号最大**的那份已下载载荷(和 `gc` 的保留策略一致)。所以 `fetch` 失败时**不要**接着 `stage` —— 它不会报错,而是装回更旧的那一份(2026-09 演练踩到过:坏载荷 ENOSPC 没下下来,`stage` 静默装回了上一版好载荷) |
-| 空间账 | 一份载荷是 **erofs**,只占内容大小(实测 **~1.1 GiB/份**:两个 401 MiB 根镜像 + 两个 ~156 MiB UKI)。v1 时是 13 GiB(两个 6 GiB 根镜像)—— erofs 之后 `/data` 的余量宽松了很多。`fetch` 前的硬下限是 **2 GiB**(警告线 4 GiB)。`fetch` 前先 `os-update gc`,或删掉 `/data/ota` 下的旧版本(已装进槽的内容不受影响) |
+| 空间账 | 一份载荷是 **erofs**,只占内容大小(实测 **~1.2 GiB/份**:两个 **451 MiB** 根镜像 + 两个 ~156 MiB UKI;v1.2 B1 起根镜像里含上游 nix 闭包,比 v1.1 的 401 MiB 每槽 +31 MiB)。v1 时是 13 GiB(两个 6 GiB 根镜像)—— erofs 之后 `/data` 的余量宽松了很多。`fetch` 前的硬下限是 **2 GiB**(警告线 4 GiB)。`fetch` 前先 `os-update gc`,或删掉 `/data/ota` 下的旧版本(已装进槽的内容不受影响) |
 | 重启 | systemd-boot 用 one-shot 启动候选条目,文件名从 `keel-<目标>+3.efi` 退化为 `keel-<目标>+2-1.efi`;到达 `boot-complete.target` 后 `systemd-bless-boot` 把它改名成 `keel-<目标>.efi`,`keel-confirm.service` 把它设成**持久默认**、记 success、清 pending(§5.3 ⑧⑨) | 见 §3 |
 
 `os-update stage` 内部按顺序做这些事(§5.3 ①–⑦):
@@ -295,7 +295,7 @@ sudo tools/build-container.sh -p <临时密码> drill
    **erofs 之后 40G 已经是浪费**(v1 时代一份载荷 13 GiB 才需要),所以尺寸做成了可配,
    想再压就 `KEEL_DRILL_IMAGE_SIZE=20G sudo tools/build.sh --drill`。
    下限的来历(2026-09-26 实测):布局 13 GiB(esp 1 + 两个槽各 6)+ `/data` 基础占用 ~2.2 GiB
-   + 演练要放**两份** erofs 载荷(各 ~1.1 GiB)+ `os-update fetch` 自己的 2 GiB 可用空间硬下限
+   + 演练要放**两份** erofs 载荷(各 ~1.2 GiB)+ `os-update fetch` 自己的 2 GiB 可用空间硬下限
    ⇒ 20 GiB 是能跑通的最小值;脚本会自己检查,写小了直接拒。
 4. 在容器里起 HTTP 源(guest 走 QEMU 用户态网络访问 `http://10.0.2.2:8000/good`);
 5. 起 VM,状态机自己跑:

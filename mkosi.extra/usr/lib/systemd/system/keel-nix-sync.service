@@ -1,0 +1,21 @@
+[Unit]
+Description=keel: 把本槽的上游 nix 加性同步到 /data(store path 不存在才拷,profile 重指)
+Documentation=file:/usr/share/doc/keel/update.md
+# /nix 是 /data/nix 的 bind mount(不变量 1):必须等 keel-mounts 挂完;
+# 必须在 keel-firstboot 之前跑 —— firstboot 那句 cp -a -n 会把整个骨架铺一遍,
+# 先让本单元做"带空间检查的加性同步",firstboot 就只剩下补漏(不会绕过 df 检查)。
+DefaultDependencies=no
+After=keel-mounts.service
+Before=keel-firstboot.service sysinit.target shutdown.target
+Wants=keel-mounts.service
+Conflicts=shutdown.target
+ConditionPathIsMountPoint=/nix
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 失败(空间不够/拷贝失败)⇒ 不重指 profile,单元变红让 keel-check 看得见(不变量 10)
+ExecStart=/usr/lib/keel/nix-sync
+
+[Install]
+WantedBy=sysinit.target

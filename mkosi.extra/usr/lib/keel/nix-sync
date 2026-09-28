@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# keel:把本槽的上游 nix 加性同步到 /data(v1.2 B1,决策 D29)
+#
+# /nix 是 /data/nix 的 bind mount(不变量 1),而 nix store path 是内容寻址的:
+#   * 只拷 /data/nix/store 里**不存在**的路径(同名 ⇒ 内容相同,绝不覆盖);
+#   * 拷完把 profile 重指到本槽骨架里的 nix 包 ⇒ 版本跟着槽走,回滚也跟着回;
+#   * 旧槽的 store path 不删(GC 由 keel-nix-gc.timer 负责;回滚到旧槽时,本脚本会把
+#     被 GC 掉的路径再从**回滚后那个槽的骨架**里补回来)。
+#
+# 为什么不能只靠 keel-firstboot 的 cp -a -n:
+#   1. 它不会重指 profile(旧 nix 会一直赢);
+#   2. 它不问空间(不变量 10:一次性写大块之前先 df);
+#   3. 它不会跑 nix-store --load-db(新 store path 不进 DB 就是"无效路径")。
+#
+# 失败语义:空间不够 / 拷贝失败 / load-db 失败 ⇒ **不重指 profile**(旧 nix 仍可用)
+# 并以非 0 退出,让 systemctl --failed 与 keel-check 看得见。绝不半同步还切 profile。
+#
+# 环境变量(自测用;生产路径不设):
+#   KEEL_NIX_ROOT     同步目标(默认 /nix)
+#   KEEL_NIX_SKEL     本槽骨架(默认 /usr/share/keel/data-skeleton/nix)
+#   KEEL_NIX_DATA_FS  空间检查所在的文件系统(默认 /data)
+set -euo pipefail
+
+NIX_ROOT=${KEEL_NIX_ROOT:-/nix}
+SKEL=${KEEL_NIX_SKEL:-/usr/share/keel/data-skeleton/nix}
+DATA_FS=${KEEL_NIX_DATA_FS:-/data}
+RESERVE_BYTES=$((256 * 1024 * 1024))   # 与 keel-firstboot 的应急空间一致(不变量 10)
+
+log() { printf 'keel-nix-sync: %s\n' "$*" >&2; }
+die() { printf 'keel-nix-sync: 错误:%s\n' "$*" >&2; exit 1; }
+
+[ -d "$SKEL/store" ] || { log "本槽骨架里没有 nix store($SKEL/store 不存在;旧镜像?)⇒ 跳过"; exit 0; }
+if [ "$NIX_ROOT" = /nix ] && ! mountpoint -q /nix; then
+    log "跳过:/nix 没挂上(keel-mounts 还没跑?)"
+    exit 0
+fi
+mkdir -p "$NIX_ROOT/store" "$NIX_ROOT/var/nix/profiles"
+
+LINK="$(readlink "$SKEL/var/nix/profiles/default" 2>/dev/null)" || LINK=""
+case "$LINK" in
+    /nix/store/*) ;;
+    *) die "骨架里的 profile 目标不合法/缺失:'${LINK}'(期望 /nix/store/<nix 包>)" ;;
+esac
+NIXNAME=${LINK#/nix/store/}
+[ -d "$SKEL/store/$NIXNAME" ] || die "骨架里找不到 profile 指向的 store path:$NIXNAME"
+
+missing=()
+need_bytes=0
+for d in "$SKEL"/store/*; do
+    [ -d "$d" ] || continue
+    name="$(basename "$d")"
+    [ -e "$NIX_ROOT/store/$name" ] && continue
+    missing+=("$name")
+    b="$(du -sb "$d" 2>/dev/null | cut -f1)" || b=0
+    case "$b" in ''|*[!0-9]*) b=0 ;; esac
+    need_bytes=$((need_bytes + b))
+done
+
+if [ "${#missing[@]}" -gt 0 ]; then
+    avail="$(df -B1 --output=avail "$DATA_FS" 2>/dev/null | tail -n1 | tr -d ' ')" || avail=""
+    case "$avail" in ''|*[!0-9]*) avail=0 ;; esac
+    if [ "$avail" -lt $((need_bytes + RESERVE_BYTES)) ]; then
+        die "空间不够:要拷 ${#missing[@]} 个 store path(约 $((need_bytes / 1048576)) MiB),加 $((RESERVE_BYTES / 1048576)) MiB 余量,而 $DATA_FS 只剩 $((avail / 1048576)) MiB。保留旧 profile(旧 nix 仍可用);先跑 os-update gc 或清理后再重启。"
+    fi
+    log "要同步 ${#missing[@]} 个 store path(约 $((need_bytes / 1048576)) MiB)"
+    for name in "${missing[@]}"; do
+        # 先拷到隐藏的 .incoming-*,成功后再 mv:中途失败/断电不会留下一个"名字已存在
+        # 但内容不全"的 store path(nix 会把它当成有效路径,那是最难查的一类损坏)。
+        tmp="$NIX_ROOT/store/.incoming-$name"
+        rm -rf "$tmp"
+        if ! cp -a "$SKEL/store/$name" "$tmp"; then
+            rm -rf "$tmp"
+            die "拷贝 store path 失败:$name(空间不够?)—— 保留旧 profile"
+        fi
+        mv "$tmp" "$NIX_ROOT/store/$name" || { rm -rf "$tmp"; die "把 $name 移进 store 失败"; }
+        log "已加入:$name"
+    done
+else
+    log "store 里没有缺失的 path(本槽的 nix 已经在 /data 上)"
+fi
+
+# 把 .reginfo 里的路径登记进 /data/nix/var/nix/db:不登记的话 nix 认为这些路径"无效"
+# (nix-shell 会报 path is not valid)。幂等:重复登记同名路径是覆盖写。
+if [ -s "$SKEL/var/nix/reginfo" ]; then
+    if ! "$NIX_ROOT/store/$NIXNAME/bin/nix-store" --load-db <"$SKEL/var/nix/reginfo"; then
+        die "nix-store --load-db 失败 ⇒ 不重指 profile(旧 nix 仍可用)"
+    fi
+else
+    die "骨架里缺少 reginfo($SKEL/var/nix/reginfo)⇒ 无法登记 store path,不重指 profile"
+fi
+
+ln -sfn "$LINK" "$NIX_ROOT/var/nix/profiles/default"
+sync
+log "完成:当前 nix = $LINK"

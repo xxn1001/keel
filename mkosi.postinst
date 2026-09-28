@@ -25,23 +25,20 @@ ln -sfn /run/systemd/resolve/stub-resolv.conf "$R/etc/resolv.conf"
 # Debian 的 nix-bin / nix-setup-systemd 不带这个设置,而它是日常使用的刚需。
 # 幂等:已经存在就不重复追加。
 # ---------------------------------------------------------------------------
+# v1.2 起 nix 由上游 tarball 供给(决策 D29/B1),这里写下多用户 daemon 需要的配置。
+# ssl-cert-file 指**系统**的 CA bundle(ca-certificates 在 Packages 里):上游 installer
+# 会把 tarball 里那份 nss-cacert 装进 profile 并设 NIX_SSL_CERT_FILE,我们不需要那层
+# —— 系统 bundle 由 Debian 定期更新,而且不随 nix 版本变。
 install -d -m 0755 "$R/etc/nix"
-if [ -f "$R/etc/nix/nix.conf" ]; then
-    if ! grep -q '^[[:space:]]*experimental-features' "$R/etc/nix/nix.conf"; then
-        cat >>"$R/etc/nix/nix.conf" <<'EOF'
-
-# keel:启用 flakes 与 nix 命令
-experimental-features = nix-command flakes
-EOF
-        log "已向 /etc/nix/nix.conf 追加 experimental-features"
+NIXCONF="$R/etc/nix/nix.conf"
+[ -f "$NIXCONF" ] || { printf '# keel:nix 配置(v1.2 起 nix 由上游 tarball 供给,决策 D29)\n' >"$NIXCONF"; log "已创建 /etc/nix/nix.conf"; }
+for kv in "build-users-group = nixbld" "experimental-features = nix-command flakes" "sandbox = true" "ssl-cert-file = /etc/ssl/certs/ca-certificates.crt"; do
+    key="${kv%% =*}"
+    if ! grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$NIXCONF"; then
+        printf '%s\n' "$kv" >>"$NIXCONF"
+        log "已向 /etc/nix/nix.conf 追加:$kv"
     fi
-else
-    cat >"$R/etc/nix/nix.conf" <<'EOF'
-build-users-group = nixbld
-experimental-features = nix-command flakes
-EOF
-    log "已创建 /etc/nix/nix.conf"
-fi
+done
 
 # ---------------------------------------------------------------------------
 # 权限归一化:仓库里的权限位会**原样**进镜像(坑 #57)
@@ -171,6 +168,26 @@ if [ -z "$active_key" ] || [ ! -f "$R/usr/share/keel/update-keys/$active_key.pub
     exit 1
 fi
 log "已确认镜像里有 $keys_n 个更新签名公钥(当前签名钥 $active_key)+ /usr/bin/openssl"
+
+# ---------------------------------------------------------------------------
+# 上游 nix 必须真的在数据骨架里(v1.2 B1/决策 D29):基底**不再有** nix-bin,
+# 骨架里没有 nix 就等于装出一台"没有 nix 的 keel"。构建前 tools/nix-fetch.sh fetch
+# 负责取(固定版本+sha256),这里回读断言。
+# ---------------------------------------------------------------------------
+nix_store_n=0
+for d in "$R"/usr/share/keel/data-skeleton/nix/store/*-nix-*; do
+    [ -d "$d" ] && nix_store_n=$((nix_store_n + 1))
+done
+if [ "$nix_store_n" -lt 1 ]; then
+    log "致命:数据骨架里没有上游 nix($R/usr/share/keel/data-skeleton/nix/store/*-nix-*)"
+    log "      ⇒ 先跑 tools/nix-fetch.sh fetch(tools/build.sh 会自动取)。"
+    exit 1
+fi
+[ -L "$R/usr/bin/nix" ] || {
+    log "致命:/usr/bin/nix 不是符号链接(命令入口应该在 mkosi.extra/usr/bin/ 里)"
+    exit 1
+}
+log "已确认数据骨架里有 $nix_store_n 个上游 nix store path + /usr/bin/nix 入口"
 
 # ---------------------------------------------------------------------------
 # mask 掉 systemd-pcrlock-*(决策 D20:v1 不做 Secure Boot / measured boot)

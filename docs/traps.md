@@ -1,4 +1,4 @@
-# keel 已知的坑(74 条,都是真踩过的)
+# keel 已知的坑(75 条,都是真踩过的)
 
 > 这份清单原来在 `AGENTS.md` §3。2026-09 拆出来,是因为 `AGENTS.md` 长到 65 KB 之后
 > **超出"工作区指令"的加载预算、末尾会被静默截断**(实测被砍掉过"下一步要验证的事"那一段),
@@ -1447,3 +1447,22 @@
     真的存在(改了文案不改断言时 verify 会提醒)。
     **教训**:判定"只打印不返回"等于没判 —— 特别是当**正常路径与失败路径的退出码相同**
     (都是 poweroff)时。任何自动化验证都要有一条宿主侧判据:"关键产物/关键字符串必须出现,否则失败"。
+
+75. **`Before=... sysinit.target` 的早期单元忘了 `DefaultDependencies=no` ⇒ 依赖环,systemd 丢掉的是**别的**单元(2026-09-28,v1.2 nix B1 的第一次演练)。**
+    现象:drill 的 guest 在 p0 就"与预期不符"——三个更新源全部被拒,报的却是
+    `/data 可用空间只有 409 MiB,放不下更新载荷(预算 2 GiB)`;三个签名守卫也全部"消息不含关键字"。
+    根因:新加的 `keel-nix-sync.service` 要排在 `keel-firstboot` 之前(先做带空间检查的加性同步),
+    于是写了 `Before=keel-firstboot.service`,但**忘了**它同时还有 `DefaultDependencies=yes`
+    (隐含 `Requires/After=sysinit.target`),而 `keel-firstboot` 是 `Before=sysinit.target` ⇒
+    nix-sync → firstboot → sysinit → nix-sync 成环。systemd 破环时丢掉的不是新单元,而是
+    **keel-firstboot**(以及 `nix-daemon.socket`、`systemd-pcrphase-sysinit`):/data 从未扩容,
+    24G 演练盘上的 live `/data` 仍只有 ~1 GiB,再被 114 MiB 的 nix 闭包一占,就只剩 409 MiB。
+    日志里只有一行 `[ SKIP ] Ordering cycle found, skipping keel-firstboot.service`,而症状出现在
+    完全另一处("更新源被拒")—— 典型的"症状离原因很远"。
+    **修法**:凡是 `Before=... sysinit.target` 的早期单元,一律 `DefaultDependencies=no` +
+    显式 `Conflicts=shutdown.target`(`WantedBy=sysinit.target`),头部照抄 keel-mounts /
+    keel-firstboot;socket 也不必再叠 `After=keel-nix-sync.service`(容易把环引到 socket 上)。
+    **教训**:① systemd 破环时会**静默丢掉环里的某个单元**,被丢的往往不是你以为的那个 ——
+    遇到"某单元没跑"先 `journalctl -b | grep -i 'ordering cycle'`;② 关键路径上的单元
+    (挂载、扩容)要有人替它报警:这次是 drill 的宿主侧判定 + `fetch` 的空间检查把"假绿"挡住,
+    否则会被当成"签名代码坏了"去查(第一次演练确实先怀疑了签名)。

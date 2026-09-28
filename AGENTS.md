@@ -502,6 +502,20 @@ sudo tools/burn.sh /dev/nvme0n1
       `check` 把签名结论写进状态文件(os-status 能看到)、`sign.sh retire`(私钥+公钥一起退场)、
       `sync` 校验 active 公钥与私钥配对、`manifest_get` 改精确前缀匹配、`schema-version` 写坏当 0
       (不再静默放行)。
+- [x] **v1.2 ②:nix 改由上游供给(B1,2026-09-28)** —— 基底不再有 `nix-bin` / `nix-setup-systemd`
+      (trixie 的 2.26.3 背着 4 条 no-DSA,决策 D29)。`tools/nix-fetch.sh` 钉死上游 **2.35.2**
+      (sha256 `0c3960a9…1158`,27,131,728 B)并把 64 个 store path(114 MiB)解进**数据骨架**;
+      `keel-nix-sync.service`(`DefaultDependencies=no`,排在 keel-mounts 之后、keel-firstboot 之前)
+      把 `/data/nix` 还没有的 store path **加性**拷过去:先 `df` 问空间(留 256 MiB,不变量 10)、
+      拷到 `.incoming-*` 再 `mv`、`nix-store --load-db` 登记、最后把 profile 重指到本槽的 nix;
+      任一步失败就保持旧 profile(旧 nix 仍可用)。daemon 单元(service+socket)、nixbld 用户
+      (32 个,`sysusers.d`)、`/usr/bin/nix*` 命令链接全部由本仓库提供。
+      **实测**:`tools/verify.sh` **254 通过 / 0 失败**(root;非 root 251/0/3;+22 条断言,含"假 tarball 解包 →
+      加性同步 → 第二次不覆盖 → 空间不够拒绝且不切 profile"的功能测试,4 处定向变异);
+      `--drill` 全绿,guest 判定 `nix 来自本槽骨架(2.35.2,profile=/nix/store/irfrbndi…-nix-2.35.2)`,
+      `nix-daemon` 正常起来;载荷因 nix 闭包每槽 +31 MiB(401 → 451 MiB,一份 ~1.2 GiB)。
+      途中踩了坑 #75(`Before=keel-firstboot` 却忘 `DefaultDependencies=no` ⇒ 到 sysinit 的环,
+      systemd 丢掉的是 keel-firstboot ⇒ /data 没扩容 ⇒ fetch 被空间检查拒)。
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 

@@ -1,0 +1,22 @@
+[Unit]
+Description=Nix Daemon
+Documentation=man:nix-daemon https://nixos.org/manual
+# v1.2 起 nix 由上游 tarball 供给(决策 D29/B1):可执行文件在
+# /nix/var/nix/profiles/default/bin(profile 由 keel-nix-sync 重指到本槽的 nix)。
+# 这是**替换 Debian nix-setup-systemd 的单元**,内容参照上游 misc/systemd/nix-daemon.service
+# 与 Debian 的 nix-daemon.service,并加上我们的挂载/同步次序。
+RequiresMountsFor=/nix/store /nix/var/nix/db
+After=keel-nix-sync.service systemd-sysusers.service
+Wants=keel-nix-sync.service
+ConditionPathIsReadWrite=/nix/var/nix/daemon-socket
+
+[Service]
+ExecStart=/usr/bin/nix-daemon --daemon
+Environment=NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+KillMode=process
+LimitNOFILE=1048576
+TasksMax=1048576
+Delegate=yes
+
+[Install]
+WantedBy=multi-user.target

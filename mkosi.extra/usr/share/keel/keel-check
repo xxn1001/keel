@@ -362,7 +362,7 @@ if tr -s '[:space:]' '\n' </proc/cmdline 2>/dev/null | grep -q '^console=ttyS0';
 # ---------------------------------------------------------------------------
 head1 "9. nix(用户态在自己手里,不变量 7)"
 # ---------------------------------------------------------------------------
-if have nix; then ok "nix 命令在:$(nix --version 2>/dev/null | head -1)"; else no "找不到 nix 命令(基底里应该有 nix-bin)"; fi
+if have nix; then ok "nix 命令在:$(nix --version 2>/dev/null | head -1)"; else no "找不到 nix 命令(应该是 /usr/bin/nix → /nix/var/nix/profiles/default/bin/nix;v1.2 起 nix 由上游 tarball 供给,决策 D29)"; fi
 # nix 的**版本门槛**(决策 D29;C 项,2026-09-27)。
 #
 # trixie 打包的 nix 是 2.26.3,已 EOL,而 Debian 在 security-tracker 上给它标了 4 条
@@ -381,7 +381,18 @@ if [ -n "$nix_ver" ]; then
     if [ "$nix_top" = "$nix_ver" ]; then
         ok "nix 版本 $nix_ver ≥ 2.34.7(已含 44028/44029/39860 的修复)"
     else
-        wn "nix 版本 $nix_ver < 2.34.7:trixie 的包已 EOL,4 条未修安全问题(决策 D29)⇒ 只从受信源装东西;修复见 roadmap §1.5"
+        wn "nix 版本 $nix_ver < 2.34.7:4 条未修安全问题(决策 D29/B1,骨架里的固定版本应 ≥2.34.7)⇒ 先看 systemctl status keel-nix-sync(加性同步没跟上?),再只从受信源装东西"
+    fi
+fi
+# v1.2 B1:profile 必须指向**本槽骨架**里的 nix(keel-nix-sync 的加性同步产物)。
+# 不一致 = "版本没跟着槽走"的现场(比如同步失败/被旧 profile 挡住),而这正是 D29 要买的东西。
+nix_skel_link="$(readlink /usr/share/keel/data-skeleton/nix/var/nix/profiles/default 2>/dev/null)" || nix_skel_link=""
+nix_live_link="$(readlink /nix/var/nix/profiles/default 2>/dev/null)" || nix_live_link=""
+if [ -n "$nix_skel_link" ]; then
+    if [ "$nix_live_link" = "$nix_skel_link" ]; then
+        ok "nix profile 指向本槽骨架里的 nix($nix_live_link)"
+    else
+        wn "nix profile(${nix_live_link:-无})≠ 本槽骨架($nix_skel_link)⇒ systemctl status keel-nix-sync 看加性同步"
     fi
 fi
 if [ -d /nix ] && [ ! -L /nix ]; then ok "/nix 是真目录(不能是符号链接,坑 #34)"; else no "/nix 不是真目录 ⇒ nix 会拒绝工作"; fi

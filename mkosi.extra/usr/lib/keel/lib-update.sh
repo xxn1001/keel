@@ -269,7 +269,8 @@ cmd_fetch() {
 
     install -d -m 0755 "$KEEL_OTA"
     # 下载之前先问空间(决策 D23)。v1.1 起根载荷是 **erofs**(不再是钉死的 6 GiB):
-    # 一份载荷 = slot-a/b 两个根镜像 + 两个 ~156 MiB 的 UKI。**实测 ~1.1 GiB/份**
+    # 一份载荷 = slot-a/b 两个根镜像 + 两个 ~156 MiB 的 UKI。**实测 ~1.2 GiB/份**
+    # (v1.1 是 ~1.1 GiB;v1.2 B1 起根镜像里含上游 nix 闭包,每槽 401 → 451 MiB)
     # (erofs 根 401 MiB ×2 + UKI 156 MiB ×2,见 docs/roadmap.md §2.9)。
     # manifest 里只有 sha256、**没有尺寸**,下载前拿不到真实字节数,所以这里用一个
     # **保守但贴着实测**的预算,宁可早拒,不要下到一半 ENOSPC 留下半个载荷;
