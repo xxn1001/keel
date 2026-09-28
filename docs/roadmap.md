@@ -192,7 +192,7 @@ erofs → 重启)的机器起起来,看 overlay **upper 里实际被拷上去的
 
 | # | 事项 | 说明 |
 |---|---|---|
-| 3.0 | **initrd 阶段的冻结兜底**(v1 明确不覆盖) | 实测(坑 #50):候选槽的根镜像坏掉时 initrd 会停在 `Switch root target contains no usable init.` 并**冻结**;主系统的看门狗已生效(`RuntimeWatchdogUSec=1min`),但**没能救回这次冻结**(挂住 650+ 秒)。待查:① `mkosi.extra-initrd` 里的配置到底进没进 initrd(我们那个检查也可能误报);② initrd 里有没有 `/dev/watchdog`(没有就得把看门狗驱动/`softdog` 加进 initrd 的模块集);③ 或者给 initrd 加超时。查实之后再决定是修还是接受 |
+| 3.0 | **initrd 阶段的冻结兜底** | ✅ **已查实(2026-09-28),修复另排** —— ① v1.1 以为 `mkosi.initrd.conf` + `ExtraTrees=mkosi.extra-initrd` 进了 initrd:**实测没有**(mkosi 25.3 源码根本不读 `mkosi.initrd.conf`;拆开 UKI 的 `.initrd` 确认既无看门狗配置也无 softdog —— 模块段里有 `softdog.ko` 但没人加载);② "用 `--initrd` 追加未压缩 cpio"**不通**:混合拼接打破 initramfs 链(内核 `VFS: Unable to mount root fs`)。⇒ 主系统看门狗(D25)照旧生效,**initrd 冻结这段仍是已知限制**(`KEEL_DRILL_SABOTAGE=initrd` 覆盖不到自动回退)。素材已备好(`mkosi.initrd-extra/` + `tools/mkinitrd-extra.sh`),修复要找到"往 mkosi 默认 initrd 注入文件"的正确出口(宿主侧 mkosi-initrd 配置 / 预构建 initrd / 更新 mkosi 的对应设置);详见 `docs/traps.md` #76/#77。**注意**:`KEEL_DRILL_SABOTAGE=initrd` 这个模式在修好之前不要用来验证自动回退(会挂到 VM 超时) |
 | 3.1 | `--autologin` 秒退的根因 | 坑 #26/#28 只查清到"`/bin/login` 缺失"这一层;autologin 那条路径为什么秒退没再深挖(v1 不用它) |
 | 3.2 | 微码是否真的进了 UKI | 目前只有"VM 能启动"这种间接证据;真机上 `dmesg | grep -i microcode` 可以直接确认 |
 | 3.3 | 文档里的历史陈述 | `docs/*.md` 里还留着一些"尚未实现/待验证"的旧话术,发 v1 时统一清一遍 |

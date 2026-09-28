@@ -119,6 +119,14 @@ NIX_FETCH=tools/nix-fetch.sh
 "$NIX_FETCH" fetch || die "上游 nix 取用失败(网络或哈希;见 $NIX_FETCH)"
 
 # ---------------------------------------------------------------------------
+# initrd 补充层(v1.2 3.0):**刻意还没接进构建** —— 见 docs/traps.md #77
+#
+# 根因已查实:mkosi 25.3 不读 mkosi.initrd.conf,initrd 里从来没有我们的看门狗配置;
+# 而"用 --initrd 追加一个未压缩 cpio"会打破 initramfs 链(实测:内核 VFS unable to mount
+# root ⇒ 连正常槽都起不来)。在找到"往 mkosi 默认 initrd 里注入文件"的正确出口之前,
+# 产物保持现状(主系统看门狗生效;initrd 冻结仍是已知限制)。修复路线见 docs/roadmap.md 3.0。
+
+# ---------------------------------------------------------------------------
 # Secure Boot 密钥(v1.2 1.2):mkosi.conf 里写了 SecureBoot=yes,密钥是根目录的
 # mkosi.key / mkosi.crt(mkosi 自动识别)。这里提前给出人话错误,免得埋进 mkosi 的日志。
 # ---------------------------------------------------------------------------

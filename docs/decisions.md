@@ -373,8 +373,14 @@
   `[!!!!!!] Switch root target contains no usable init.` 然后**永久冻结** ——
   不 panic、不重启、不返回;机器就停在黑屏,回退永远不会发生。
 - **实现要点**:冻结的是 **initrd 里的 PID1**,而 initrd **不读主镜像的 `/etc`**
-  (mkosi 的 `mkosi.extra/` 不进 initrd,坑 #1 的旁证)⇒ 必须在 `mkosi.initrd.conf` 里
-  用 `ExtraTrees=mkosi.extra-initrd` 单独塞一份。两份内容靠 `tools/verify.sh` 核对一致。
+  (mkosi 的 `mkosi.extra/` 不进 initrd,坑 #1 的旁证)⇒ 必须单独塞一份进去。
+  **⚠ 2026-09-28 修正(坑 #76)**:原文写的 `mkosi.initrd.conf` + `ExtraTrees=mkosi.extra-initrd`
+  **从来没生效过** —— mkosi 25.3 源码里根本不读 `mkosi.initrd.conf`;拆开 UKI 的 `.initrd`
+  证实里面既没有看门狗配置、也没有 softdog(那个"核对两边一致"的断言因此一直是空断言)。
+  修复尝试(2026-09-28):素材已备好 —— `tools/mkinitrd-extra.sh` 把 `mkosi.initrd-extra/` 打成
+  cpio,但**没有接进构建**:实测 mkosi `--initrd` 追加未压缩 cpio 会打破 initramfs 链
+  (内核 `VFS: Unable to mount root fs`),见坑 #77。两份配置的值仍由 `tools/verify.sh` 核对,
+  cpio 素材有功能测试;正确的注入出口留待后续(roadmap 3.0)。
 - **代价**:正常启动的早期阶段要在 60 秒内喂到第一次狗(远用不到),卡住时人要等一分钟;
   看门狗复位**不写 journal**(相当于硬断电),所以"那次失败"的证据仍然只有
   引导计数/`.failed` 条目与 `last_result=failed`。

@@ -53,6 +53,7 @@ cd "$(dirname "$0")/.." || exit 1
 . "$verify_dir/lib/verify/69-nix-upstream.sh"
 . "$verify_dir/lib/verify/70-secureboot.sh"
 . "$verify_dir/lib/verify/71-release-package.sh"
+. "$verify_dir/lib/verify/72-initrd-watchdog.sh"
 . "$verify_dir/lib/verify/98-update-signing.sh"
 
 # ── 按原顺序调用(顺序即输出顺序)──
@@ -101,6 +102,7 @@ verify_update_signing
 verify_nix_upstream
 verify_secureboot
 verify_release_package
+verify_initrd_watchdog
 
 # ---------------------------------------------------------------------------
 printf '\n\033[1m结果: %d 通过, %d 失败' "$pass" "$fail"

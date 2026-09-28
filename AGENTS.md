@@ -538,6 +538,16 @@ sudo tools/burn.sh /dev/nvme0n1
       **sha256 逐字节一致**;`tools/burn.sh --check-only` 读出 `IMAGE_VERSION=2026.09.28.1534` 并放行;
       `sudo tools/stress-libvirt.sh up` 全绿(装机 → 只挂目标盘首启 → 根 erofs、槽 a、SSH 可达),
       随后 `down` 收掉域。
+- [x] **v1.2 ⑤:initrd 冻结兜底 —— 查实根因,修复另排(2026-09-28)** —— ① `mkosi.initrd.conf`
+      是**死文件**:mkosi 25.3 源码里没有这个文件名(默认 initrd 用内置 `--include=mkosi-initrd`
+      构建),拆开 UKI 的 `.initrd` 证实里面既没有我们的看门狗配置、也没有 softdog ⇒ v1.1 那两条
+      "配置在不在"的断言一直是空断言(坑 #76),这就是坑 #50 的 initrd 冻结没人复位的原因;
+      ② 修复尝试 `mkosi --initrd` 追加未压缩 cpio **打破 initramfs 链**(内核 `VFS: Unable to mount
+      root fs`,连正常槽都起不来,坑 #77)⇒ **刻意不接进构建**,`tools/mkinitrd-extra.sh` +
+      `mkosi.initrd-extra/` 作为素材保留,verify 有反向断言盯着"不许偷偷接上";主系统看门狗
+      (D25)照旧生效,initrd 冻结仍是**已知限制**(`KEEL_DRILL_SABOTAGE=initrd` 修好前别用来验证回退)。
+      **实测**:`tools/verify.sh` **282 通过 / 0 失败**(root);代码拆 UKI 的 `.initrd` 两段 zstd +
+      两段内容清单;混合 `--initrd` 那次 drill 在 p0 前就 panic 循环(唯一一次启动级回归,已回退)。
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 

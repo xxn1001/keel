@@ -1,4 +1,4 @@
-# keel 已知的坑(75 条,都是真踩过的)
+# keel 已知的坑(77 条,都是真踩过的)
 
 > 这份清单原来在 `AGENTS.md` §3。2026-09 拆出来,是因为 `AGENTS.md` 长到 65 KB 之后
 > **超出"工作区指令"的加载预算、末尾会被静默截断**(实测被砍掉过"下一步要验证的事"那一段),
@@ -1451,6 +1451,34 @@
     真的存在(改了文案不改断言时 verify 会提醒)。
     **教训**:判定"只打印不返回"等于没判 —— 特别是当**正常路径与失败路径的退出码相同**
     (都是 poweroff)时。任何自动化验证都要有一条宿主侧判据:"关键产物/关键字符串必须出现,否则失败"。
+
+76. **`mkosi.initrd.conf` 是个死文件:mkosi 25.3 根本不读它 —— v1 的 initrd 看门狗配置从未生效,那两条断言一直是空断言(2026-09-28,v1.2 3.0 调查)。**
+    现象:坏槽在 initrd 阶段冻结(`Switch root target contains no usable init.`)时,机器挂 650+ 秒
+    没人复位(坑 #50)。v1.1 的 drill 里那个"抽 .initrd 查 keel-watchdog.conf"的检查打印过警告,
+    但被当成"检查方式可能误报";verify 里两条断言只看 `mkosi.initrd.conf` 里有没有
+    `ExtraTrees=mkosi.extra-initrd` —— 全绿。
+    查实:① 在 mkosi 源码里 grep,`mkosi/*.py` **没有 `mkosi.initrd.conf` 这个文件名**,默认
+    initrd 是用内置 `--include=mkosi-initrd` 构建的;② 拆开安装镜像 UKI 的 `.initrd`
+    (`objcopy --only-section=.initrd`),里面是**两段 zstd**(默认 initrd 31.4M + 内核模块 initrd),
+    base 段 184 个 `/etc` 文件里**没有**任何 keel 的东西;模块段里倒是有 `softdog.ko.xz`。
+    ⇒ 配置从未进过 initrd。素材改放 `mkosi.initrd-extra/`(`tools/mkinitrd-extra.sh` 打成 cpio),
+    等找到正确的注入出口再接(见 #77)。**在那之前不要相信任何"配置在不在"的静态断言** ——
+    只有证明它进了 `.initrd` 才算数。
+    **教训**:① "我写了个配置文件"和"它真的到了目标"之间隔着一个**别人家的加载机制**,
+    而那个机制可能根本不认识你的文件名;② 这次是**拆开产物**才看见真相,grep 源码永远看不出来。
+
+77. **`mkosi --initrd` 追加一个未压缩 cpio 会打破 initramfs 链:内核 `VFS: Unable to mount root fs`,连正常槽都起不来(2026-09-28,修 #76 时踩到)。**
+    做法:把 `mkosi.initrd-extra/` 打成 newc cpio,`build.sh` 给 mkosi 加
+    `--initrd mkosi.output/keel-initrd-extra.cpio`。构建、签名、postinst 全绿,但 drill 一启动
+    就是 panic 循环:`/dev/root: Can't open blockdev` → `mount_root_generic` → panic → 重启,
+    **一个 keel-ota-drill 阶段都没跑到**(连 p0 都没进)。根因:`.initrd` 是多个 initrd 拼接的,
+    原有两段都是 **zstd 压缩帧**,而我们追加的是**未压缩 cpio** —— 内核的 initramfs 解包器在
+    这种混合拼接下没有继续解后面的压缩帧 ⇒ 找不到 `/init` ⇒ 内核直接去 mount root ⇒ panic。
+    **现状**:3.0 的修复**没有接进构建**(reverse 断言守着,防止有人再偷偷接上);
+    `tools/mkinitrd-extra.sh` 与 `mkosi.initrd-extra/` 作为素材保留,等正确的注入出口。
+    **教训**:① "构建成功"不能证明"能启动" —— 这次唯一抓住它的是 drill 的**启动**;
+    ② 往别人的产物里追加东西之前,先看清那个产物的**格式约定**(是不是同一种压缩);
+    ③ 下次先本地拼一个混合 `.initrd` 用 QEMU 单测,比花 25 分钟跑整条 drill 便宜得多。
 
 75. **`Before=... sysinit.target` 的早期单元忘了 `DefaultDependencies=no` ⇒ 依赖环,systemd 丢掉的是**别的**单元(2026-09-28,v1.2 nix B1 的第一次演练)。**
     现象:drill 的 guest 在 p0 就"与预期不符"——三个更新源全部被拒,报的却是

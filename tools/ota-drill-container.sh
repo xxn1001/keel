@@ -341,24 +341,14 @@ printf 'X' | dd of=/tmp/drill-serve/badsig/manifest.sig bs=1 seek=0 conv=notrunc
     { echo "   错误:改不动 badsig 的 manifest.sig" >&2; exit 1; }
 echo "   签名演练源就绪:unsigned(无 .sig)+ badsig(manifest.sig 第 1 字节已改)"
 
-# 额外的一次"回读确认":看门狗配置**必须真的进了 initrd**(否则坏槽冻结时没人复位,
-# 演练会卡死在黑屏 —— 坑 #50 的现场)。这里直接从 UKI 里抽 .initrd 出来查文件名。
-if command -v objcopy >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends binutils >/dev/null 2>&1; then
-    if objcopy -O binary --only-section=.initrd "$REPO/mkosi.output/keel.efi" /tmp/keel-initrd.bin 2>/dev/null &&
-       [ -s /tmp/keel-initrd.bin ]; then
-        if command -v zstd >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends zstd >/dev/null 2>&1; then :; fi
-        if zstd -d -c /tmp/keel-initrd.bin >/tmp/keel-initrd.cpio 2>/dev/null ||
-           cp /tmp/keel-initrd.bin /tmp/keel-initrd.cpio; then :; fi
-        if command -v cpio >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends cpio >/dev/null 2>&1; then :; fi
-        if cpio -t < /tmp/keel-initrd.cpio 2>/dev/null | grep -q 'keel-watchdog'; then
-            echo "   initrd 里确认有 keel-watchdog.conf(冻结时看门狗能复位)"
-        else
-            echo "   警告:在 initrd 里没找到 keel-watchdog.conf —— 坏槽冻结时不会被复位,演练可能卡死" >&2
-        fi
-    else
-        echo "   警告:抽不出 .initrd(跳过这项检查)" >&2
-    fi
-fi
+# initrd 阶段的看门狗:**已知缺口,不再假装检查**(v1.2 3.0 查实 → docs/traps.md #76/#77):
+#   * v1.1 以为 mkosi.initrd.conf + ExtraTrees 把配置塞进了 initrd —— 实测没有:
+#     mkosi 25.3 根本不读 mkosi.initrd.conf,initrd 里既没有 RuntimeWatchdogSec 也没有 softdog;
+#   * "用 mkosi --initrd 追加一个未压缩 cpio"这条路**也不通**:实测会打破 initramfs 链
+#     (内核 `VFS: Unable to mount root fs`,连正常槽都起不来)。
+# 所以这个演练的坏槽仍然走 userspace 破坏(默认),`KEEL_DRILL_SABOTAGE=initrd` 覆盖不到
+# 自动回退 —— 修复路线(往 mkosi 默认 initrd 注入文件的正确出口)记在 docs/roadmap.md §3.0。
+echo "   注意:initrd 冻结兜底仍是已知缺口(主系统看门狗生效;详见 docs/roadmap.md §3.0)"
 
 # 控制台同时落一份到文件:下面要从中**读回 guest 的关键判定**(只靠 VM 退出码不够,
 # 见末尾那段说明)。tee 是必须的:mkosi/QEMU 给 QEMU 的 stdio 副本没有 O_APPEND(坑 #64),

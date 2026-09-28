@@ -43,7 +43,7 @@ done < <(find mkosi.extra/usr/lib/keel mkosi.extra/usr/bin tools -type f 2>/dev/
 # 这里把这两处显式补上(它们本来就干净,补上之后才是真的"一直干净")。
 # 用 `lib*.sh` 通配:`mkosi.extra/usr/lib/keel/` 下的库都按这个约定命名(现在有 lib.sh 与
 # lib-update.sh),以后再加库不用回来改这份名单。
-# 只列这两处,不做通配:mkosi.extra-test / mkosi.extra-initrd 里也有脚本,但它们不是产物代码;
+# 只列这两处,不做通配:mkosi.extra-test / mkosi.initrd-extra 里也有脚本,但它们不是产物代码;
 # 哪天真要一起 lint,把 find 的范围也扩过去,别只改这个数组。
 libs=(mkosi.extra/usr/lib/keel/lib*.sh)
 while IFS= read -r f; do
@@ -74,7 +74,7 @@ fi
 # NixOS 宿主**只有 /bin/sh,没有 /bin/bash** ⇒ `sudo tools/build-container.sh` 这类
 # "直接执行"的用法会在宿主上以 `bad interpreter: No such file or directory` 失败,
 # 而脚本本身一点问题都没有(2026-09 在项目所有者的机器上实测撞到)。
-hardcode_bash=$(grep -rl '^#!/bin/bash' mkosi.extra mkosi.extra-test mkosi.extra-initrd tools \
+hardcode_bash=$(grep -rl '^#!/bin/bash' mkosi.extra mkosi.extra-test mkosi.initrd-extra tools \
                 mkosi.finalize mkosi.postinst 2>/dev/null | tr '\n' ' ')
 if [ -z "$hardcode_bash" ]; then
     ok "脚本 shebang 都是 /usr/bin/env bash(宿主没有 /bin/bash 也能直接执行,坑 #54)"
