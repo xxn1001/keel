@@ -325,16 +325,18 @@ os-update stage
 
 | profile | 产物 | 用途 |
 |---|---|---|
-| `install` | `keel.raw` | 安装镜像(§3.1 的完整磁盘) |
+| `install` | `keel.raw` | 安装镜像(§3.1 的完整磁盘);发布目录里**只留压缩件 `keel.img.zst`** |
 | `slot-a` | `slot-a.root.raw` + `slot-a.uki.efi` | 写入 A 槽的更新载荷 |
 | `slot-b` | `slot-b.root.raw` + `slot-b.uki.efi` | 写入 B 槽的更新载荷 |
 
 `tools/build.sh` 一次跑三个 profile,组装出发布目录:
 
 ```
-dist/keel-<version>/
-├── keel.raw               安装镜像
-├── keel.raw.sha256
+output/keel-<version>/
+├── keel.img.zst           安装镜像的 zstd 压缩件(v1.2 2.10;原 keel.raw 不进发布目录)
+├── keel.img.zst.size      解压后的字节数(install.sh 判断目标盘够不够大)
+├── keel.img.zst.sha256    压缩件的 sha256
+├── install.sh             宿主侧解压写盘(只要 zstd,不需要 mkosi)
 ├── slot-a.root.raw        A 槽根分区镜像(→ /dev/disk/by-partlabel/root-a)
 ├── slot-a.uki.efi         A 槽 UKI(→ ESP 的 EFI/Linux/keel-a.efi)
 ├── slot-b.root.raw
@@ -346,8 +348,8 @@ dist/keel-<version>/
 └── update.md
 ```
 
-**注意**:`keel.raw` / `install.md` / `update.md` 是给人装机和查阅用的;
-更新源目录里只需要 `manifest` + 四个槽载荷(见 docs/update.md §6)。
+**注意**:`install.sh` / `keel.img.zst` / `install.md` / `update.md` 是给人装机和查阅用的;
+更新源目录里只需要 `manifest` + `manifest.sig` + 四个槽载荷(见 docs/update.md §6)。
 版本号由 `mkosi.version` + 第一次构建的 `-B` 自动 bump 管理。
 
 ---
@@ -363,7 +365,7 @@ sudo tools/burn.sh /dev/nvme0n1      # 包装 mkosi burn:按目标盘修正 GPT 
 ```
 
 **B. 目标盘拆不下来:U 盘当 live,自己装自己**
-把同一个 `keel.raw` 写到 U 盘,UEFI 启动后在 live 环境里:
+把发布目录里的安装镜像写到 U 盘(`sudo ./install.sh /dev/sdX`),UEFI 启动后在 live 环境里:
 ```bash
 sudo os-install /dev/nvme0n1
 ```

@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# keel 产物构建:一次跑三个 profile,组装出 dist/keel-<version>/
+# keel 产物构建:一次跑三个 profile,组装出 output/keel-<version>/
 #
-# 产物(docs/architecture.md §6):
-#   dist/keel-<version>/keel.raw          安装镜像(esp + root-a + 空 root-b + volume)
-#   dist/keel-<version>/slot-a.root.raw   A 槽根分区镜像(写进 /dev/disk/by-partlabel/root-a)
-#   dist/keel-<version>/slot-a.uki.efi    A 槽 UKI(放到 ESP 的 EFI/Linux/keel-a.efi)
-#   dist/keel-<version>/slot-b.root.raw
-#   dist/keel-<version>/slot-b.uki.efi
-#   dist/keel-<version>/manifest          os-update 消费的 key=value 清单(含 sha256 与 key_id)
-#   dist/keel-<version>/manifest.sig      manifest 的 RSA-3072/SHA-256 签名(fetch 强制验签)
+# 产物(docs/architecture.md §6;v1.2 2.10 起发布目录叫 output/):
+#   output/keel-<version>/keel.img.zst    安装镜像的 zstd 压缩件(发布用;原 keel.raw 不进目录)
+#   output/keel-<version>/keel.img.zst.{size,sha256}
+#   output/keel-<version>/install.sh      宿主侧解压写盘(只需要 zstd,不需要 mkosi)
+#   output/keel-<version>/slot-a.root.raw A 槽根分区镜像(写进 /dev/disk/by-partlabel/root-a)
+#   output/keel-<version>/slot-a.uki.efi  A 槽 UKI(放到 ESP 的 EFI/Linux/keel-a.efi)
+#   output/keel-<version>/slot-b.root.raw
+#   output/keel-<version>/slot-b.uki.efi
+#   output/keel-<version>/manifest        os-update 消费的 key=value 清单(含 sha256 与 key_id)
+#   output/keel-<version>/manifest.sig    manifest 的 RSA-3072/SHA-256 签名(fetch 强制验签)
 #
 # 这是**原生路径**(宿主本身是 mkosi 支持的发行版,例如 Debian/Ubuntu/Fedora/Arch/CachyOS)。
 # 宿主不被 mkosi 支持时(NixOS 等)走适配器 tools/build-container.sh ——
@@ -25,7 +27,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT=mkosi.output
-DIST=dist
+# v1.2 2.10:发布目录从 dist/ 改成 output/<版本目录还在> —— 名字直白,且和 mkosi 的输出目录区分开
+DIST=output
 
 log() { printf 'keel-build: %s\n' "$*" >&2; }
 die() { printf 'keel-build: 错误:%s\n' "$*" >&2; exit 1; }
@@ -33,7 +36,7 @@ usage() {
     cat >&2 <<'EOF'
 用法:sudo tools/build.sh [-p <密码>] [--profile <名字>]… [--vm] [-- <mkosi 的额外参数>]
 
-  (无)                    构建安装镜像 + A/B 载荷 → dist/keel-<版本>/
+  (无)                    构建安装镜像 + A/B 载荷 → output/keel-<版本>/
   --vm                    构建完之后用 mkosi 起一遍 QEMU(需要 /dev/kvm)
   --drill                 跑一遍完整的 OTA 演练(等价容器的 drill 模式)
 EOF
@@ -130,7 +133,7 @@ log "Secure Boot:用 mkosi.key/mkosi.crt 签 systemd-boot 与每个 UKI"
 #   KEEL_ROOT_PASSWORD='...' sudo tools/build.sh  ← 环境变量,容器适配器就是用这条传进来的
 # mkosi 的 `RootPassword=` 先落到 root(shadow + credstore credential),再由 mkosi.finalize
 # 搬给 admin、锁掉 root、删掉那份 credential —— 和真机用仓库根目录 mkosi.rootpw 是**同一条路径**。
-# 注意:带到 dist/ 里的密码只适合临时测试;正式产物请改用 authorized_keys(SSH 公钥)。
+# 注意:产物里带的密码只适合临时测试;正式产物请改用 authorized_keys(SSH 公钥)。
 ROOTPW_ARGS=()
 PASSWORD=${KEEL_PASSWORD:-${KEEL_ROOT_PASSWORD:-}}
 [ "$KEEL_PASSWORD_SET" = 1 ] && [ -z "$KEEL_PASSWORD" ] && die "-p/--password 后面是空的:要么给个密码,要么别加这个选项" 
@@ -197,7 +200,7 @@ log "构建 slot-b 载荷"
 mkosi --profile slot-b "${mkosi_args[@]}" build
 
 # ---------------------------------------------------------------------------
-# 组装 dist/
+# 组装 output/keel-<版本>/
 # ---------------------------------------------------------------------------
 D="$DIST/keel-$VERSION"
 rm -rf "$D"; mkdir -p "$D"
@@ -220,6 +223,27 @@ pick "A 槽根分区镜像"  slot-a.root.raw "$OUT/keel-slot-a.root-a.raw" "$OUT
 pick "A 槽 UKI"        slot-a.uki.efi  "$OUT/keel-slot-a.efi"
 pick "B 槽根分区镜像"  slot-b.root.raw "$OUT/keel-slot-b.root-b.raw" "$OUT/keel-slot-b.root.raw"
 pick "B 槽 UKI"        slot-b.uki.efi  "$OUT/keel-slot-b.efi"
+
+# ---------------------------------------------------------------------------
+# 安装镜像压缩(v1.2 2.10):发布目录里**不放** 14 GiB 的 keel.raw
+#
+# 实测:keel.raw 15,033,451,008 B 逻辑 / 562 MiB 实占 ⇒ zstd -3 后 363 MiB。
+# 解压尺寸写进 sidecar(install.sh 用它判断目标盘够不够大,不靠猜);压缩件单独 sha256。
+# ---------------------------------------------------------------------------
+RAW_BYTES=$(stat -c %s "$D/keel.raw")
+command -v zstd >/dev/null 2>&1 || die "宿主没有 zstd(压缩安装镜像要用;apt install zstd)"
+log "压缩安装镜像($((RAW_BYTES / 1048576)) MiB 逻辑 → zstd -3)…"
+zstd -3 -T0 -f -q "$D/keel.raw" -o "$D/keel.img.zst" || die "zstd 压缩失败"
+printf '%s\n' "$RAW_BYTES" >"$D/keel.img.zst.size"
+( cd "$D" && sha256sum keel.img.zst >keel.img.zst.sha256 )
+rm -f "$D/keel.raw"
+
+# 发布包里的 install.sh:v1 只做"解压写盘",宿主只要 zstd(不需要 mkosi)。
+install -m 0755 tools/install-release.sh "$D/install.sh"
+
+# burn.sh 的版本核对用:mkosi burn 烧的是 $OUT/keel.raw(上一次构建的输出,文件名里没有
+# 版本号),这里记下它的版本;tools/burn.sh 烧之前会跟 output/ 里最新的发布版本对一遍。
+printf '%s\n' "$VERSION" >"$OUT/keel.raw.version"
 
 # ---------------------------------------------------------------------------
 # manifest:os-update 消费的 key=value 清单
@@ -248,8 +272,6 @@ SCHEMA=$(cat schema-version 2>/dev/null || echo 1)
 # 已经覆盖四个载荷 ⇒ 签 manifest 就传递地覆盖了全部载荷,不另造第二套校验。
 "$SIGN_TOOL" sign "$D" || die "manifest 签名失败(更新会因缺 manifest.sig 被机器拒绝)"
 
-( cd "$D" && sha256sum keel.raw >keel.raw.sha256 )
-
 # 人类可读的说明顺带放进去(安装 / 更新 / 发布说明:已知限制的权威清单)
 [ -f docs/install.md ] && cp -f docs/install.md "$D/install.md"
 [ -f docs/update.md ] && cp -f docs/update.md "$D/update.md"
@@ -271,7 +293,8 @@ if [ "$MODE" = vm ]; then
 fi
 
 log "下一步:"
-log "  装到机器上        sudo tools/burn.sh /dev/nvme0n1"
+log "  装到机器上        sudo tools/burn.sh /dev/nvme0n1(先核对版本,见 tools/burn.sh)"
+log "  只解压写盘        sudo $D/install.sh /dev/sdX(宿主只要有 zstd;也可 --to <文件>)"
 log "  先在虚拟机里试    sudo tools/build.sh --vm -p <临时密码>(原生)或 sudo tools/build-container.sh vm -p <临时密码>(容器)"
-log "  或者在 libvirt 里试 dist/keel-$VERSION/keel.raw(要能登录就得先 -p 构建,或放 authorized_keys)"
-log "  发布更新          把 $D 里除 keel.raw/install.md/update.md 之外的文件放到更新源目录"
+log "  或者在 libvirt 里试 $OUT/keel.raw(要能登录就得先 -p 构建,或放 authorized_keys)"
+log "  发布更新          把 $D/{manifest,manifest.sig,slot-a.root.raw,slot-a.uki.efi,slot-b.root.raw,slot-b.uki.efi} 放到更新源目录"

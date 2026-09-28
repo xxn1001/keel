@@ -13,12 +13,13 @@
 #   tools/libvirt-test.sh console        # 连串口控制台(virsh console;退出按 Ctrl+])
 #   tools/libvirt-test.sh log            # 看串口日志(tail -f)
 #   tools/libvirt-test.sh net            # 看 guest 拿到的 IP
+#   tools/libvirt-test.sh image-path     # 打印会给虚拟机用的安装镜像路径(脚本内部用)
 #   tools/libvirt-test.sh update-serve   # 宿主上起本地更新源(guest 用 http://192.168.122.1:8000)
 #   tools/libvirt-test.sh destroy        # 关机并删除域(磁盘与日志保留)
 #   tools/libvirt-test.sh nuke           # 连磁盘/日志一起删
 #
 # 典型的一次完整演练:
-#   tools/build.sh                              # 产出 dist/keel-<版本>/
+#   tools/build.sh                              # 产出 output/keel-<版本>/
 #   tools/libvirt-test.sh prepare && tools/libvirt-test.sh start
 #   tools/libvirt-test.sh console               # 登录 admin;网线(虚拟的)里已经通
 #     # 在 guest 里:
@@ -47,10 +48,12 @@ die() { printf 'keel-libvirt: 错误:%s\n' "$*" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "找不到 $1(需要 libvirt 的 virsh 与 qemu-img)"; }
 
-# 用哪份安装镜像:优先 dist/ 里最新的产物(它带完整载荷),否则退回 mkosi.output/keel.raw
+# 用哪份安装镜像:v1.2 2.10 起发布目录是 output/keel-<版本>/,但里面**不再放** keel.raw
+# (只放压缩件 keel.img.zst)⇒ 先看 output/ 里有没有旧布局留下的 keel.raw(给升级期用),
+# 再退回 mkosi.output/keel.raw(最近一次构建的输出,libvirt 测试实际用的就是它)。
 find_install_image() {
     local d
-    for d in $(ls -1d dist/keel-* 2>/dev/null | sort -Vr); do
+    for d in $(ls -1d output/keel-* 2>/dev/null | sort -Vr); do
         if [ -f "$d/keel.raw" ]; then printf '%s' "$d/keel.raw"; return 0; fi
     done
     if [ -f mkosi.output/keel.raw ]; then printf '%s' mkosi.output/keel.raw; return 0; fi
@@ -240,6 +243,8 @@ cmd_start() {
 
 cmd_console() { need virsh; exec virsh console "$DOMAIN"; }
 cmd_log()     { [ -f "$WORK/console.log" ] || die "还没有串口日志(先 start)"; exec tail -f "$WORK/console.log"; }
+# 给别的脚本(tools/stress-libvirt.sh)用的单一事实来源:到底会拿哪份安装镜像。
+cmd_image_path() { find_install_image || die "找不到安装镜像:先跑 sudo tools/build.sh"; printf '\n'; }
 
 cmd_net() {
     need virsh
@@ -249,8 +254,8 @@ cmd_net() {
 }
 
 cmd_update_serve() {
-    local d; d=$(ls -1d dist/keel-* 2>/dev/null | sort -V | tail -1) || d=""
-    [ -n "$d" ] || die "dist/ 下没有载荷目录:先跑 tools/build.sh"
+    local d; d=$(ls -1d output/keel-* 2>/dev/null | sort -V | tail -1) || d=""
+    [ -n "$d" ] || die "output/ 下没有载荷目录:先跑 tools/build.sh"
     log "把 $d 通过 HTTP 提供给 guest:http://192.168.122.1:$PORT/"
     log "guest 里执行:echo UPDATE_SOURCE=http://192.168.122.1:$PORT | sudo tee -a /data/keel/config"
     if command -v python3 >/dev/null 2>&1; then
@@ -274,6 +279,7 @@ case "${1:-}" in
     console)      cmd_console ;;
     log)          cmd_log ;;
     net)          cmd_net ;;
+    image-path)   cmd_image_path ;;
     update-serve) cmd_update_serve ;;
     destroy)      cmd_destroy ;;
     nuke)         cmd_nuke ;;

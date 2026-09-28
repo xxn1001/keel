@@ -37,7 +37,7 @@
 > **两条路的选项目前完全一致**(都实现自 `tools/lib-build-cli.sh`):
 >
 > ```bash
-> sudo tools/build.sh                            # 原生:构建 → dist/keel-<版本>/
+> sudo tools/build.sh                            # 原生:构建 → output/keel-<版本>/
 > sudo tools/build.sh -p <临时密码> --vm          # 构建 + 在 QEMU 里起一遍(admin 用这个密码登录)
 > sudo tools/build.sh --profile desktop          # 叠加变体 profile
 > sudo tools/build.sh --drill                    # 完整 OTA 演练
@@ -47,7 +47,7 @@
 > ```
 >
 > 容器默认 `debian:trixie`(mkosi 25.3);`qemu`/`OVMF` 不用装(mkosi 建 tools tree 时按需带上)。
-> 产物落在宿主机的 `mkosi.output/` 与 `dist/`(属主 root)。两条路都需要 root(mkosi 沙箱要
+> 产物落在宿主机的 `mkosi.output/` 与 `output/`(属主 root)。两条路都需要 root(mkosi 沙箱要
 > `CAP_SYS_ADMIN`)。**两条路都已在 NixOS 宿主上实测**(2026-09:构建、libvirt 装机、OTA 演练)。
 > 换容器镜像:`KEEL_BUILD_IMAGE=docker.io/library/archlinux:latest sudo tools/build-container.sh`(Arch 的 mkosi 是 27)。
 
@@ -55,7 +55,7 @@
 
 | 项 | 说明 |
 |---|---|
-| 构建产物 | `tools/verify.sh && tools/build.sh` → `dist/keel-<version>/keel.raw` |
+| 构建产物 | `tools/verify.sh && tools/build.sh` → `output/keel-<version>/`(安装镜像是压缩件 `keel.img.zst` + `install.sh`) |
 | **第一次要先 build** | `ToolsTree=default` 的 tools tree **只在 `build` 动作里**自动构建。tools tree 还没建时直接跑 `vm`,mkosi 会拒绝并提示你先 build(`docs/traps.md` 坑 #19)。所以第一次是两条命令:`mkosi --profile install --profile test build`,成功之后 `mkosi --profile install --profile test vm`。`tools/build-container.sh vm` 已经替你做了这两步 |
 | **`--force` 不是可选项** | mkosi 的 `build` 是"**没有才建**":`mkosi.output/keel.raw` 已存在时它只打印 `‣ Output path … exists already. (Use --force to rebuild.)` 然后**返回成功、什么都不建**。版本号只写在镜像内部(文件名里没有版本),所以不加 `-f` 的结果是"版本号是新的、内容是旧的",你会拿着一份旧镜像去开机/装机(`docs/traps.md` 坑 #23)。`-f` 只重建输出、不动增量缓存;连缓存一起删是 `-ff`,我们不用 |
 | QEMU + OVMF | **不用手动装**:`ToolsTree=default`(推荐,`docs/traps.md` 坑 #10)时由 mkosi 的 tools tree 提供;mkosi 27 的 Debian runtime profile 里就是 `qemu-system` + `ovmf` |
@@ -102,12 +102,12 @@ sudo mkosi --profile install --profile test --root-password=<临时密码> vm
 ### 2.1 路径 A:构建机直接烧盘(首选)
 
 ```bash
-tools/verify.sh && tools/build.sh    # 产出 dist/keel-<version>/keel.raw
+tools/verify.sh && tools/build.sh    # 产出 output/keel-<version>/
 lsblk -o NAME,SIZE,MODEL             # 先确认设备名,认错盘不可逆
 sudo tools/burn.sh /dev/nvme0n1      # 包装 mkosi burn:按目标盘修正 GPT + 写入 + 回读校验
 ```
 
-`tools/burn.sh` 只做两件事:写入 `keel.raw`;把 `data` 分区扩到目标盘剩余空间(§3.1)——
+`tools/burn.sh` 走 mkosi burn:写入 `mkosi.output/keel.raw`(烧之前会核对版本);把 `data` 分区扩到目标盘剩余空间(§3.1)——
 适合目标盘能拆下来、能接到构建机上的场景。
 
 ### 2.2 路径 B:U 盘当 live,自己装自己
@@ -115,8 +115,10 @@ sudo tools/burn.sh /dev/nvme0n1      # 包装 mkosi burn:按目标盘修正 GPT 
 目标盘拆不下来(内置 NVMe)时:
 
 ```bash
-# 1. 把同一个 keel.raw 写到 U 盘,先 lsblk 确认 /dev/sdX 是 U 盘
-sudo tools/burn.sh /dev/sdX
+# 1. 把发布目录里的安装镜像写到 U 盘(先 lsblk 确认 /dev/sdX 是 U 盘)
+sudo tools/burn.sh /dev/sdX                     # 构建机上:核对版本后走 mkosi burn
+# 或者(不需要 mkosi,宿主只要有 zstd):
+#   cd output/keel-<版本> && sudo ./install.sh /dev/sdX
 
 # 2. UEFI 启动 U 盘 → 进 live 环境(keel 本身:文本控制台 + SSH,没有图形界面)
 
@@ -255,7 +257,7 @@ ip a          # 确认网络,再看 sshd 能不能连
    备用槽是空的,所以第一次切换必须走一次真实的更新流程 —— 用本地目录当更新源即可:
 
 ```bash
-# 在目标机器上:把发布目录里除了 keel.raw/install.md/update.md 之外的文件
+# 在目标机器上:把发布目录里除了 install.sh/keel.img.zst*/install.md/update.md 之外的文件
 # 放进一个本地目录(例如从 U 盘拷进 /data/ota/import),然后:
 sudo mkdir -p /data/ota/import
 # v1.2 起 manifest.sig 是**必须**的(缺了 fetch 会拒绝),别漏拷
@@ -297,7 +299,7 @@ os-status                     # 起来后:当前槽变成 b,last_result=success
 更新源不需要绕 QEMU 的 SLIRP)。仓库里带了脚本,把它变成可重复的几条命令:
 
 ```bash
-tools/build.sh                  # 产出 dist/keel-<版本>/
+tools/build.sh                  # 产出 output/keel-<版本>/
 tools/libvirt-test.sh prepare   # 造磁盘:安装镜像的 qcow2 overlay + 40 GiB 目标盘 + 域 XML
 tools/libvirt-test.sh start     # 启动(串口日志 → mkosi.output/libvirt/console.log,图形控制台也留着)
 tools/libvirt-test.sh console   # 串口控制台(virsh console;退出按 Ctrl+])

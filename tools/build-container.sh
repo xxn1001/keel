@@ -237,7 +237,7 @@ log "引擎:$ENGINE   镜像:$IMAGE   模式:$MODE${EXTRA_PROFILES:+   额外 pr
 # (rootless podman 实测有完整的 subuid/subgid 映射)。原生路径(`tools/build.sh`)反过来只支持 root
 # —— 那条路没有映射,非 0 的 uid/gid 会被压成 0(坑 #66)。
 [ "$(id -u)" = 0 ] || log "提示:没在用 root 跑 —— 容器里仍然以 root 构建,通常没问题;报权限错误再加 sudo"
-log "产物会落在宿主机的 mkosi.output/ 与 dist/(属主:rootful 引擎是 root,rootless 是你自己)"
+log "产物会落在宿主机的 mkosi.output/ 与 output/(属主:rootful 引擎是 root,rootless 是你自己)"
 
 exec "$ENGINE" "${ARGS[@]}" "$IMAGE" \
     bash -lc "$PROVISION"'

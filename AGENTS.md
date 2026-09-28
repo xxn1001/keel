@@ -196,12 +196,12 @@ cat /etc/os-release        # 看 ID / ID_LIKE —— 判的是**构建宿主**,�
    **注意 `tools/verify.sh` 会写 15 GiB 的逻辑镜像**:本机 `/tmp` 是 **tmpfs**,同时跑两份 verify
    (或边构建边 verify)会把内存/IO 拖死 —— 构建期的 verify 只跑一次,别手动叠一份。
 2. **产物要勤清**:一次构建会产出 `mkosi.output/`(逻辑几十 GiB,稀疏文件实占小得多)和
-   `dist/keel-<版本>/`(v1.1 起约 15 GiB **逻辑**,其中 14 GiB 是安装镜像 `keel.raw`;
-   真正的更新载荷只有 **~401 MiB/槽**)。规矩是:**只留一份 `dist/`**,复制完 dist 后
+   `output/keel-<版本>/`(v1.2 2.10 起安装镜像是 `keel.img.zst`,整份约 **1.6 GiB 实占**;
+   真正的更新载荷只有 **~1.2 GiB/份**)。规矩是:**只留一份 `output/`**,组装完 output 后
    `rm -f mkosi.output/keel-slot-*`(保留 `keel.raw` 给 `mkosi vm` 用),`mkosi.cache/`、
    `mkosi.pkgcache/`、`mkosi.tools/` 不要删(它们省时间)。
 3. **演练前先腾地方**:v1.1 起载荷是 **erofs**、一份只要 **1.1 GiB**(v1 是 13 GiB),要求已经宽很多;
-   但演练仍会让 guest 真的写盘 ⇒ 先清旧 `dist/` 与旧 libvirt 镜像(`mkosi.output/libvirt/`)再跑。
+   但演练仍会让 guest 真的写盘 ⇒ 先清旧 `output/` 与旧 libvirt 镜像(`mkosi.output/libvirt/`)再跑。
 
 **原生构建只支持 root(2026-09-27 起,坑 #66)** ——
 非 root 跑 `tools/build.sh` 时 mkosi 没有 subgid 映射,镜像里**所有非 0 的 uid/gid 都会被压成 0**:
@@ -231,7 +231,7 @@ keel 有两条构建路径,它们是**同一个东西的两个入口**,不是两
 
 | 能力 | 原生(`tools/build.sh`) | 容器适配器(`tools/build-container.sh`) |
 |---|---|---|
-| 构建 install + A/B 载荷 → `dist/` | ✓(默认) | ✓(`build`,默认;内部就是调用 `build.sh`) |
+| 构建 install + A/B 载荷 → `output/` | ✓(默认) | ✓(`build`,默认;内部就是调用 `build.sh`) |
 | 初始密码 `-p/--password` | ✓ | ✓(经 `KEEL_ROOT_PASSWORD` 送进容器) |
 | 变体/额外 profile `--profile <名字>` | ✓(可重复;也认 `KEEL_EXTRA_PROFILES`) | ✓(合并后经 `KEEL_EXTRA_PROFILES` 透传) |
 | `-- <mkosi 额外参数>` | ✓(build 与 vm **两次调用都带**,坑 #30) | ✓(同上) |
@@ -253,7 +253,7 @@ keel 有两条构建路径,它们是**同一个东西的两个入口**,不是两
 ### 多 agent 协作:什么时候用,什么时候**不要**用
 
 这份工作有**独占资源**:一台构建机(4 核 / 8 GB / 盘 100 GB)、一次只能跑一份构建或一台 VM、
-端口与 `dist/` 只有一份。所以默认**串行**;能用多 agent 的地方是"只读、可独立验证"的活。
+端口与 `output/` 只有一份。所以默认**串行**;能用多 agent 的地方是"只读、可独立验证"的活。
 
 DSH 原生就带这些能力(`standard` preset 里已经 compose 好:`tool-subagent` /
 `tool-subagent-fork` / `tool-subagent-control` / `tool-workflow` / `tool-ralph` /
@@ -304,7 +304,7 @@ tools/verify.sh
 
 # ── 产物构建:先判宿主(cat /etc/os-release),再选一条路;两条路的选项完全一致 ──
 # 宿主是 Debian/Ubuntu/Fedora/Arch/CachyOS 等 mkosi 支持的发行版 → 原生路径
-sudo tools/build.sh                          # 一次产出:安装镜像 + A/B 载荷 + manifest → dist/
+sudo tools/build.sh                          # 一次产出:安装镜像 + A/B 载荷 + manifest → output/
 sudo tools/build.sh -p <密码>                # 给 admin 设初始密码(root 始终锁定)
 sudo tools/build.sh --profile desktop        # 叠加变体 profile(可重复)
 sudo tools/build.sh --vm                     # 构建完直接在 QEMU 里起一遍
@@ -526,6 +526,18 @@ sudo tools/burn.sh /dev/nvme0n1
       `sbverify --list` 两个 UKI 都有 `/CN=mkosi of root` 签名;7 个 pcrlock 服务在 vTPM 无固件
       event log 时仍失败(预期),`keel-check` 只在**虚拟机**里把"失败全是 pcrlock*"降级为警告
       (真机仍算失败)。真机首装要先登记证书或临时关 SB,步骤见 `docs/install.md` §2.6。
+- [x] **v1.2 ④:发布包收紧(2026-09-28)** —— 发布目录改成 `output/keel-<版本>/`:安装镜像压成
+      `keel.img.zst`(实测 15,033,451,008 B → 434,103,608 B,约 414 MiB)+ `.size`/`.sha256`,
+      **不再放 14 GiB 的 `keel.raw`**;自带 `install.sh`(宿主只要 zstd;`--to` 写镜像文件、
+      整块盘写盘,拒绝非磁盘/已挂载/当前系统盘/容量不足);`burn.sh` 烧前真读安装镜像 UKI 的
+      `.osrel` 里的 `IMAGE_VERSION` 与 `output/` 最新发布比对,不一致拒烧(`--force` 才放行;
+      `--check-only` 给冒烟用);`libvirt-test.sh` 新增 `image-path` 作为"选哪份安装镜像"的单一
+      事实来源,`stress-libvirt.sh up` 改用它。
+      **实测**:`tools/verify.sh` **272 通过 / 0 失败**(root;+10 条断言,含真实 zstd 压/解与
+      burn 版本一致/不一致/--force 三条路径);真实发布包的 `install.sh --to` 解压结果与构建产物
+      **sha256 逐字节一致**;`tools/burn.sh --check-only` 读出 `IMAGE_VERSION=2026.09.28.1534` 并放行;
+      `sudo tools/stress-libvirt.sh up` 全绿(装机 → 只挂目标盘首启 → 根 erofs、槽 a、SSH 可达),
+      随后 `down` 收掉域。
 - [ ] `server` profile(目标平台:虚拟化宿主,GPU 直通)
 - [ ] `desktop` profile(可选:笔记本兼任时用,不是主线)
 

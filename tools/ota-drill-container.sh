@@ -11,7 +11,7 @@
 #
 # 它负责:
 #   1. 静态校验
-#   2. tools/build.sh → 新版本载荷 dist/keel-<时间戳>/
+#   2. tools/build.sh → 新版本载荷 output/keel-<时间戳>/
 #   3. 用**显式更旧的版本号**构建引导镜像(否则 os-update check 会说"已经是最新")
 #   4. 把安装镜像放大到 $KEEL_DRILL_IMAGE_SIZE(默认 24G,见下面 step 4 的说明;
 #      live 镜像自己的 /data 只有 1 GiB,不够放载荷)
@@ -70,8 +70,8 @@ step "2/7 构建新版本载荷(tools/build.sh)"
 # 状态机就断了(第一次演练就栽在这里:新槽是生产载荷,里面没有 keel-ota-drill,
 # 于是 p1/p2 永远不会跑,VM 就停在 login 提示符上)。
 env KEEL_EXTRA_PROFILES=test tools/build.sh
-DRILL_PAYLOAD=$(ls -1d dist/keel-* 2>/dev/null | sort -V | tail -n1) || DRILL_PAYLOAD=""
-[ -n "$DRILL_PAYLOAD" ] || { echo "错误:dist/ 下没有载荷目录" >&2; exit 1; }
+DRILL_PAYLOAD=$(ls -1d output/keel-* 2>/dev/null | sort -V | tail -n1) || DRILL_PAYLOAD=""
+[ -n "$DRILL_PAYLOAD" ] || { echo "错误:output/ 下没有载荷目录" >&2; exit 1; }
 echo "   载荷目录:$DRILL_PAYLOAD(版本 $(sed -n 's/^version=//p' "$DRILL_PAYLOAD/manifest" | head -n1))"
 
 step "3/7 构建引导镜像(版本 $DRILL_BOOT_VERSION,必须旧于载荷)"

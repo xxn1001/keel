@@ -181,7 +181,7 @@ manifest 里的 `sha256_<载荷>=` 覆盖四个载荷,签名又覆盖 manifest �
 **签 manifest 就传递地覆盖了全部载荷**,不存在第二套校验。
 
 **拒降级(防重放)**:签名只证明"这份 manifest 是我们签的",**不证明它比本机新** —— 拿一份
-历史公开发布的 `dist/keel-<旧版本>/` 当更新源就能重放,全程不需要私钥。所以 `fetch` 还会
+历史公开发布的 `output/keel-<旧版本>/` 当更新源就能重放,全程不需要私钥。所以 `fetch` 还会
 **拒绝比当前版本旧的载荷**(同版本允许,用于修复一次坏掉的下载);要回退旧版本请用
 `sudo os-update rollback`(槽切换),不要从源上装旧载荷。
 
@@ -225,8 +225,8 @@ v1.1 机器里没有公钥、`fetch` 是 fail-open 的 ⇒ **第一次**从 v1.1
 |---|---|---|
 | 1 | `tools/verify.sh` | 静态校验必须全绿(§12) |
 | 2 | 有 `/data` schema 变更? | 先在 manifest 里写声明式迁移步骤、bump `schema-version`,并在本文档 §4 的表里加一行 —— **这步不能跳过** |
-| 3 | `tools/build.sh` | 一次跑 `install` / `slot-a` / `slot-b` 三个 profile,产出 `dist/keel-<version>/`(§6) |
-| 4 | 检查产物目录 | `manifest`(版本、`key_id`、构建时间、Debian 快照、内核版本、槽位尺寸、schema 版本、迁移步骤、各产物 sha256)、**`manifest.sig`(v1.2 起必须)**、`keel.raw`、`slot-a/`、`slot-b/`、`install.md` |
+| 3 | `tools/build.sh` | 一次跑 `install` / `slot-a` / `slot-b` 三个 profile,产出 `output/keel-<version>/`(§6) |
+| 4 | 检查产物目录 | `manifest`(版本、`key_id`、构建时间、Debian 快照、内核版本、槽位尺寸、schema 版本、迁移步骤、各产物 sha256)、**`manifest.sig`(v1.2 起必须)**、`keel.img.zst`(+`.size`/`.sha256`)、`install.sh`、`slot-a/`、`slot-b/`、`install.md` |
 | 5 | 上传整个目录(含 `manifest.sig`) | 放到 `/data/keel/config` 指向的更新源。版本号来自可执行的 `mkosi.version`(打印时间戳);刻意**不用** `-B` 自动 bump —— 那会改写一个被 git 跟踪的文件 ⇒ 工作区变脏、`git pull` 冲突 |
 | 6 | 在真机演练 | 至少一次 `check → fetch → stage --reboot`;**有 schema 变更时必须加一次回滚演练**(§4) |
 | 7 | 回写文档 | 踩到的坑进 `AGENTS.md`;新决策进 `decisions.md`;命令或单元的行为变化同步到本文档 |
@@ -236,9 +236,9 @@ v1.1 机器里没有公钥、`fetch` 是 fail-open 的 ⇒ **第一次**从 v1.1
 ### 8.1 更新源在哪、长什么样
 
 `UPDATE_SOURCE` 在 `/data/keel/config`(§4.2)里,三种形式:`https://…`、`file://…`、
-或一个挂载好的目录。源目录里就是 `dist/keel-<版本>/` 的内容:`manifest` + `manifest.sig` + 四个产物
+或一个挂载好的目录。源目录里就是 `output/keel-<版本>/` 里的**更新子集**:`manifest` + `manifest.sig` + 四个产物
 (`slot-a.root.raw` / `slot-a.uki.efi` / `slot-b.root.raw` / `slot-b.uki.efi`),
-**不要**放 `keel.raw`。
+**不要**放 `install.sh` / `keel.img.zst*` / 文档(那些是装机用的,更新器不认)。
 
 源目录里除了 `manifest` 还必须有 `manifest.sig`(v1.2 起强制;见 §6.1)。
 
@@ -286,7 +286,7 @@ sudo tools/build-container.sh -p <临时密码> drill
 一条命令做完这件事(细节见 `tools/build-container.sh` 的 `drill` 模式与
 `mkosi.extra-test/usr/lib/keel/ota-drill`):
 
-1. `tools/build.sh` 构建**新版本载荷** → `dist/keel-<版本>/`;
+1. `tools/build.sh` 构建**新版本载荷** → `output/keel-<版本>/`;
 2. 用显式**较旧**的版本号(`2000.01.01.0001`)构建引导镜像 —— 这样
    `os-update check` 才会认为"有新版本";镜像里的 test profile 带一个**自驱动状态机**
    (`keel-ota-drill.service`,状态在 `/data/keel/ota-drill.state`,跨重启);

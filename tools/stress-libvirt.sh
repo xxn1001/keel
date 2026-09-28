@@ -16,7 +16,7 @@
 #
 # 用法(在仓库根目录,需要 root 或 libvirt 组):
 #   tools/stress-libvirt.sh up          # 造盘 → live 装到 vdb → 只挂目标盘重启 → 等到能 SSH
-#   tools/stress-libvirt.sh serve &     # 宿主上把 dist/keel-<最新> 用 HTTP 提供(guest 走 192.168.122.1)
+#   tools/stress-libvirt.sh serve &     # 宿主上把 output/keel-<最新> 用 HTTP 提供(guest 走 192.168.122.1)
 #   tools/stress-libvirt.sh a [轮数]     # 阶段 A(默认 25 轮)
 #   tools/stress-libvirt.sh b [次数]     # 阶段 B(默认 6 次)
 #   tools/stress-libvirt.sh c           # 阶段 C
@@ -27,7 +27,7 @@
 #
 # 约定:
 #   * 镜像必须是用 `-p <密码>` 构建的(默认 keel-tmp,可用 KEEL_STRESS_PW 改)——
-#     **演练(drill)留下的 dist 不带密码**,拿它跑 `up` 会在 SSH 那一步失败(脚本会点明这一点);
+#     **演练(drill)留下的产物不带密码**,拿它跑 `up` 会在 SSH 那一步失败(脚本会点明这一点);
 #   * **一次只跑一个阶段**(这台机器只有 4 核,阶段之间是串行的);
 #   * 每个阶段自己断言、自己计数,末尾打印 PASS/FAIL;**失败不自动停**,好把一轮的全貌看完。
 set -uo pipefail
@@ -144,15 +144,17 @@ cmd_up() {
     tools/libvirt-test.sh prepare
     sudo chmod 0644 "$WORK"/*.qcow2 2>/dev/null || true
     sudo setfacl -R -m u:libvirt-qemu:rx "$WORK" 2>/dev/null || true
-    local img; img=$(ls -1d dist/keel-* 2>/dev/null | sort -V | tail -1)
-    [ -n "$img" ] || die "dist/ 下没有产物:先 sudo tools/build.sh -p $PW"
-    sudo setfacl -m u:libvirt-qemu:r "$img/keel.raw" 2>/dev/null || true
+    # 用 libvirt-test.sh 的单一事实来源选镜像(v1.2 2.10:发布目录 output/ 里只有
+    # 压缩件,实际喂虚拟机的是 mkosi.output/keel.raw —— 那个才是最近一次构建)。
+    local img; img=$(tools/libvirt-test.sh image-path) || img=""
+    [ -n "$img" ] || die "找不到安装镜像:先 sudo tools/build.sh -p $PW"
+    sudo setfacl -m u:libvirt-qemu:r "$img" 2>/dev/null || true
 
     step "up:live 启动"
     tools/libvirt-test.sh start
     if ! wait_ssh 240; then
         # 区分"没起来"和"起来了但登不上" —— 后者几乎总是镜像没带初始密码:
-        # 演练(drill)自己构建的 dist **不带密码**(它不需要 SSH),用它跑 up 就会卡在这里。
+        # 演练(drill)自己构建的产物 **不带密码**(它不需要 SSH),用它跑 up 就会卡在这里。
         local ip=""; ip=$(guest_ip)
         die "live 系统 240 秒内没能 SSH 登录(IP=${ip:-无};看 $WORK/console.log)。\n        若 IP 有、控制台也正常 ⇒ 多半是这个 dist 不是用 \`-p <密码>\` 构建的\n        (演练的 dist 就不带密码,而本脚本默认用密码 $PW 登录)⇒ 用 sudo tools/build.sh -p $PW 重新构建后再跑 up。"
     fi

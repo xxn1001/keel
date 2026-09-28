@@ -40,8 +40,8 @@ __pycache__/
 .vscode/
 *.swp
 
-# tools/build.sh 的组装产物
-dist/
+# tools/build.sh 的组装产物(v1.2 2.10 起叫 output/,里面是压缩后的发布包)
+output/
 
 # 个人的首启 SSH 公钥(不要提交)
 authorized_keys

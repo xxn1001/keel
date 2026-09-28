@@ -37,7 +37,7 @@ keel 是**给服务器做的**:一台长期在线、尽量不重装、升级要�
 
 ```bash
 tools/verify.sh                 # 静态校验:mkosi summary / repart dry-run / systemd-analyze / shellcheck
-tools/build.sh                  # 产出安装镜像 + A/B 更新载荷 + manifest 到 dist/
+tools/build.sh                  # 产出安装镜像 + A/B 更新载荷 + manifest 到 output/
 sudo tools/burn.sh /dev/nvme0n1 # 写入目标盘
 ```
 

@@ -63,7 +63,7 @@
 | 1 | 换槽启动 | 开机时按 `space` 呼出 systemd-boot 菜单,选另一个槽的条目(`keel-a.efi` / `keel-b.efi`) |
 | 2 | 追加内核参数 | 菜单里选中条目按 `e` 编辑 cmdline:**仅在未启用 Secure Boot 时有效**(v1 没启用;这条路径本身也待验证,§13.1 #5)。常用 `systemd.unit=rescue.target`(单人维护模式)、`rd.break`(在 initrd 里停下,查 `/data` 挂载问题)、`systemd.log_level=debug`。改动只影响这一次启动 |
 | 3 | 读条目名 | 菜单里像 `keel-b+2-1.efi` 这样的名字 = 新槽已尝试并失败过;计数归零后引导器会跳过它(§5.3 ⑩) |
-| 4 | U 盘 live 环境 | 把同一个 `keel.raw` 写到 U 盘、UEFI 启动:它就是一套完整 keel,可以直接 `os-rescue`、翻日志、重装系统(§7.1 B) |
+| 4 | U 盘 live 环境 | 把发布目录里的安装镜像写到 U 盘(`sudo ./install.sh /dev/sdX`,或构建机上 `tools/burn.sh /dev/sdX`)、UEFI 启动:它就是一套完整 keel,可以直接 `os-rescue`、翻日志、重装系统(§7.1 B) |
 | 5 | 连菜单都没出来 | 主板固件可能清了 EFI 变量(R4):系统会走 fallback 路径 `EFI/BOOT/BOOTX64.EFI`;进系统后 `bootctl install` 重建 NVRAM 启动项(`keel-firstboot` 也是这么做的,§7.2 ③) |
 
 在菜单里选另一个槽能起来 ⇒ 这就是自动回滚已经发生过(或即将发生),按 §5 收集证据。
