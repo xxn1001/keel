@@ -1,0 +1,79 @@
+# Buildroot output and downloaded sources
+/out/
+/output/
+/dl/
+/vendor/buildroot/
+/buildroot/
+
+# Local build trees
+/build/
+/cmake-build-*/
+/meson-*/
+/target/
+**/target/
+
+# Generated images and firmware
+*.efi
+*.erofs
+*.img
+*.iso
+*.qcow2
+*.raw
+*.vmdk
+*.vdi
+*.fd
+OVMF_VARS*.fd
+
+# C artifacts
+*.o
+*.a
+*.so
+*.so.*
+*.d
+*.gcda
+*.gcno
+*.gcov
+*.profraw
+*.profdata
+compile_commands.json
+*.dSYM/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+
+# Test output
+/tests/**/artifacts/
+/tests/**/output/
+/test-results/
+*.log
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.cache/
+.clangd/
+
+# Local secrets; keep an example file if one is added later
+.env
+.env.*
+!.env.example
+*.secret
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+*.rej

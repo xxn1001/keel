@@ -1,0 +1,668 @@
+# keel2 设计大纲 v0.1
+
+> 状态：讨论稿，未动工。日期：2026-11-10。
+> 原则：先定不可逆的；每个里程碑有 gate；不通过 gate 不写下一层。
+> 本文只写“已经想清楚的”和“必须拍板的”；细节留到对应里程碑前再展开。
+
+---
+
+## 0. 修订记录
+
+- **v0.1（2026-11-10）** 根据第二轮讨论：
+  - Buildroot 定为构建系统。
+  - swap 改为 **zram**，不建 swap LV。
+  - 更新器改为**自制编译型程序**（C 静态 musl 优先，Rust/C++ 可选），**不用 shell**。
+  - 成功判据定为 `multi-user.target` + 关键挂载检查，**不含** `network-online.target`。
+  - `/root` 改 `/etc/passwd` 到 `/home/root`，不建符号链接。
+  - 救援：ESP rescue UKI + USB 双份。
+  - LVM 用 **thick**，不用 thin；留 10% VG 空闲。
+  - fstab 不重复写 initrd 已挂的卷；只做文档/非关键项。
+  - 新增“验证环境与状态”：本对话在 Android proot（aarch64/f2fs）中，**无法验证启动、分区、LVM、erofs、UKI**；相关条目全部标“待真机/QEMU”。
+- **v0（2026-11-10）** 根据讨论修正：
+  - 分区表是 **4 个物理分区**：ESP、root-a、root-b、pool。**root-a/b 不在 LVM 里**。
+  - pool 内部才用 LVM，承载 `/etc`、`/var`、`/home`、swap。
+  - LVM 元数据备份放 **ESP/USB**，不放 `/etc`。
+  - 目标先按 **headless 服务器 + 有线网络**，不考虑笔记本、GPU、WiFi、桌面。
+  - **自动回滚纳入设计**（P2）。
+  - podman 后置；v1 不做用户态发行版命名空间。
+
+---
+
+## 1. 目标与非目标
+
+### 1.1 目标
+
+- 一个自己能完全解释、能重建、能修的最小 Linux 系统。
+- 只读 **erofs** 基底 + A/B 两个**物理根分区**。
+- 可写状态集中在 pool 的 LVM 卷：`/etc`、`/var`、`/home`。
+- systemd 是唯一 init；initrd 最终也用 systemd（P0 允许先用脚本跑通）。
+- **自动回滚**：新槽起不来时回到旧槽；三类失败（panic / 冻住 / 停在 emergency）都有兜底。
+- 先做 **headless 服务器**，有线网络，串口/SSH 管理。
+- 学习优先：每个机制都能在文档里讲清“为什么”。
+
+### 1.2 非目标（v1 明确不做）
+
+- 镜像签名、dm-verity、Secure Boot 链（固件里关 SB）。
+- btrfs、nix、mkosi。
+- 笔记本支持：WiFi、GPU、桌面、suspend/hibernate。
+- 用户态发行版命名空间（systemd `RootDirectory=` 那套）。
+- 自动更新定时器、多机管理、集群。
+- 2900 行静态校验器、`/data` 抽象、`/etc` overlay。
+- podman 细节（P4 再展开）。
+
+---
+
+## 2. 已定决策
+
+| ID | 决策 | 理由 | 影响 |
+|---|---|---|---|
+| **D1** | 4 个物理分区：ESP、root-a、root-b、pool | root A/B 与 pool 解耦；pool 坏了还能挂 root 进救援；root 是物理分区，更新器（以及未来的 sysupdate）都能直接按分区操作 | 分区表一次定死；root 扩容靠重建镜像，不靠 LVM |
+| **D2** | root-a/root-b 是 **erofs 物理分区**（2 GiB 占位） | 结构性只读；镜像小；A/B 整块替换；内核/根配对由 UKI 保证 | erofs 不能 resize；扩容 = 重建镜像；2 GiB 要留够 |
+| **D3** | pool 是 **LVM PV**，LV 承载 `/etc`、`/var`、`/home`（**swap 用 zram，不占 LV**） | 状态可伸缩；`/var` 给 podman 长；不引入 `/data` 抽象 | initrd 必须激活 LVM；LVM 元数据是单点 |
+| **D4** | `/etc` 是独立 ext4 LV，install 时从镜像 `/etc` **播种一次**；不用 overlay | 简单；没有 upper/work；`/etc` 文件少 | 新镜像的 `/etc` 默认值不自动生效，更新后手工 diff；`/etc` 必须在 initrd 挂 |
+| **D5** | `/etc`、`/var`、`/home` 都在 **initrd 挂**，`switch_root` 前完成 | PID1 第一次读 `/etc` 就是最终视图；journald 早期写 `/var` | initrd 要带 LVM/ext4/erofs/vfat；挂载失败要进救援，不能退回 ro root 的 `/etc` |
+| **D6** | initrd：P0 用最小脚本，**P1 必须翻译成 systemd units** | 先把存储链调通，再把 unit 依赖调通；systemd 是最终形态 | P0 的脚本是临时的，不允许长成第二个 `lib.sh` |
+| **D7** | kernel + initrd + cmdline + 微码打包成 **UKI**，放 ESP；不设 `boot_a/boot_b` 分区 | systemd-boot 只读 FAT；UKI 保证 kernel 与 root 配对；少一类“旧内核配新根”的坑 | ESP 1 GiB；更新要写 UKI；Secure Boot 关闭 |
+| **D8** | **自动回滚必须设计**（P2） | headless 服务器起不来没人按键 | 成功判据见 D16；三类失败都要演练 |
+| **D9** | 不做签名/verity/Secure Boot | 自己编译、马上安装、无对手 | 固件里关 SB；物理接触可改系统；救援是唯一保险 |
+| **D10** | 先按 **headless 服务器、有线网络、串口** | 先收敛目标；避免 WiFi/GPU/桌面 | 内核裁掉 WiFi/GPU；`console=ttyS0`；SSH 是主入口 |
+| **D11** | podman 后置；v1 不做用户态命名空间 | 先让基底可启动、可更新、可救援 | v1 宿主很空；用户态需求等 P4 |
+| **D12** | LVM **元数据备份**放 ESP/USB | 权威元数据在 PV 的 metadata area；`/etc/lvm/backup` 只是文本备份，pool 坏了读不到 | 每次改布局 `vgcfgbackup -f /boot/lvm/...`；救援文档写 `vgcfgrestore` |
+| **D13** | 构建系统：**Buildroot LTS** | 快、简单、适合单机；比 Yocto 少一层 recipe/bbclass | 钉死 LTS 版本；UKI 用宿主机 `ukify` 后处理 |
+| **D14** | 更新器：**自制、编译型**（C 静态 musl 优先，Rust/C++ 可选），**不用 shell** | shell 难维护、错误处理弱；编译型可做严格的顺序/fsync/拒绝逻辑；C 在 Buildroot 里最轻 | 一个 `keel-update` 二进制，systemd unit 直接调用 |
+| **D15** | 尺寸默认：ESP 1 GiB；root 2 GiB ×2；etc 1 GiB；var 16 GiB；home 剩余-10% | 给 erofs 和 `/var` 留余量；VG 留 10% 空闲 | 实际按目标盘参数化；LV 可后调 |
+| **D16** | 成功判据：`multi-user.target` + 关键挂载检查；**不含** `network-online.target` | DHCP 慢/网线没插不应触发回滚 | 网络故障报警，不回滚系统 |
+| **D17** | `/root` 改 `/etc/passwd` 到 `/home/root` | 比符号链接干净；`/home` 未挂时不会悬空链接 | 在 `@home`/`vg0/home` 里预建 `root/` 0700 |
+| **D18** | 救援：**ESP rescue UKI + USB 双份** | ESP 单点；USB 是最后的入口 | 两套都要演练 |
+| **D19** | LVM 用 **thick**，不用 thin | 避免 thin pool full 导致 I/O 错误/元数据损坏 | 快照用 thick snapshot 或 tar；留 10% 空闲 |
+| **D20** | fstab **不重复写** initrd 已挂的卷 | 避免 systemd 再次挂载/fsck/remount 冲突 | fstab 只做文档或非关键项；`passno=0`；P0 实测 |
+
+> 关于 D12 的澄清：LVM 的**权威元数据不在 `/etc`**，在 PV 的 metadata area（磁盘上）。
+> `/etc/lvm/backup` 只是 `vgcfgbackup` 生成的文本副本；`/etc/lvm/archive` 是变更历史。
+> 激活时 `vgchange`/`lvs` 从 PV 读元数据，不读 backup 文件；initrd 用的是 initrd 自己的 `/etc/lvm/lvm.conf`。
+> 所以“把备份放 ESP”是可行的，也是 pool 故障时唯一能读到的位置。
+
+---
+
+## 3. 待定决策
+
+| ID | 待定项 | 现状 |
+|---|---|---|
+| **O10** | podman 细节 | P4 再定 |
+| **O11** | 实际磁盘容量对应的精确尺寸 | 默认值见 D15；installer 参数化，按盘调整 |
+
+> 其余原待定项已在 D13–D20 拍板。sysupdate 不再作为 v1 的实现选项；它只作为“GPT partition + UKI 组合更新”的参考实现（文档确认支持 `Type=partition`，但只认 GPT 分区，不认 LVM LV）。
+
+---
+
+## 4. 磁盘布局
+
+### 4.1 GPT
+
+| # | 名称 | 大小（占位） | GPT 类型 | 文件系统 | 挂载 | 说明 |
+|---|---|---|---|---|---|---|
+| 1 | `esp` | 1 GiB | EFI System (`ef00`) | vfat | `/boot` | systemd-boot + UKI + 救援 UKI |
+| 2 | `root-a` | 2 GiB | Linux x86-64 root (`8304`) | **erofs** | `/`（ro） | A 槽 |
+| 3 | `root-b` | 2 GiB | Linux x86-64 root (`8304`) | **erofs** | — | B 槽 |
+| 4 | `pool` | 剩余 | Linux LVM (`8e00`) | LVM PV | — | `vg0` |
+
+> 尺寸是占位，按目标盘调整。示例（100 GiB 盘）：
+> ESP 1 + root 2×2 + pool 95；pool 里 etc 1 + var 16 + home 约 70，留 10% 空闲。
+> swap 用 zram，不占 pool。
+
+### 4.2 pool 内的 LV
+
+| LV | 大小（占位） | 文件系统 | 挂载 | 说明 |
+|---|---|---|---|---|
+| `vg0/etc` | 1 GiB | ext4 | `/etc` | 播种一次；机器配置持久 |
+| `vg0/var` | 16 GiB | ext4 | `/var` | journald、podman 存储（P4） |
+| `vg0/home` | 剩余-10% | ext4 | `/home` | 用户数据 |
+
+**规则**：VG 至少留 10% 空闲，给快照/扩容；`/var`、`/home` 可在线 `lvextend` + `resize2fs`。
+
+**swap 用 zram**：`/dev/zram0`，由 `systemd-zram-generator`（或一个最小 unit）配置；不建 swap LV，不占 pool。
+
+### 4.3 为什么 root 不在 LVM 里
+
+- **故障隔离**：pool/LVM 坏了，root 仍然能挂起来，initrd 可以给你一个救援 shell；反过来如果 root 也在 LVM，LVM 一坏就什么都没了。
+- **更新兼容**：root 是物理分区，自制更新器可以直接按 `PARTLABEL` 找非活动槽并整块写入；LVM LV 不适合做这种“整块替换 root”的操作（也挡住了 sysupdate 的 `Type=partition`）。
+- **启动简单**：`root=PARTLABEL=root-a`，不依赖 `vgchange` 就能挂根；LVM 只影响 `/etc` 等状态卷。
+- **代价**：root 大小固定；但 erofs 实际 300–500 MiB，2 GiB 有 4–6 倍余量，够用。
+
+---
+
+## 5. 启动链
+
+```
+UEFI
+ └─ ESP: systemd-boot
+     └─ UKI keel-a.efi（kernel + initrd + cmdline + 微码）
+         cmdline 示例：
+           root=PARTLABEL=root-a ro rootfstype=erofs
+           systemd.gpt_auto=no panic=-1 panic_on_oops=1
+           console=tty0 console=ttyS0,115200
+         └─ initrd:
+              1. mount root（erofs, ro）→ /sysroot
+              2. vgchange -ay vg0
+              3. mount /etc、/var、/home（LV）→ /sysroot/...
+              4. mount ESP（vfat, rw）→ /sysroot/boot
+              5. mount /proc /sys /dev
+              6. switch_root → /sysroot/sbin/init（systemd）
+                  └─ multi-user.target + sshd + getty（串口/控制台）
+```
+
+### 5.1 失败处理
+
+| 失败点 | 行为 |
+|---|---|
+| root 挂不上 | initrd 救援 shell（root 是物理分区，先于 LVM） |
+| LVM 激活失败 | 救援 shell；不要 `switch_root`（没有 `/etc`） |
+| `/etc` 挂不上 | 救援 shell；**不能**退回 ro root 的 `/etc` 继续启动 |
+| `/var` 挂不上 | 救援（journald/podman 都会坏） |
+| `/home` 挂不上 | 救援（root 的 home 可能在这） |
+| ESP 挂不上 | 继续启动，但明确警告；更新/切槽不可用 |
+
+### 5.2 关键点
+
+- `systemd.gpt_auto=no`：不让 gpt-auto 自动挂 ESP/其他分区；ESP 由 initrd 显式挂。
+- **ESP 必须挂到 `/boot`**：否则 `bootctl`/更新写到只读的 `/boot` 上会“成功但没生效”。
+- `rootwait`：如果 root 在 USB/NVMe 枚举较慢，加上更稳。
+- **不要**单独的 `init_boot`/`boot_a/b` 分区：ESP 就是引导分区，UKI 就是 A/B 条目。
+- 微码：UKI 的 `.ucode` 段（`ukify --microcode`）或 early cpio；不存在“微码分区”。
+
+---
+
+## 6. initrd
+
+### 6.1 P0：最小脚本（只求跑通）
+
+```sh
+#!/bin/sh
+set -e
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+
+mount -t erofs -o ro /dev/disk/by-partlabel/root-a /sysroot
+
+/sbin/vgchange -ay vg0
+mount /dev/vg0/etc  /sysroot/etc
+mount /dev/vg0/var  /sysroot/var
+mount /dev/vg0/home /sysroot/home
+mount -t vfat -o rw,noatime /dev/disk/by-partlabel/esp /sysroot/boot
+
+exec switch_root /sysroot /sbin/init
+```
+
+要求：
+- `set -e`，任何一步失败就掉 shell（`/bin/sh` + `lvm`/`e2fsprogs`/`erofs` 工具）。
+- `keel.rescue=1` 时在挂载 `/etc` 之前直接掉 shell。
+- 脚本只允许存在于 P0；P1 删掉，换成 units。
+
+### 6.2 P1：systemd units
+
+| unit | 作用 | 关键排序 |
+|---|---|---|
+| `sysroot.mount` | 挂 root（erofs, ro） | `What=/dev/disk/by-partlabel/root-a` |
+| `lvm-activate.service` | `vgchange -ay vg0` | `After=dev-disk-by\x2dpartlabel-pool.device`；`Before=sysroot-etc.mount ...` |
+| `sysroot-etc.mount` | 挂 `/etc` | `After=sysroot.mount lvm-activate.service` |
+| `sysroot-var.mount` | 挂 `/var` | 同上 |
+| `sysroot-home.mount` | 挂 `/home` | 同上 |
+| `sysroot-boot.mount` | 挂 ESP 到 `/boot` | `After=sysroot.mount` |
+| `initrd.target` + `systemd-switch-root.service` | 切根 | 标准 systemd initrd 流程 |
+
+注意：
+- systemd 自带的 initrd **不一定**带 lvm2 的 activation unit，要自己装/写；`vgchange` 的路径、`lvm.conf`、`dm-mod` 都要在 initrd 里。
+- initrd 的 `/etc/lvm/lvm.conf` 是 initrd 自己的，不依赖 root 的 `/etc`。
+- P1 的验收不是“能启动”，而是“把 P0 脚本逐条翻译成 unit，顺序不变、失败行为不变”。
+
+---
+
+## 7. 构建系统
+
+### 7.1 Buildroot
+
+- **已定 Buildroot LTS**；钉死版本，不追 master。
+- 两个 defconfig：
+  - `keel_defconfig`：rootfs（systemd + lvm2 + e2fsprogs + openssh + ...）。
+  - `keel_initrd_defconfig`：initrd（busybox 或 systemd + lvm2 + e2fsprogs + fs 模块）。
+- `linux.fragment`：内核配置增量。
+- `rootfs-overlay/`：`/etc` 模板、units、networkd、sysusers、tmpfiles。
+- `post-image.sh`：
+  1. rootfs tar → `mkfs.erofs`；
+  2. initrd cpio（zstd/gzip）；
+  3. `ukify` 生成 `keel-a.efi` / `keel-b.efi`；
+  4. 生成 `keel-build` 清单；
+  5. 生成 ESP 目录（systemd-boot + UKI）。
+
+### 7.2 关键工具
+
+- `ukify`：宿主机 Python 脚本（systemd 源码），`--linux --initrd --cmdline --os-release --microcode`。
+- `mkfs.erofs`：宿主机 `erofs-utils`。
+- `genimage`：生成 ESP + 空分区（或 QEMU 整盘镜像）；**LVM 在安装时现建**，不烘进镜像。
+- `systemd-bootx64.efi`、`bootctl`、`systemd-bless-boot`：确认 Buildroot 的 systemd 是否带 bootloader；不带就手工补。
+
+### 7.3 产物清单
+
+```
+output/
+├── keel-a.efi
+├── keel-b.efi
+├── root-a.erofs
+├── root-b.erofs
+├── initrd.cpio.zst
+├── keel-build            # 构建清单（版本、defconfig、kernel config、包列表、时间）
+└── esp/                  # systemd-boot + UKI + loader.conf
+```
+
+> 不做签名；`keel-build` 只是 provenance，不是校验机制。
+
+---
+
+## 8. 内核配置
+
+### 8.1 rootfs 需要
+
+- 存储：`CONFIG_BLK_DEV_DM`、`CONFIG_DM_LINEAR`、`CONFIG_EROFS_FS`、`CONFIG_EXT4_FS`、`CONFIG_VFAT_FS`、`CONFIG_NVME_CORE`、`CONFIG_BLK_DEV_NVME`、`CONFIG_ATA`/`AHCI`、`CONFIG_VIRTIO_BLK`、`CONFIG_SD_MOD`。
+- 输入/救援：`CONFIG_USB_XHCI_HCD`、`CONFIG_USB_HID`、`CONFIG_USB_STORAGE`。
+- 串口/控制台：`CONFIG_SERIAL_8250`、`CONFIG_SERIAL_8250_CONSOLE`。
+- EFI/UKI：`CONFIG_EFI=y`、`CONFIG_EFI_STUB=y`。
+- 看门狗：`CONFIG_ITCO_WDT`、`CONFIG_WDAT_WDT`、`CONFIG_SOFT_WATCHDOG`。
+- zram：`CONFIG_ZRAM`、`CONFIG_ZSMALLOC`、`CONFIG_ZRAM_DEF_COMP_ZSTD`（按内核版本命名）、`CONFIG_CRYPTO_ZSTD`。
+- 网络：`CONFIG_E1000E`、`CONFIG_IGB`、`CONFIG_IXGBE`、`CONFIG_R8169`、`CONFIG_VIRTIO_NET`（按目标网卡裁剪）。
+- 后续 podman：`CONFIG_OVERLAY_FS`、`CONFIG_FUSE_FS`、`CONFIG_NAMESPACES`、`CONFIG_USER_NS`、`CONFIG_CGROUPS`、`CONFIG_SECCOMP`、`CONFIG_VETH`、`CONFIG_BRIDGE`、`CONFIG_NF_TABLES`、`CONFIG_BPF_SYSCALL`。
+- **不做**：WiFi (`cfg80211`/`mac80211`/iwlwifi)、GPU 厂商驱动、声音、蓝牙、桌面。
+
+### 8.2 initrd 需要
+
+`erofs`、`ext4`、`vfat`、`dm-mod`、`nvme`/`ahci`/`virtio_blk`、`usbhid`、`usb-storage`（救援）、`serial`。
+LVM 是用户态 + dm，不需要专门的内核 LVM 选项，但 `dm-mod` 必须在。
+
+### 8.3 固件与微码
+
+- 微码：Intel/AMD 都放；UKI `.ucode` 或 early cpio。
+- 固件：只放目标有线网卡需要的；不要全量 `linux-firmware`。
+- 没有 GPU/WiFi 固件（v1）。
+
+---
+
+## 9. 根文件系统与 `/etc`
+
+### 9.1 rootfs 内容
+
+- systemd、udev、journald、networkd、resolved、timesyncd。
+- openssh、sudo（或 doas）、kbd、ca-certificates。
+- lvm2、e2fsprogs、erofs-utils（可选，救援/检查用）。
+- zram：`systemd-zram-generator`（如果 Buildroot 有）或一个最小 unit；内核 `CONFIG_ZRAM`。
+- `bash`? 可以只留 `sh`（busybox/dash）；管理脚本用 POSIX sh。
+- 不要包管理器；不要编译器；不要桌面。
+
+### 9.2 `/etc` 播种（install 时一次）
+
+- `cp -a` 镜像 `/etc` 到 `vg0/etc`。
+- 清空 `machine-id`；删 ssh host key；设 `hostname`。
+- networkd `.network`（有线 DHCP 或静态）。
+- `passwd/group/shadow`、`sudoers`、`subuid/subgid`（podman 后置但可先留）。
+- `journald.conf.d`（`Storage=persistent`、`SystemMaxUse=`）。
+- `/usr/share/factory/etc` 保留一份出厂默认，更新后 `diff -r` 手工合并。
+
+### 9.3 目录
+
+```
+/            erofs ro（root-a/b）
+/etc         ext4 LV
+/var         ext4 LV
+/home        ext4 LV
+/boot        ESP vfat
+/tmp         tmpfs
+/run         tmpfs
+/root        -> /home/root（改 /etc/passwd 的 home；不建符号链接）
+```
+
+- 不做 `/data`、不做 `/var` 符号链接、不做 `/etc` overlay。
+- `/usr` 合并（`/bin`、`/sbin`、`/lib` -> `/usr`），systemd 期望。
+
+---
+
+## 10. 更新与自动回滚
+
+### 10.1 更新流程
+
+```
+1. 构建新的 root.erofs + keel-b.efi
+2. 写入非活动 root 分区（root-b）
+3. 写 UKI 到 ESP：EFI/Linux/keel-b+3.efi
+4. bootctl set-oneshot keel-b
+5. 重启
+6. 成功：systemd-bless-boot 把 keel-b+3.efi 改名为 keel-b.efi
+        bootctl set-default keel-b
+   失败：one-shot 已消费，下次启动回默认（旧槽）
+```
+
+- 写 root：由 `keel-update` 打开 `/dev/disk/by-partlabel/root-<目标>`，顺序写 + `fsync`；不是 shell 的 `dd`。
+- 写 ESP 前先查剩余空间；清掉 `.failed`/旧候选；候选文件名 `+3`，`bootctl` 的 entry ID 不带 `+3`。
+- **顺序**：先 root、后 UKI、最后 `bootctl set-oneshot`。入口点最后写，避免“新 UKI 指向没写完的 root”。
+- v1 用自制 `keel-update`；`systemd-sysupdate` 仅作参考，不进入实现。
+
+### 10.1.1 更新器形态（已定）
+
+- **自制、编译型**：C（静态 musl）优先，Buildroot 里最轻；Rust/C++ 可选（Rust 更安全但工具链重）；**不用 shell**。
+- 一个二进制 `keel-update`，子命令 `stage` / `switch` / `status`；systemd unit 直接 `ExecStart=/usr/bin/keel-update stage <payload-dir>`。
+- `stage` 的逻辑：
+  1. 读 `/proc/cmdline` 的 `root=PARTLABEL=root-a|root-b`，确定当前槽和目标槽；
+  2. 拒绝：目标分区已挂载、payload 不存在、payload 大于分区、ESP 空间不足；
+  3. 打开目标分区（`O_WRONLY|O_SYNC`），顺序写 erofs 镜像，`fsync`；
+  4. 打开 ESP 上的 `EFI/Linux/keel-<目标>+3.efi`，写 UKI，`fsync`；
+  5. 调 `bootctl set-oneshot keel-<目标>`（entry ID 不带 `+3`）；
+  6. 返回 0；任一步失败返回非 0，且不留下半个 UKI。
+- `switch`：`bootctl set-default keel-<槽>`；`status`：打印当前槽、ESP 条目、分区大小。
+- 不解析签名/清单；不做网络下载；输入是一个目录（或 USB 挂载点）。
+- `systemd-sysupdate` 的文档确认它支持 GPT partition + UKI 的组合，但会改写分区 label（`_empty`/版本），与我们的 `root-a/root-b` 固定标签冲突；所以不用它。
+
+### 10.2 失败矩阵
+
+| 失败 | 机制 | 结果 |
+|---|---|---|
+| 内核 panic | `panic=-1`（+ `panic_on_oops=1`） | 立即重启；one-shot 已消费；回旧槽 |
+| PID1 冻住 | 硬件看门狗（`RuntimeWatchdogSec=60`，无硬件则 softdog） | 复位；回旧槽 |
+| 停在 emergency / 等人 | `keel-boot-failed-reboot.timer`（没到 boot-complete 就 60 s 重启） | 复位；回旧槽 |
+| 新 root 损坏/挂不上 | 内核/initrd 失败 → panic/重启 | 回旧槽 |
+| 新槽能启动但关键服务失败 | `boot-complete.target` 未到达 → 不 bless | 下次回旧槽（需定义“关键服务”） |
+
+### 10.3 成功判据
+
+- 已定：`boot-complete.target` 排在 `multi-user.target` 之后，并加一个 `keel-boot-ok.service`（编译型小工具或 systemd 条件）检查：
+  - root 是 ro erofs；
+  - `/etc`、`/var`、`/home` 都是挂载点；
+  - `sshd` 已启动（可选）。
+- **不要**把 `network-online.target` 放进成功判据：DHCP 慢/网线没插会误触发回滚。网络问题应该报警，不应该回滚系统。
+
+### 10.4 手动回滚
+
+```sh
+bootctl set-default keel-a.efi
+reboot
+```
+
+### 10.5 `/etc` 与 schema
+
+- `/etc` 不随 A/B 更新；更新后 `diff -r /usr/share/factory/etc /etc`，手工合并。
+- v1 不做 `/data` schema 迁移；如果未来改布局，必须先写迁移方案，否则回滚后的旧系统可能读不懂新状态。
+- 不做签名；更新包损坏靠 `dd` 回读/sha256（可选），不靠密码学。
+
+---
+
+## 11. 首次安装
+
+从 U 盘 live 或宿主机 loop：
+
+1. `sgdisk --zap-all`；建 p1 ESP 1 GiB、p2/p3 root 2 GiB、p4 pool 剩余；设置 LABEL（`esp`、`root-a`、`root-b`、`pool`）和类型。
+2. `mkfs.vfat -F32` ESP；`mkfs.erofs` root-a/root-b；`pvcreate` pool；`vgcreate vg0`；`lvcreate` etc/var/home；`mkfs.ext4`。
+3. 挂 root-a、etc、var、home、ESP；`cp -a` rootfs；播种 `/etc`；建 `/home/root`、`/var/log/journal`、`/var/lib/containers`（P4）。
+4. `bootctl --esp-path=<esp> install`；复制 `keel-a.efi`/`keel-b.efi`；写 `loader.conf`（default keel-a）。
+5. `efibootmgr`/`bootctl` 确认 NVRAM 指向**目标盘**的 ESP，不是 U 盘。
+6. 首启：生成 machine-id、ssh host key；启用 zram；确认 `/etc` 持久；确认 `findmnt`、`lvs`、`bootctl list`、`swapon --show`。
+
+注意：
+- **不要**把带 LVM 的镜像直接 `dd` 到多块盘：VG/PV UUID 会冲突。安装时现建 VG，或 `vgchange -u`。
+- 安装脚本只做一次；不要长成第二个 `os-install`。
+- 空盘安装必须在 QEMU 里先过一遍，再上真机。
+
+---
+
+## 12. 救援与备份
+
+### 12.1 救援入口
+
+- **ESP 上的 rescue UKI**：同 kernel/initrd，cmdline 加 `keel.rescue=1`；initrd 在挂 `/etc` 之前掉 shell。不依赖 `/etc` 卷。
+- **U 盘 rescue rootfs**：带 `lvm2`、`e2fsprogs`、`erofs-utils`、`bootctl`、`sgdisk`、`vim`/`nano`。
+- 两者至少有一个；建议都有。
+
+### 12.2 LVM 元数据
+
+- 权威元数据在 PV 的 metadata area；`/etc/lvm/backup` 只是文本副本。
+- 每次改布局后：
+  ```sh
+  vgcfgbackup -f /boot/lvm/vg0-$(date +%F).vg
+  ```
+- 再复制一份到 U 盘；保留最近 3 份。
+- 恢复：
+  ```sh
+  vgcfgrestore -f /boot/lvm/vg0-2026-11-10.vg vg0
+  ```
+- ESP 是 FAT；备份文件几 KB，1 GiB ESP 足够。
+
+### 12.3 ESP 与 `/etc`
+
+- ESP 备份：`tar -C /boot -cf /var/backups/esp-$(date +%F).tar .`，复制到 U 盘。
+- `/etc` 备份：更新前 `tar -C / -cf /var/backups/etc-$(date +%F).tar etc`。
+- 可选：`lvcreate -s` 给 `/etc` 打快照；恢复用 `lvconvert --merge`。
+
+### 12.4 演练（必须在 QEMU 里做）
+
+- 删 `/etc` 卷内容 → 用 rescue UKI 挂 root、fsck/mount、恢复。
+- 写坏 UKI → 从 ESP 备份恢复 / `bootctl install`。
+- 破坏 VG 元数据 → `vgcfgrestore` 从 ESP 恢复。
+- 清空 ESP → 从 U 盘 `bootctl install` + 复制 UKI。
+
+> 没有演练过的救援路径等于没有。每次改分区/引导链，重跑这四条。
+
+---
+
+## 13. 网络与 headless
+
+- `systemd-networkd` + `systemd-resolved` + `systemd-timesyncd`。
+- swap：**zram**（`systemd-zram-generator` 或一个最小 unit），不建 swap LV；`zramctl`/`swapon --show` 验证。
+- 有线 DHCP 起步；服务器建议后续改静态 IP 或 DHCP 保留。
+- `sshd` 开机自启；root 禁止 SSH 登录；用 `admin` + sudo。
+- 串口：`console=tty0 console=ttyS0,115200`；systemd-getty-generator 会自动起串口 getty。
+- 防火墙：v1 可以不做；如果做，只放 SSH。
+- 主机名、时区、locale 在 `/etc` 播种时设好；机器唯一标识首启生成。
+- 没有 WiFi/GPU/桌面/suspend。
+
+---
+
+## 14. podman（P4，占位）
+
+- 先 **rootful + `--network=host`**；rootless 后置。
+- 存储 `/var/lib/containers/storage`；overlay2 on ext4；`/var` 给够。
+- `/etc/containers/{registries.conf,policy.json,storage.conf}` 随 `/etc` 播种。
+- 依赖：`conmon`、`crun`、`fuse-overlayfs`（rootless）、`slirp4netns`（rootless）、`netavark/nftables`（bridge）、`shadow`、`ca-certificates`。
+- 内核：overlay/fuse/veth/bridge/nft/cgroups/userns/seccomp。
+- 验收：`podman run --rm hello-world`；`podman run -v /home:/home ...`；重启后 `podman images` 还在。
+
+---
+
+## 15. 里程碑与 gate
+
+| 阶段 | 内容 | 验收（gate） |
+|---|---|---|
+| **P0** | Buildroot rootfs + kernel + 脚本 initrd + 4 分区 + LVM pool + erofs root + `/etc /var /home` 挂载 + switch_root + systemd + QEMU | 登录；`findmnt` 全部正确；`lvs` 正常；改 `/etc` 重启还在；连续 5 次重启无 emergency |
+| **P1** | 脚本 initrd → systemd units；UKI + ESP + systemd-boot；手动 A/B | `bootctl list` 两个条目；手动切槽；root 是 ro erofs；`/etc` 仍是同一个卷 |
+| **P2** | 安装器（空盘 GPT/LVM/播种）+ 自制 `keel-update` + 自动回滚（boot counting/panic/watchdog/emergency timer） | 空盘安装 → 首启 → 更新 → 破坏 B 槽 → 自动回旧槽；连续 10 次重启 |
+| **P3** | 真 headless 服务器（有线、串口、SSH、zram）连续运行一周 | 断电/重启 10 次；`/etc` 不丢；日志持久；`swapon --show` 有 zram；无 emergency |
+| **P4** | podman + 存储 + 网络 + 持久化 | hello-world；重启后镜像还在；宿主仍是最小系统 |
+
+**硬规则**：
+- P0 的 5 次重启没过，不写 P1。
+- P2 的空盘安装没过，不上真机。
+- 上真机前保留原系统盘/救援 U 盘；不要格式化唯一可用的机器。
+- 每个阶段先写“验收命令”，再写实现；任何“看起来成功”的步骤都要有可观察证据（`findmnt`、`bootctl list`、`lvs`、`efibootmgr`）。
+
+---
+
+## 16. 仓库结构
+
+```
+keel2/
+├── buildroot/
+│   ├── configs/keel_defconfig
+│   ├── configs/keel_initrd_defconfig
+│   ├── linux.fragment
+│   ├── rootfs-overlay/
+│   └── post-image.sh
+├── initrd/
+│   ├── init                  # P0 临时脚本
+│   ├── units/                # P1 systemd units
+│   └── rescue/               # keel.rescue=1 逻辑
+├── image/
+│   ├── genimage.cfg
+│   └── ukify.sh
+├── installer/
+│   └── install.sh            # GPT/LVM/播种/bootctl
+├── update/
+│   └── keel-update/          # Rust/C++ 源码；无 shell
+├── rescue/
+│   ├── rescue-uki.md
+│   └── usb/
+├── docs/
+│   ├── decisions.md
+│   ├── layout.md
+│   ├── bringup.md
+│   ├── update.md
+│   └── recovery.md
+└── tests/
+    └── qemu-smoke.sh         # 可选：起 QEMU 等 marker
+```
+
+文档原则：`decisions.md` 记“为什么”和“否决了什么”；`layout.md` 只有表；`bringup.md` 是 P0–P4 的命令与期望输出；`recovery.md` 必须是演练过的步骤。不要再长出一份 1500 行的 traps。
+
+---
+
+## 17. 待验证假设
+
+按顺序做实验，结论回写到本文。**本对话运行在 Android proot（aarch64/f2fs）里，没有 `/dev/kvm`、没有 loop 设备、没有 qemu/lvm/erofs/ukify/bootctl；systemd 只是用户态 255，不是 PID1**。所以“本环境”一列大多是“不能”，不要把它当成已验证。
+
+| # | 假设 | 本环境 | 验证方法 / 命令 |
+|---|---|---|---|
+| 1 | `mkfs.erofs` 写到 GPT 分区，`root=PARTLABEL=root-a rootfstype=erofs` 能挂 | 不能 | QEMU/真机：`mkfs.erofs` → `mount -t erofs`；`findmnt /`；`dmesg | grep erofs` |
+| 2 | systemd initrd 里 `vgchange -ay` + `sysroot.mount` + `sysroot-etc.mount` 顺序能跑通 | 不能 | QEMU 串口 + `systemd.log_level=debug`；`systemctl list-jobs`；失败时 `rd.break`/救援 shell |
+| 3 | `systemd-sysupdate` 的 `Type=partition` 语义 | 文档确认 | `sysupdate.d(5)`：只支持 GPT 分区，不支持 LVM LV；v1 不用它，仅作参考 |
+| 4 | OVMF 下 UKI + systemd-boot 能启动，`bootctl list` 看到两个条目 | 不能 | QEMU + OVMF：`bootctl list`、`efibootmgr -v`、`bootctl status` |
+| 5 | `vgcfgrestore` 能从 ESP 的备份救回 VG | 不能 | QEMU：故意破坏 VG 元数据 → rescue → `vgcfgrestore -f /boot/lvm/... vg0` |
+| 6 | `/etc` 卷在 PID1 读 `/etc` 之前挂好，machine-id 稳定 | 不能 | QEMU：`findmnt /etc`；`cat /etc/machine-id`；`journalctl -b | grep machine-id`；重启两次比对 |
+| 7 | boot counting + `systemd-bless-boot` 在 UKI 命名（`keel-b+3.efi`）下工作 | 不能 | QEMU：坏 B 槽 → 重启 → 看是否回 A；`bootctl list` 的 tries-left |
+| 8 | 串口 getty 和 SSH 都能进；断网不影响启动 | 不能 | QEMU `-serial mon:stdio`；`systemctl status serial-getty@ttyS0`；`ssh admin@...` |
+| 9 | Buildroot 的 systemd 是否带 `systemd-boot`/`bootctl`/`systemd-bless-boot`/`ukify` | 部分确认 | Buildroot 2025-11 有 `BR2_PACKAGE_SYSTEMD_BOOT` 补丁、2026-02 有 `systemd-ukify` 补丁；在选定 LTS 上 `make menuconfig` 确认，不带就自定义 package |
+| 10 | 2 GiB root 分区在 P4（podman 进 `/usr`）后仍够用 | 不能 | 构建后 `du -sh` erofs 内容；`df -h /`；留 30% 余量 |
+| 11 | Buildroot 有 `zram-generator` 或可用最小 unit 替代 | 部分确认 | `make menuconfig` 搜 `zram`；没有就写一个 C unit 或 `systemd-zram-setup@` 配置 |
+| 12 | LVM thick LV 的 `lvextend` + `resize2fs` 在线扩容 | 不能 | QEMU：`lvextend -L +2G vg0/var`；`resize2fs /dev/vg0/var`；`df -h /var` |
+
+> 规则：文档确认 ≠ 已验证；只有第 1/2/4/6/7 条在 QEMU 里过了，P0/P1 才算成立。
+
+---
+
+## 18. 明确不做
+
+- 签名、dm-verity、Secure Boot 链。
+- btrfs、nix、mkosi。
+- 笔记本：WiFi、GPU、桌面、suspend/hibernate。
+- 用户态发行版命名空间（`RootDirectory=`）。
+- 自动更新定时器、多机管理、集群。
+- 2900 行静态校验器。
+- `/data` 抽象、`/etc` overlay、`/var` 符号链接。
+- 在 v1 里把 podman 做深。
+
+---
+
+## 19. 过程规则（对 keel 的教训）
+
+1. **一次只改一层**：分区/存储链、initrd、UKI、安装器、回滚、podman，不要并行。
+2. **每次改完必须能启动**；不能启动就回退，不堆补丁。
+3. **永远保留一个 known-good 槽**；不覆盖两个槽。
+4. **上真机前**：QEMU 过 gate + 救援 U 盘可用 + 原系统盘可回退。
+5. **文档先于代码**：每个阶段先写“验收命令”和“失败怎么办”，再写实现。
+6. **可观察证据**：`findmnt`、`lvs`、`bootctl list`、`efibootmgr`、`journalctl -b`；不接受“命令返回 0”作为成功。
+7. **不通过 gate 不进入下一阶段**；宁可少一个功能，不要多一个“看起来成功”。
+
+---
+
+## 20. 附录 A：thick/thin 与 fstab/units 的区别
+
+### A.1 LVM thick vs thin（对应 D19）
+
+| 维度 | thick LV | thin LV |
+|---|---|---|
+| 空间分配 | 创建时就从 VG 划走固定 extents；不超卖 | 从 thin pool 按需分配；可超卖 |
+| 空间不足时 | 某个 LV 自己写满，其他 LV 不受影响 | **pool 满 = 所有 thin LV 一起 I/O 错误**，严重时元数据损坏 |
+| 快照 | 需要预留 COW 空间；`lvcreate -s` 要 VG 有空闲 | 快照几乎零成本 |
+| 监控 | 不需要额外守护进程 | 需要 `dmeventd`/监控 + 自动扩容，否则 pool 满 |
+| 性能 | 可预测 | 略多一层映射 |
+| 复杂度 | 低 | 高 |
+| 本项目 | **选 thick**；留 10% VG 空闲；`/etc` 备份用 tar 或 thick snapshot | 不选；v1 不需要大量快照 |
+
+> 结论：thin 的唯一大优势是“快照便宜”，但代价是“pool 满会拖垮所有卷”。对一个最小系统，thick + tar 备份更稳。
+
+### A.2 fstab vs initrd units（对应 D20）
+
+| 维度 | initrd units（选它） | fstab（不重复写） |
+|---|---|---|
+| 挂载时机 | `switch_root` 之前；PID1 第一次读 `/etc` 就是最终视图 | 用户态 systemd 解析；对 `/etc` 来说**太晚** |
+| 顺序控制 | initrd 里显式 `After=/Before=` | 由 systemd-fstab-generator 生成，顺序不如手写直观 |
+| 重复挂载 | 挂一次；切根后挂载点保留 | 如果 fstab 也列同一卷，systemd 可能再挂/remount/fsck |
+| fsck | 由 initrd 或安装时决定；可 `passno=0` | fstab 的 `passno` 可能触发 fsck，而对已挂载 fs 不合适 |
+| 可观察性 | `findmnt` 能看到；`systemctl list-units --type=mount` 可能看不到（units 在 initrd 里） | `systemctl` 能看到 unit |
+| 适用 | `/etc`、`/var`、`/home`、`/boot` | 只放非关键、非 initrd 挂载的项；或只做注释 |
+
+> 结论：initrd 拥有 `/etc /var /home /boot` 的挂载；`/etc/fstab` 不重复写这些卷（最多注释），`passno=0`。
+> 需要这些挂载的服务用 `RequiresMountsFor=/etc /var /home` 表达依赖；验收看 `findmnt`，不只看 `systemctl`。
+
+---
+
+## 21. 附录 B：验证环境与状态
+
+### B.1 本对话的环境（实测）
+
+```
+uname -a        Linux ... aarch64 GNU/Linux        # Android proot
+findmnt /       f2fs
+/dev/kvm        不存在
+/dev/loop*      不存在
+qemu-system-x86_64、lvm、mkfs.erofs、ukify、bootctl、podman、sgdisk、mkfs.vfat  均不存在
+systemctl --version  systemd 255（用户态，非 PID1）
+gcc             存在
+```
+
+结论：**本环境不能创建分区、不能挂 erofs、不能激活 LVM、不能起 QEMU/内核、不能跑 systemd 启动链。**
+任何“启动成功/挂载成功/回滚成功”的说法，在这里都无法验证。
+
+### B.2 本环境能做的
+
+- 读 man/文档，核对语义（已做，见 §22）。
+- 写/改本文档与 unit 草稿。
+- 用 `systemd-analyze verify` 做 unit 静态检查（systemd 255；路径不存在会有警告，属正常）。
+- 用 `gcc` 编译 C 版 `keel-update` 的纯逻辑部分；Rust 需另装 `rustc`。
+- 不能做：`mkfs.erofs` 挂载、`vgchange`、`bootctl`、UKI 启动、串口/SSH、回滚演练。
+
+### B.3 必须在 x86_64 + KVM（或真服务器）上做的
+
+按 §17 的 1/2/4/6/7 条先做；每条都要留下命令输出（`findmnt`、`lvs`、`bootctl list`、`journalctl -b`）。
+建议顺序：
+
+1. QEMU + OVMF，最小 rootfs + erofs root + 脚本 initrd；
+2. 加 LVM pool + `/etc /var /home` 挂载；
+3. 换 UKI + systemd-boot，手动 A/B；
+4. 空盘安装 + 自动回滚 + 救援演练；
+5. 真服务器（有线/串口/SSH）。
+
+### B.4 验证记录（待填）
+
+| 日期 | 假设 # | 环境 | 结果 | 证据（命令/日志） |
+|---|---|---|---|---|
+| — | — | — | 未开始 | — |
+
+> 规则：没有命令输出，不写“已验证”；文档确认只写“文档确认”。
+
+---
+
+## 22. 参考
+
+- `systemd-sysupdate(8)`：<https://man7.org/linux/man-pages/man8/systemd-sysupdate.8.html>
+- `sysupdate.d(5)`：<https://manpages.debian.org/unstable/systemd/sysupdate.d.5.en.html>（`Type=partition` 只支持 GPT 分区；`_empty` 标签；root + UKI 组合更新）
+- `ukify(1)`：<https://www.freedesktop.org/software/systemd/man/ukify.html>（`--microcode`）
+- UAPI UKI：<https://uapi-group.org/specifications/specs/unified_kernel_image/>（`.ucode` 段）
+- LVM 元数据备份：<https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/6/html/logical_volume_manager_administration/vg_backup>
+- Buildroot `systemd-boot` 补丁（2025-11）：<https://lists.buildroot.org/pipermail/buildroot/2025-November/789707.html>
+- Buildroot `systemd-ukify` 补丁（2026-02）：<https://lists.busybox.net/pipermail/buildroot/2026-February/796335.html>
+- `zram-generator`：<https://manpages.debian.org/unstable/systemd-zram-generator/zram-generator.8.en.html>
+

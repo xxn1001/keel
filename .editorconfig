@@ -1,0 +1,12 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Source files must be ASCII; tools/check-ascii.sh enforces this.
+# Documents may contain Chinese.
+[*.{c,h,cc,cpp,rs,sh,py,go,conf,service,network,mk}]
+charset = utf-8
