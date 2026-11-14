@@ -17,6 +17,10 @@ headless 服务器更新失败时没人按键；必须自动回旧槽。
 `systemd-sysupdate` 支持 GPT partition + UKI，但会用 `_empty`/版本号改写分区 label，
 与固定的 `root-a`/`root-b` 和 `root=PARTLABEL=` 冲突。
 
+> Layout note: since [ADR-0012](ADR-0012-system-vg.md), root lives in `system` VG LVs and
+> `root=` uses `/dev/system/root_a|root_b`; `PARTLABEL` now applies only to `data` and `recovery`.
+> The sysupdate decision below (A-003) is unchanged.
+
 ## Decision
 
 - 自制 **编译型** `keel-update`（C 静态 musl 优先；Rust/C++ 可选），**不用 shell 状态机**。

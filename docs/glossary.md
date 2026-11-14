@@ -1,6 +1,6 @@
 # 术语表
 
-> 状态：living document | 更新：2026-11-13
+> 状态：living document | 更新：2026-11-14
 > 文档用中文；代码/标识符用英文。这里是两者的对照。
 
 | 中文 | English / identifier | 说明 |
@@ -14,7 +14,7 @@
 | 物理卷 | physical volume (PV) | `system` 分区 |
 | 卷组 | volume group (VG) | `system` |
 | 厚置备 | thick | 创建时分配固定 extents |
-| 薄置备 | thin | 共享 thin pool，可超卖 |
+| 薄置备 | thin | 共享 thin pool，可超卖；keel2 不使用，LV 全部 thick |
 | 子卷 | subvolume | btrfs 子卷，如 `var`、`home` |
 | 统一内核镜像 | Unified Kernel Image (UKI) | kernel + initrd + cmdline + microcode |
 | 引导加载器 | boot loader | systemd-boot |
