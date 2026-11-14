@@ -1,6 +1,6 @@
 # 测试策略
 
-> 状态：accepted | 更新：2026-11-10
+> 状态：accepted | 更新：2026-11-14
 > 本文定义 unit / build / integration / real-hardware 的分层、标准、何时跑。
 > CI 具体 job 见 [`ci.md`](ci.md)；验证环境见 [`verification.md`](verification.md)。
 
@@ -138,7 +138,7 @@ make build
 | etc | smoke | `/etc` 是 ext4；machine-id 稳定 |
 | A/B update | slow | stage → reboot → 新槽 → bless |
 | rollback | destructive | 坏 B 槽 → 自动回 A |
-| rescue | destructive | `keel.recovery=1` 进 recovery；LVM/etc/data 失败自动 fallback |
+| recovery | destructive | `keel.recovery=1` 进 recovery；LVM/etc/data 失败自动 fallback |
 | install | slow | 空 qcow2 → GPT/LVM/btrfs/recovery → 首启 |
 | var-full | destructive | 写满 `/var`，`/etc` 仍可写，`/home` 受影响 |
 | zram | slow | `swapon --show` 有 zram0 |

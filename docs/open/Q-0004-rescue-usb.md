@@ -3,14 +3,14 @@ id: Q-0004
 question: What goes on the USB rescue image, and how is it kept current?
 blocking: F-012
 owner: TBD
-updated: 2026-11-10
+updated: 2026-11-14
 ---
 
 # Q-0004 USB rescue 内容
 
 ## Context
 
-ESP rescue UKI 依赖目标盘；ESP 坏/清空时需要 USB。
+ESP recovery UKI 依赖目标盘；ESP 坏/清空时需要 USB。
 USB 可能过期；工具太少修不了，太多则体积/维护成本高。
 
 ## Options

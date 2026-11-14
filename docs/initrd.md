@@ -1,6 +1,6 @@
 # initrd
 
-> 状态：accepted | 更新：2026-11-13
+> 状态：accepted | 更新：2026-11-14
 > 目标：在 `switch_root` 之前挂好 root、`/etc`、`/var`、`/home`、`/boot`。
 > 任何关键挂载失败：进 physical recovery，不继续半启动。
 
@@ -137,7 +137,7 @@ keel.recovery=1
 
 - 正常 initrd 在 LVM/root/etc/data 失败时自动 fallback。
 - recovery 工具：`lvm2`、`e2fsprogs`、`btrfs-progs`、`erofs-utils`、`bootctl`、`sgdisk`、`mount`、`blkid`、`dmesg`。
-- recovery 是 known-good，不随 A/B 更新自动更新；ESP rescue UKI + USB 仍保留。
+- recovery 是 known-good，不随 A/B 更新自动更新；ESP recovery UKI + USB 仍保留。
 - 详见 [F-012](features/F-012-rescue.md) / [ADR-0014](decisions/ADR-0014-recovery-partition.md)。
 
 ## 7. initrd 内容

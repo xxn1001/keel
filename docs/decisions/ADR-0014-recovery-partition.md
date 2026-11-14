@@ -12,7 +12,7 @@ deciders: [maintainer]
 
 root 和 `/etc` 现在都在 `system` VG 上；LVM 激活/元数据/udev 失败时，正常系统起不来。
 boot counting 只能处理“systemd 起来了但服务失败”；它救不了 initrd 阶段的 LVM 失败。
-ESP 上的 rescue UKI 可以手动选，但 headless 服务器可能没有键盘；需要自动 fallback。
+ESP 上的 recovery UKI 可以手动选，但 headless 服务器可能没有键盘；需要自动 fallback。
 
 ## Decision
 
@@ -33,7 +33,7 @@ keel.recovery=1
 - recovery rootfs 用 BusyBox init + shell，不跑完整 systemd；只读，`/run`/`/tmp` 用 tmpfs。
 - recovery 工具：`lvm2`、`e2fsprogs`、`btrfs-progs`、`erofs-utils`、`bootctl`、`sgdisk`、`mount`、`blkid`、`dmesg`。
 - recovery **不随 A/B 更新自动更新**；它是 known-good，更新必须单独、显式、验证过。
-- ESP rescue UKI + USB 仍然保留；recovery 不防磁盘/ESP 物理损坏。
+- ESP recovery UKI + USB 仍然保留；recovery 不防磁盘/ESP 物理损坏。
 
 ## Consequences
 
@@ -41,7 +41,7 @@ keel.recovery=1
 
 - LVM 阶段失败也能自动进救援，不依赖键盘。
 - recovery 独立于 system VG 和 data；能修 LVM、ext4、btrfs、ESP。
-- 与 ESP rescue UKI、USB 形成三层救援。
+- 与 ESP recovery UKI、USB 形成三层救援。
 
 代价：
 
@@ -53,7 +53,7 @@ keel.recovery=1
 
 ## Alternatives rejected
 
-- **只靠 ESP rescue UKI 手动选**：headless 可能没有键盘；LVM 失败时无法自动恢复。
+- **只靠 ESP recovery UKI 手动选**：headless 可能没有键盘；LVM 失败时无法自动恢复。
 - **只靠 USB**：可能找不到/过期/接口坏；ESP recovery 更快。
 - **不做 recovery，LVM 失败就重装**：数据/配置丢失；不可接受。
 - **recovery 也放 LVM**：LVM 坏了 recovery 也没了；必须物理分区。

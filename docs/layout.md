@@ -1,6 +1,6 @@
 # 磁盘布局
 
-> 状态：accepted | 更新：2026-11-13
+> 状态：accepted | 更新：2026-11-14
 > 本文只放 GPT / LVM / 文件系统 / 挂载的表和理由。安装命令见 F-011。
 
 ## 1. 设计原则
@@ -124,7 +124,7 @@ UEFI
 ### 7.4 recovery
 
 - LVM/root/etc/data 失败时，正常系统起不来；recovery 是物理分区，不依赖 LVM/data。
-- recovery 是 known-good，不自动随 A/B 更新；ESP rescue UKI + USB 仍然保留。
+- recovery 是 known-good，不自动随 A/B 更新；ESP recovery UKI + USB 仍然保留。
 
 ## 8. 尺寸
 

@@ -4,7 +4,7 @@ title: Rescue and recovery
 status: accepted
 target: v0.1/v0.3
 owner: TBD
-updated: 2026-11-13
+updated: 2026-11-14
 depends: [F-002, F-004, F-015]
 ---
 
@@ -78,7 +78,7 @@ mount -t btrfs -o subvol=var /dev/disk/by-partlabel/data /mnt/var
 
 - recovery 不随 A/B 更新自动更新；否则新内核/新 initrd 一起坏，recovery 也救不了。
 - recovery 更新必须单独、显式、在 QEMU/真机验证后写。
-- ESP rescue UKI + USB 仍保留；recovery 不防磁盘/ESP 物理损坏。
+- ESP recovery UKI + USB 仍保留；recovery 不防磁盘/ESP 物理损坏。
 
 ### 5.4 备份
 
@@ -128,3 +128,4 @@ E3：真机至少做一次“清空 ESP + 恢复”和“破坏 VG 元数据 + r
 |---|---|
 | 2026-11-10 | 初稿（ESP rescue + USB） |
 | 2026-11-13 | 增加物理 recovery 分区、recovery UKI、initrd fallback |
+| 2026-11-14 | 术语统一：`rescue UKI` 改为 `recovery UKI` |
