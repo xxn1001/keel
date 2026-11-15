@@ -71,6 +71,9 @@ venv/
 .env.*
 !.env.example
 *.secret
+*.pem
+*.key
+!*.pub
 
 # Temporary files
 *.tmp
