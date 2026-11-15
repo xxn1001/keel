@@ -1,6 +1,6 @@
 # 验证台账
 
-> 状态：living document | 更新：2026-11-13
+> 状态：living document | 更新：2026-11-14
 > 规则：**没有环境 + 命令输出，不写“已验证”。** 文档确认只写“doc-confirmed”。
 
 ## 1. 环境分级
@@ -53,6 +53,10 @@
 | A-018 | data btrfs 的 `var`/`home` 子卷能在 initrd 挂载 | untested | E1/E2 | `mkfs.btrfs`；`subvol=`；`findmnt` | — |
 | A-019 | 写满 `/var` 不影响 `/etc`，但会影响 `/home` | untested | E1/E2 | 填 data；`df`；写 `/etc`/`/home` | — |
 | A-020 | `btrfs send` 到 USB 能恢复 `var`/`home` | untested | E1/E2 | send/receive；对比文件 | — |
+| A-021 | `keel.fail=<step>` 注入让 initrd 走到预期分支（vglv/root/etc/data/esp） | untested | E1/E2 | 分别注入；串口找 `keel: injecting failure at <step>`；`/run/keel/fail.*` | — |
+| A-022 | 设备不出现时 initrd 在超时预算内失败并进 recovery，不挂死 | untested | E1/E2 | `keel.timeout=root:5` + 拿掉 root 设备；用串口时间戳计时 | — |
+| A-023 | ESP 不可写时仍启动成功并写 `/var/lib/keel/boot-ok`；ESP 恢复后 tries 被还原成 `+10` | untested | E1/E2 | `keel.fail=esp`；`cat /var/lib/keel/boot-ok`；修好 ESP 后 `bootctl list` | — |
+| A-024 | 所有条目都是 bad 时 systemd-boot 仍会启动其中一个，不会彻底不启动 | doc-confirmed | E0 | systemd-boot 文档 Boot Counting 一节 | 文档原文 |
 
 ## 5. 特征测试矩阵
 

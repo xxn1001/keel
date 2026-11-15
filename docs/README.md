@@ -9,6 +9,7 @@
 |---|---|---|
 | [`outline.md`](outline.md) | 稳定地图：特征、磁盘布局、initrd、版本规划 | 低 |
 | [`roadmap.md`](roadmap.md) | 版本、特征映射、gate | 中 |
+| [`design-v01-skeleton.md`](design-v01-skeleton.md) | v0.1 执行契约：范围冻结、工作项、验收、失败归因 | 中 |
 | [`layout.md`](layout.md) | GPT / LVM / 文件系统 / 挂载的精确表 | 低 |
 | [`initrd.md`](initrd.md) | 启动阶段、systemd units、挂载顺序、救援入口 | 低 |
 | [`workflow.md`](workflow.md) | 分支、commit、设计 PR、review、merge、release | 低 |
@@ -31,12 +32,13 @@
 1. `README.md`（仓库根）
 2. `outline.md`
 3. `roadmap.md`
-4. `features/README.md`，然后读你关心的 `F-xxx.md`
-5. `layout.md`、`initrd.md`
-6. `decisions/README.md`，按需读 ADR
-7. `workflow.md`、`testing.md`、`ci.md`
-8. `verification.md`
-9. `lessons.md`
+4. `design-v01-skeleton.md`（要动手时必读）
+5. `features/README.md`，然后读你关心的 `F-xxx.md`
+6. `layout.md`、`initrd.md`
+7. `decisions/README.md`，按需读 ADR
+8. `workflow.md`、`testing.md`、`ci.md`
+9. `verification.md`
+10. `lessons.md`
 
 ### Agent
 
@@ -45,10 +47,11 @@
 3. `workflow.md`
 4. `testing.md`
 5. `ci.md`
-6. 你负责的那一个 `features/F-xxx.md`
-7. 它链接的 ADR
-8. `lessons.md` 中“适用于”该 feature 的条目
-9. `verification.md` 中该 feature 的验证状态
+6. `design-v01-skeleton.md` 中与你的工作项对应的部分
+7. 你负责的那一个 `features/F-xxx.md`
+8. 它链接的 ADR
+9. `lessons.md` 中“适用于”该 feature 的条目
+10. `verification.md` 中该 feature 的验证状态
 
 不要一次加载整个 `decisions/` 或 `lessons/`；按 feature 链接读。
 
