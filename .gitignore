@@ -3,6 +3,8 @@
 /output/
 /dl/
 /vendor/buildroot/
+/vendor/*.tar.*
+/vendor/*.part
 /buildroot/
 
 # Local build trees
