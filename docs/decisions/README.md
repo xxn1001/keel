@@ -27,6 +27,7 @@
 
 - 一个 ADR 一个决定；不要把多个决定塞进一篇。
 - 内容：Context / Decision / Consequences / Alternatives rejected / References。
-- 已接受后只追加 `Superseded by`，不改正文。
+- 已接受后只追加 `Superseded by`，不改结论。允许术语统一、错别字、失效链接、
+  以及不改结论的 layout note，但必须在 PR 里单独说明。
 - 被否决的提案也保留（`rejected`），理由比决定更有价值。
 - 新 ADR 编号递增，不复用。
