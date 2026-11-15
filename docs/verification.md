@@ -23,11 +23,11 @@
 | `failed` | 测过，失败 |
 | `blocked` | 缺环境/硬件 |
 
-## 3. 当前撰写环境
+## 3. 当前验证环境
 
-当前文档撰写环境是 **E0**：Android proot，aarch64，根文件系统 f2fs；没有 `/dev/kvm`、没有 `/dev/loop`，没有 qemu/lvm/mkfs.erofs/ukify/bootctl；systemd 是用户态 255，不是 PID1；有 `gcc`。
+W-0 的构建与启动在 **E2** 完成：CachyOS x86_64，QEMU 11.1.3，`/dev/kvm` 可用；Buildroot 2025.02.19。
 
-结论：**本环境不能验证启动、分区、LVM、erofs、UKI、回滚。** 这里的“通过”最多是 `static-checked`。
+历史上的 E0 文档环境（Android proot，aarch64，无 `/dev/kvm`、无 qemu/lvm/mkfs.erofs/ukify/bootctl）只能做文档/静态检查，不能作为启动、分区、LVM、erofs、UKI 或回滚证据。
 
 ## 4. 假设台账
 
