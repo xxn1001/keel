@@ -50,6 +50,11 @@ keel.recovery=1
 - recovery 在同一块盘上，不防盘坏。
 - initrd 多一条 fallback 路径；必须演练，否则等于没有。
 - recovery 更新策略要单独设计，不能跟着每次更新自动覆盖。
+- **挂死不会被 panic 捕获**：`panic=-1` 只能处理内核 panic；initrd 卡在等设备时
+  机器不会自己重启。恢复要靠"断电重启直到 tries 用完"，见
+  [ADR-0015](ADR-0015-boot-failure-contract.md)。
+- headless 且没有 PDU/IPMI/硬件看门狗时，第一次挂死仍需人到现场。这是运维前提，
+  不是实现缺陷；目标硬件应假设有远程电源控制。
 
 ## Alternatives rejected
 

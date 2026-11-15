@@ -25,7 +25,7 @@ keel2 是一个**自己构建的最小 Linux 系统**，目标形态是 **headle
 | F-002 | erofs root LV + A/B | accepted | v0.1 | F-001, F-005 | [F-002](features/F-002-erofs-root.md) |
 | F-003 | 原子更新 + 自动回滚 | accepted | v0.2/v0.3 | F-002, F-005 | [F-003](features/F-003-ab-update.md) |
 | F-004 | system VG：root + `/etc` | accepted | v0.1 | F-001 | [F-004](features/F-004-lvm-state.md) |
-| F-005 | systemd initrd | accepted | v0.1/v0.2 | F-001, F-004, F-015 | [F-005](features/F-005-systemd-initrd.md) |
+| F-005 | initrd（P0 脚本；P1 是否做见 Q-0011） | accepted | v0.1 | F-001, F-004, F-015 | [F-005](features/F-005-systemd-initrd.md) |
 | F-006 | headless server（有线/串口/SSH） | accepted | v0.1 | F-001 | [F-006](features/F-006-headless-server.md) |
 | F-007 | zram swap | accepted | v0.3 | F-001 | [F-007](features/F-007-zram.md) |
 | F-008 | podman 用户态 | accepted | v0.4 | F-015 | [F-008](features/F-008-podman.md) |
