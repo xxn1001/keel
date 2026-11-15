@@ -1,6 +1,6 @@
 # 验证台账
 
-> 状态：living document | 更新：2026-11-14
+> 状态：living document | 更新：2026-11-15
 > 规则：**没有环境 + 命令输出，不写“已验证”。** 文档确认只写“doc-confirmed”。
 
 ## 1. 环境分级
@@ -41,7 +41,7 @@
 | A-006 | `/etc` LV 在 PID1 读 `/etc` 之前挂好，machine-id 稳定 | untested | E1/E2 | `findmnt /etc`；`cat /etc/machine-id`；重启两次比对 | — |
 | A-007 | boot counting + `systemd-bless-boot` 在 UKI 命名（`keel-b+3.efi`）下工作 | untested | E1/E2 | 坏 B 槽；重启；`bootctl list` 看 tries-left | — |
 | A-008 | 串口 getty 和 SSH 都能进；断网不影响启动 | untested | E1/E2/E3 | `-serial mon:stdio`；`systemctl status serial-getty@ttyS0`；`ssh` | — |
-| A-009 | Buildroot 的 systemd 是否带 `systemd-boot`/`bootctl`/`systemd-bless-boot`/`ukify` | doc-confirmed | E0 | 选定 LTS 后 `make menuconfig`；查 2025-11/2026-02 补丁 | mailing list |
+| A-009 | Buildroot 的 systemd 是否带 `systemd-boot`/`bootctl`/`systemd-bless-boot`/`ukify` | doc-confirmed | E0 | 2025.02.19 源码检查 | systemd 256.17；`BR2_PACKAGE_SYSTEMD_BOOT` 存在；目标 `ukify` disabled |
 | A-010 | 2 GiB root LV 在 P4（podman 进 `/usr`）后仍够用 | untested | E0/E2 | 构建后 `du -sh`；`df -h /`；留 30% 余量 | — |
 | A-011 | Buildroot 有 `zram-generator` 或可用最小 unit 替代 | doc-confirmed | E0 | `make menuconfig` 搜 `zram`；没有就写 C unit | man page |
 | A-012 | `/etc` ext4 LV 的 `lvextend` + `resize2fs` 在线扩容 | untested | E1/E2 | `lvextend -L +512M system/etc`；`resize2fs`；`df -h /etc` | — |
@@ -122,7 +122,25 @@ podman info
 
 | 日期 | 假设/Feature | 环境 | 命令 | 结果 | 证据文件/摘要 |
 |---|---|---|---|---|---|
+| 2026-11-15 | W-0 (F-001 partial) | E2 | `make -C out`；QEMU `-kernel -initrd`；串口登录 | PASS | 串口 `keel login:`；os-release 为 keel2；`systemctl --failed` 为空 |
 | — | — | — | — | untested | — |
+
+### W-0 / 2026-11-15 / E2 (QEMU KVM x86_64)
+
+```text
+build: buildroot 2025.02.19, defconfig keel_qemu_x86_64_defconfig, commit 0625587
+branch: feat/buildroot-skeleton @ 0625587
+result: PASS
+evidence:
+  - serial: `keel login:` after `Reached target Multi-User System`
+  - cat /etc/os-release: NAME="keel2", PRETTY_NAME="keel2 v0.1"
+  - systemctl --failed: 0 loaded units listed
+  - systemctl is-system-running: running
+  - uname -r: 6.12.117
+  - cat /proc/1/comm: systemd
+verdict: W-0 acceptance PASS; A-009 remains doc-confirmed
+notes: root login uses an empty test-only password; rootfs.cpio is the full W-0 rootfs used as an initramfs, not the P0 initrd.
+```
 
 证据要求：
 
