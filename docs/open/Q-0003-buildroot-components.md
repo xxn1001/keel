@@ -69,6 +69,9 @@ SHA256: e5e58bff1da91f022f60cefdfe280140c08023cd0aeec1e5f6f9da0ea866d69c
 
 W-0 的构建与启动证据见 feat PR #6；`versions.env` 固定 URL 与 sha256。
 
+本决策**不转 ADR**：它固定的是依赖版本，不是架构。机器可读的真相在 `versions.env`，
+变更时改版本号 + sha256，并重跑 W-0 的构建与启动验证即可。
+
 ## Decision gate
 
 已决定（2026-11-15）：v0.1 使用 Buildroot 2025.02.19。升级 Buildroot 必须单独 PR，并重跑 W-0 构建与启动验证。
