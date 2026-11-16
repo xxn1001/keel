@@ -23,11 +23,17 @@
 | `failed` | 测过，失败 |
 | `blocked` | 缺环境/硬件 |
 
-## 3. 当前验证环境
+## 3. 可用的验证环境
 
-W-0 的构建与启动在 **E2** 完成：CachyOS x86_64，QEMU 11.1.3，`/dev/kvm` 可用；Buildroot 2025.02.19。
+这一节记录"哪些环境做过什么"，**不是规范**。换机器、换人另起一行，不要覆盖旧记录。
 
-历史上的 E0 文档环境（Android proot，aarch64，无 `/dev/kvm`、无 qemu/lvm/mkfs.erofs/ukify/bootctl）只能做文档/静态检查，不能作为启动、分区、LVM、erofs、UKI 或回滚证据。
+| 环境 | 实际用它做过什么 | 能作为什么证据 |
+|---|---|---|
+| E0 文档沙箱 | Android proot，aarch64，f2fs；无 `/dev/kvm`、`/dev/loop`、qemu、lvm、mkfs.erofs、ukify、bootctl | 只能 `static-checked`；**不能**作为启动、分区、LVM、erofs、UKI、回滚的证据 |
+| E2 构建机 | CachyOS x86_64，QEMU 11.1.3，`/dev/kvm` 可用，Buildroot 2025.02.19（2026-11-15，W-0） | 可以作为启动类证据，但只对**当次记录**有效 |
+
+"当前环境"不是仓库级事实：同一份文档可能同时由 E0 的人审、E2 的机器跑。
+写证据时以第 6 节的记录为准，不要靠本节推断"现在能测什么"。
 
 ## 4. 假设台账
 
