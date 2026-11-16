@@ -1,6 +1,6 @@
 # 未决问题
 
-> 状态：living index | 更新：2026-11-15
+> 状态：living index | 更新：2026-11-14
 > 未决问题不藏在聊天里；写进这里，决定后转 ADR/feature 并关闭。
 
 ## 索引
@@ -9,7 +9,7 @@
 |---|---|---|---|
 | [Q-0001](Q-0001-podman-mode.md) | podman rootful/rootless、网络模式 | F-008 / v0.4 | open |
 | [Q-0002](Q-0002-disk-sizes.md) | 目标盘容量与精确尺寸 | F-011 / v0.3 | open |
-| [Q-0003](Q-0003-buildroot-components.md) | Buildroot LTS/systemd-boot/ukify/LVM units | F-001/F-005 | closed |
+| [Q-0003](Q-0003-buildroot-components.md) | Buildroot LTS/systemd-boot/ukify/LVM units | F-001/F-005 | open |
 | [Q-0004](Q-0004-rescue-usb.md) | USB rescue 内容/维护 | F-012 | open |
 | [Q-0005](Q-0005-zram-generator.md) | zram generator vs 自写 unit | F-007 | open |
 | [Q-0006](Q-0006-etc-factory-merge.md) | `/etc` factory diff/合并流程 | F-004 | open |
