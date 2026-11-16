@@ -1,3 +1,10 @@
-# keel2 W-0: kernel capability check for W-1; not used by the W-0 boot.
+# keel2 kernel capabilities needed by W-1 and later.
+# W-0 itself does not use any of these.
+#
+# CONFIG_BLK_DEV_DM lives under "if MD" in drivers/md/Kconfig, so it is
+# silently dropped by merge_config unless CONFIG_MD is enabled too.
+CONFIG_MD=y
 CONFIG_EROFS_FS=y
 CONFIG_BLK_DEV_DM=y
+CONFIG_BTRFS_FS=y
+CONFIG_VFAT_FS=y
