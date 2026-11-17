@@ -13,7 +13,7 @@ Build the minimal initramfs:
 
   ./spike/w1/build-initrd.sh
 
-Provision the qcow2 disk (requires sudo; host loop + LVM):
+Provision the raw sparse disk (requires sudo; host loop + LVM):
 
   sudo ~/Projects/proviledge/w1-storage-provision.sh
 

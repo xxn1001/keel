@@ -11,7 +11,7 @@ import sys
 import time
 
 REPO = "/home/admin/Projects/keel"
-DISK = f"{REPO}/out/spike/disk.qcow2"
+DISK = f"{REPO}/out/spike/disk.raw"
 KERNEL = f"{REPO}/out/images/bzImage"
 INITRD = f"{REPO}/out/spike/initrd.cpio"
 
@@ -50,7 +50,7 @@ def main():
         "-kernel", KERNEL,
         "-initrd", INITRD,
         "-append", append,
-        "-drive", f"file={DISK},if=virtio,format=qcow2",
+        "-drive", f"file={DISK},if=virtio,format=raw",
     ]
 
     proc = subprocess.Popen(
