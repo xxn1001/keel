@@ -1,0 +1,2 @@
+# keel2 initrd needs timeout(1); Buildroot BusyBox does not enable it by default.
+CONFIG_TIMEOUT=y
