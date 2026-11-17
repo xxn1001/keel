@@ -33,21 +33,21 @@
 | E2 构建机 | CachyOS x86_64，QEMU 11.1.3，`/dev/kvm` 可用，Buildroot 2025.02.19（W-0 2026-11-15，W-1 2026-11-17） | 可以作为启动类证据，但只对**当次记录**有效 |
 
 "当前环境"不是仓库级事实：同一份文档可能同时由 E0 的人审、E2 的机器跑。
-写证据时以第 6 节的记录为准，不要靠本节推断"现在能测什么"。
+写证据时以第 8 节的记录为准，不要靠本节推断"现在能测什么"。
 
 ## 4. 假设台账
 
 | ID | 假设 | 状态 | 环境 | 验证方法 | 证据 |
 |---|---|---|---|---|---|
-| A-001 | LVM LV 上 `mkfs.erofs`，`root=/dev/system/root_a rootfstype=erofs` 能挂 | E2-pass | E2 | `mkfs.erofs --all-root /dev/system/root_a`；`mount -t erofs`；`findmnt /`；`dmesg` | mkfs.erofs 1.9.4 rc=0；`findmnt /` erofs ro；`dump.erofs` 4096/2652 |
-| A-002 | systemd initrd 里 `vgchange -ay system` → root → etc → data 顺序能跑通 | untested | E1/E2 | QEMU 串口 + `systemd.log_level=debug`；`systemctl list-jobs` | P0 busybox 等价路径 E2-pass；systemd initrd（P1）未测 |
+| A-001 | LVM LV 上 `mkfs.erofs`，`root=/dev/system/root_a rootfstype=erofs` 能挂 | E2-pass | E2 | `mkfs.erofs --all-root /dev/system/root_a`；`mount -t erofs`；`findmnt /`；`dmesg` | mkfs.erofs 1.9.4 rc=0；`findmnt /` erofs ro；`dump.erofs` 4096/2652；[W-1](evidence/2026-11-17-w1-storage.md) |
+| A-002 | systemd initrd 里 `vgchange -ay system` → root → etc → data 顺序能跑通 | untested | E1/E2 | QEMU 串口 + `systemd.log_level=debug`；`systemctl list-jobs` | P0 busybox 等价路径 E2-pass；systemd initrd（P1）未测；[W-1](evidence/2026-11-17-w1-storage.md) |
 | A-003 | `systemd-sysupdate` 的 `Type=partition` 语义 | doc-confirmed | E0 | `sysupdate.d(5)`：只支持 GPT 分区，不支持 LVM；v1 不用 | man page |
 | A-004 | OVMF 下 UKI + systemd-boot 能启动 A/B/recovery，`bootctl list` 看到三个条目 | untested | E1/E2 | QEMU + OVMF；`bootctl list`；`efibootmgr -v` | — |
 | A-005 | `vgcfgrestore` 能从 ESP 的备份救回 `system` VG | untested | E1/E2 | 破坏 VG 元数据；recovery；`vgcfgrestore -f /boot/lvm/system-... system` | — |
-| A-006 | `/etc` LV 在 PID1 读 `/etc` 之前挂好，machine-id 稳定 | E2-pass | E2 | `findmnt /etc`；`cat /etc/machine-id`；重启两次比对 | 5 次正常启动 machine-id 一致；`/etc` ext4 rw |
+| A-006 | `/etc` LV 在 PID1 读 `/etc` 之前挂好，machine-id 稳定 | E2-pass | E2 | `findmnt /etc`；`cat /etc/machine-id`；重启两次比对 | 5 次正常启动 machine-id 一致；`/etc` ext4 rw；[W-1](evidence/2026-11-17-w1-storage.md) |
 | A-007 | boot counting + `systemd-bless-boot` 在 UKI 命名（`keel-b+3.efi`）下工作 | untested | E1/E2 | 坏 B 槽；重启；`bootctl list` 看 tries-left | — |
 | A-008 | 串口 getty 和 SSH 都能进；断网不影响启动 | untested | E1/E2/E3 | `-serial mon:stdio`；`systemctl status serial-getty@ttyS0`；`ssh` | — |
-| A-009 | Buildroot 的 systemd 是否带 `systemd-boot`/`bootctl`/`systemd-bless-boot`/`ukify` | doc-confirmed | E0 | 2025.02.19 源码检查 | systemd 256.17；`BR2_PACKAGE_SYSTEMD_BOOT` 存在；目标 `ukify` disabled |
+| A-009 | Buildroot 的 systemd 是否带 `systemd-boot`/`bootctl`/`systemd-bless-boot`/`ukify` | doc-confirmed | E0 | 2025.02.19 源码检查 | systemd 256.17；`BR2_PACKAGE_SYSTEMD_BOOT` 存在；目标 `ukify` disabled；[W-0](evidence/2026-11-15-w0-skeleton.md) |
 | A-010 | 2 GiB root LV 在 P4（podman 进 `/usr`）后仍够用 | untested | E0/E2 | 构建后 `du -sh`；`df -h /`；留 30% 余量 | — |
 | A-011 | Buildroot 有 `zram-generator` 或可用最小 unit 替代 | doc-confirmed | E0 | `make menuconfig` 搜 `zram`；没有就写 C unit | man page |
 | A-012 | `/etc` ext4 LV 的 `lvextend` + `resize2fs` 在线扩容 | untested | E1/E2 | `lvextend -L +512M system/etc`；`resize2fs`；`df -h /etc` | — |
@@ -56,10 +56,10 @@
 | A-015 | ESP 上的 LVM 元数据备份在 recovery 环境可读 | untested | E1/E2 | recovery 挂 ESP；`vgcfgrestore -f` | — |
 | A-016 | fstab 只放注释时，systemd 不会重复挂载/fsck | untested | E1/E2 | `systemctl list-units --type=mount`；`journalctl -b`；`findmnt` | — |
 | A-017 | LVM/root/etc/data 失败时 initrd 能自动进 recovery | untested | E1/E2 | 分别注入失败；观察串口；`switch_root` | — |
-| A-018 | data btrfs 的 `var`/`home` 子卷能在 initrd 挂载 | E2-pass | E2 | `mkfs.btrfs`；`subvol=`；`findmnt` | `findmnt -R /` 显示 `/dev/vda4[/var]` 与 `[/home]` 为 btrfs |
+| A-018 | data btrfs 的 `var`/`home` 子卷能在 initrd 挂载 | E2-pass | E2 | `mkfs.btrfs`；`subvol=`；`findmnt` | `findmnt -R /` 显示 `/dev/vda4[/var]` 与 `[/home]` 为 btrfs；[W-1](evidence/2026-11-17-w1-storage.md) |
 | A-019 | 写满 `/var` 不影响 `/etc`，但会影响 `/home` | untested | E1/E2 | 填 data；`df`；写 `/etc`/`/home` | — |
 | A-020 | `btrfs send` 到 USB 能恢复 `var`/`home` | untested | E1/E2 | send/receive；对比文件 | — |
-| A-021 | `keel.fail=<step>` 注入让 initrd 走到预期分支（vglv/root/etc/data/esp） | E2-pass | E2 | 分别注入；串口找 `keel: injecting failure at <step>`；`/run/keel/fail.*` | 5 个注入均命中；前四个落 initrd shell，esp 继续到 multi-user |
+| A-021 | `keel.fail=<step>` 注入让 initrd 走到预期分支（vglv/root/etc/data/esp） | E2-pass | E2 | 分别注入；串口找 `keel: injecting failure at <step>`；`/run/keel/fail.*` | 5 个注入均命中；前四个落 initrd shell，esp 继续到 multi-user；[W-1](evidence/2026-11-17-w1-storage.md) |
 | A-022 | 设备不出现时 initrd 在超时预算内失败并进 recovery，不挂死 | untested | E1/E2 | `keel.timeout=root:5` + 拿掉 root 设备；用串口时间戳计时 | — |
 | A-023 | ESP 不可写时仍启动成功并写 `/var/lib/keel/boot-ok`；ESP 恢复后 tries 被还原成 `+10` | untested | E1/E2 | `keel.fail=esp`；`cat /var/lib/keel/boot-ok`；修好 ESP 后 `bootctl list` | — |
 | A-024 | 所有条目都是 bad 时 systemd-boot 仍会启动其中一个，不会彻底不启动 | doc-confirmed | E0 | systemd-boot 文档 Boot Counting 一节 | 文档原文 |
@@ -124,81 +124,12 @@ podman info
 
 ## 8. 证据记录
 
-每次验证追加一行：
+每次验证一份文件，索引如下：
 
-| 日期 | 假设/Feature | 环境 | 命令 | 结果 | 证据文件/摘要 |
-|---|---|---|---|---|---|
-| 2026-11-15 | W-0 (F-001 partial) | E2 | `make -C out`；QEMU `-kernel -initrd`；串口登录 | PASS | 串口 `keel login:`；os-release 为 keel2；`systemctl --failed` 为空 |
-| 2026-11-17 | W-1 (storage) | E2 | raw loop/LVM provisioning; P0 initrd; 5 normal boots + 5 injections | PASS | see W-1 block below |
-| — | — | — | — | untested | — |
-
-### W-0 / 2026-11-15 / E2 (QEMU KVM x86_64)
-
-```text
-build: buildroot 2025.02.19, defconfig keel_qemu_x86_64_defconfig, commit 0625587
-branch: feat/buildroot-skeleton @ 0625587
-result: PASS
-evidence:
-  - serial: `keel login:` after `Reached target Multi-User System`
-  - cat /etc/os-release: NAME="keel2", PRETTY_NAME="keel2 v0.1"
-  - systemctl --failed: 0 loaded units listed
-  - systemctl is-system-running: running
-  - uname -r: 6.12.117
-  - cat /proc/1/comm: systemd
-verdict: W-0 acceptance PASS; A-009 remains doc-confirmed
-notes: root login uses an empty test-only password; rootfs.cpio is the full W-0 rootfs used as an initramfs, not the P0 initrd.
-```
-
-### W-1 / 2026-11-17 / E2 (QEMU KVM x86_64)
-
-```text
-build: buildroot 2025.02.19, defconfig keel_qemu_x86_64_defconfig, commit 5746eff
-branch: spike/s1-storage @ 5746eff
-result: PASS (P0 busybox initrd; recovery partition intentionally empty)
-provision:
-  - sudo ~/Projects/proviledge/w1-storage-provision.sh
-  - raw sparse 64G + host loop + LVM; script copy in spike/w1/provision-disk.sh
-  - mkfs.erofs 1.9.4 --all-root /dev/system/root_a out/spike/rootfs; rc=0
-  - dump.erofs: blocksize=4096, blocks=13671, inodes=2652,
-    UUID=39202cbd-4ecf-4e92-910b-ada5f694ef77
-  - blkid /dev/system/root_a: TYPE="erofs"
-evidence:
-  - dmesg: erofs: (device dm-0): mounted with root inode @ nid 36.
-  - findmnt -R /:
-      /      /dev/system/root_a  erofs  ro
-      /etc   /dev/system/etc     ext4   rw
-      /var   /dev/vda4[/var]     btrfs  rw,compress=zstd:3
-      /home  /dev/vda4[/home]    btrfs  rw,compress=zstd:3
-      /boot  /dev/vda1           vfat   rw
-  - lvs: etc/root_a/root_b all active
-  - machine-id: 8f0390395b064f9ba13f659d2cbc1279, unchanged on 5 boots
-  - systemctl --failed: 0 loaded units listed
-  - systemctl is-system-running: running
-  - keel.fail=vglv/root/etc/data: injection marker + entering recovery +
-    recovery mount failed (p2 intentionally empty) + initrd shell
-  - keel.fail=esp: ESP mount failed warning; reached multi-user; /boot unmounted
-verdict: A-001 E2-pass; A-002 untested as written (P0 equivalent E2-pass);
-         A-006 E2-pass; A-018 E2-pass; A-021 E2-pass
-notes:
-  - PARTLABEL= did not exist without udev; used /dev/vda1..vda4.
-  - LVM used a minimal lvm.conf (udev_sync=0, udev_rules=0, devices.dir=/dev)
-    plus vgchange --noudevsync -ay system and vgmknodes.
-  - /etc ext4 must be seeded from the rootfs; an empty LV broke passwd,
-    dbus, networkd and login.
-  - VFAT required CONFIG_NLS_CODEPAGE_437 and CONFIG_NLS_ISO8859_1.
-  - BusyBox timeout is not enabled by default; a config fragment enabled it.
-  - qcow2 + losetup is invalid because loop maps the container bytes, not the
-    virtual disk; W-1 used a raw sparse 64G image.
-  - W-1 used host loop provisioning instead of the guest installer
-    (one-off exception from the W-1 order); recovery fallback intentionally
-    stops at the initrd shell because p2 is empty.
-```
-
-与 design doc 不符：
-
-- design §5.2 写的是 guest 内安装器；W-1 按一次性实验要求改用 host loop。
-- design §5.4 的失败项写“进 recovery”；W-1 的 p2 故意留空，所以落到 initrd shell。
-- A-002 的原措辞是 systemd initrd；本 spike 用的是 P0 busybox。P0 等价路径通过，但 A-002 本身不能算 verified。
+| 日期 | 工作项 | 环境 | 结果 | 证据 |
+|---|---|---|---|---|
+| 2026-11-15 | W-0 skeleton | E2 | PASS | [2026-11-15-w0-skeleton.md](evidence/2026-11-15-w0-skeleton.md) |
+| 2026-11-17 | W-1 storage | E2 | PASS | [2026-11-17-w1-storage.md](evidence/2026-11-17-w1-storage.md) |
 
 证据要求：
 
