@@ -68,6 +68,7 @@ def main():
     buf = bytearray()
     stage = "boot"
     probe_index = 0
+    password_sent = False
     sent_at = time.time()
     started = time.time()
 
@@ -111,6 +112,10 @@ def main():
                     proc.stdin.flush()
                     stage = "login"
                     sent_at = time.time()
+                if stage == "login" and not password_sent and "Password:" in text:
+                    proc.stdin.write(b"\n")
+                    proc.stdin.flush()
+                    password_sent = True
                 if stage == "login" and re.search(r"(?m)^#\s*$", text):
                     stage = "probe"
                     sent_at = time.time()
