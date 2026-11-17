@@ -20,6 +20,7 @@
 | [`open/`](open/) | 未决问题：选项、建议、阻塞谁 | 到决定为止 |
 | [`lessons.md`](lessons.md) | 从上一个项目提取的通用坑，不引用旧编号 | 低 |
 | [`verification.md`](verification.md) | 环境分级、假设台账、测试矩阵、证据 | 中 |
+| [`evidence/`](evidence/) | 每次运行的证据，一文件一次，append-only | 只增不改 |
 | [`conventions.md`](conventions.md) | 语言、命名、文档模板 | 低 |
 | [`glossary.md`](glossary.md) | 中文术语 ↔ 英文标识符 | 低 |
 | [`templates/`](templates/) | feature / ADR / open question / verification 模板 | 低 |
