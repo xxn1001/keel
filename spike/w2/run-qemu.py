@@ -161,6 +161,7 @@ def main():
                 send("")
                 sent_at = time.time()
             elif stage == "login" and re.search(r"(?m)^#\s*$", current):
+                send("export SYSTEMD_PAGER=cat PAGER=cat")
                 stage = "commands"
                 sent_at = time.time()
             elif stage == "commands" and command_index < len(commands) and time.time() - sent_at > 0.5:

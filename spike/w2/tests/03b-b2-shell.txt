@@ -1,0 +1,6 @@
+echo "=== B attempt 2 shell: mount ESP and inspect"
+mkdir -p /mnt
+mount -t vfat -o rw /dev/vda1 /mnt
+ls -l /mnt/EFI/Linux
+cat /mnt/loader/loader.conf
+umount /mnt

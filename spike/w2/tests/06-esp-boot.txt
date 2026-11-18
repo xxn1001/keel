@@ -11,3 +11,5 @@ systemctl is-system-running
 echo "=== ESP-fail bootctl list"
 bootctl list
 echo "bootctl_rc=$?"
+echo "=== restore default A"
+bootctl set-default 'keel-a*'

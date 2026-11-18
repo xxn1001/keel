@@ -1,6 +1,13 @@
-echo "=== after B attempt 2 bootctl list"
+echo "=== after B attempt 2 bootctl list (auto back A)"
 bootctl list
 echo "=== after B attempt 2 ls"
 ls -l /boot/EFI/Linux
-echo "=== after B attempt 2 boot-ok"
-cat /var/lib/keel/boot-ok
+echo "=== boot-repair log after auto-back-A"
+cat /run/keel/boot-repair.log
+echo "=== re-arm B+0-2 for the ESP-fail repair test"
+mv /boot/EFI/Linux/keel-b+10.efi /boot/EFI/Linux/keel-b+0-2.efi
+echo "=== install z-esp entry and set default z-esp"
+cp /boot/keel/uki/keel-z-esp.efi /boot/EFI/Linux/keel-z-esp.efi
+bootctl set-default 'keel-z-esp*'
+echo "=== list before ESP-fail boot"
+bootctl list

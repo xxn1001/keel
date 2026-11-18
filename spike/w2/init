@@ -6,6 +6,7 @@ PATH=/bin:/sbin
 export PATH
 
 fail=
+root_dev=/dev/system/root_a
 timeout_lvm=30
 timeout_root=15
 timeout_etc=15
@@ -28,6 +29,9 @@ for arg in $(cat /proc/cmdline); do
     case "$arg" in
         keel.fail=*)
             fail=${arg#keel.fail=}
+            ;;
+        root=*)
+            root_dev=${arg#root=}
             ;;
         keel.timeout=*)
             kv=${arg#keel.timeout=}
@@ -67,6 +71,12 @@ rescue() {
     exec /bin/sh
 }
 
+case "$root_dev" in
+    /dev/*) ;;
+    *) echo "keel: unsupported root= value: $root_dev"; exec /bin/sh ;;
+esac
+echo "keel: root device $root_dev"
+
 if grep -q 'keel.recovery=1' /proc/cmdline; then
     rescue "keel.recovery=1"
 fi
@@ -82,7 +92,7 @@ if [ ! -e /dev/system/root_a ]; then
     /sbin/dmsetup ls 2>/dev/null || true
 fi
 
-step root "$timeout_root" mount -t erofs -o ro /dev/system/root_a /sysroot \
+step root "$timeout_root" mount -t erofs -o ro "$root_dev" /sysroot \
     || rescue "root mount failed"
 
 step etc "$timeout_etc" mount -t ext4 -o rw,noatime /dev/system/etc /sysroot/etc \

@@ -1,5 +1,0 @@
-echo "=== install ESP-fail entry"
-cp /boot/keel/uki/keel-z-esp.efi /boot/EFI/Linux/keel-z-esp.efi
-bootctl set-oneshot 'keel-z-esp.efi'
-echo "=== list before ESP-fail boot"
-bootctl list

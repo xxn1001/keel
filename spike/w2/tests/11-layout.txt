@@ -1,0 +1,8 @@
+echo "=== final ESP layout"
+find /boot -type f
+echo "=== loader.conf"
+cat /boot/loader/loader.conf
+echo "=== final bootctl list"
+bootctl list
+echo "=== final boot-repair log"
+cat /run/keel/boot-repair.log

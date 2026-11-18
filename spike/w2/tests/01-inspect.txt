@@ -10,3 +10,5 @@ echo "=== test1 set oneshot A10"
 bootctl set-oneshot 'keel-a+10.efi'
 echo "=== test1 bootctl list after"
 bootctl list
+echo "=== test1 clear boot-ok history"
+rm -f /var/lib/keel/boot-ok

@@ -58,8 +58,8 @@ build_uki() {
     objdump -h "${out_dir}/${name}" | grep -E '^[[:space:]]+[0-9]+ \.(osrel|cmdline|linux|initrd|sbat)' || true
 }
 
-base_a="console=ttyS0,115200 root=/dev/system/root_a ro rootfstype=erofs panic=-1"
-base_b="console=ttyS0,115200 root=/dev/system/root_b ro rootfstype=erofs panic=-1"
+base_a="console=ttyS0,115200 root=/dev/system/root_a ro rootfstype=erofs panic=-1 systemd.gpt_auto=no"
+base_b="console=ttyS0,115200 root=/dev/system/root_b ro rootfstype=erofs panic=-1 systemd.gpt_auto=no"
 
 build_uki "keel-a+10.efi" "${base_a}"
 build_uki "keel-b+10.efi" "${base_b}"
