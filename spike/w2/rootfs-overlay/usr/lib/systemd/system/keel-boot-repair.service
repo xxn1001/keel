@@ -1,0 +1,17 @@
+[Unit]
+Description=Repair exhausted systemd-boot counters
+Documentation=spike only
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target
+ConditionPathExists=/var/lib/keel/boot-ok
+ConditionPathIsMountPoint=/var
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=-/usr/libexec/keel/keel-boot-repair
+TimeoutStartSec=15s
+
+[Install]
+WantedBy=sysinit.target

@@ -1,0 +1,7 @@
+echo "=== backup good A"
+mv /boot/EFI/Linux/keel-a.efi /boot/keel/uki/keel-a-good.efi
+echo "=== install recovery A+10"
+cp /boot/keel/uki/keel-a-recovery.efi /boot/EFI/Linux/keel-a+10.efi
+bootctl set-oneshot 'keel-a+10.efi'
+echo "=== list before recovery boot"
+bootctl list

@@ -1,0 +1,15 @@
+[Unit]
+Description=Record successful keel boot
+Documentation=spike only
+After=multi-user.target
+ConditionPathIsMountPoint=/var
+ConditionPathIsMountPoint=/etc
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/keel/keel-boot-ok
+TimeoutStartSec=10s
+
+[Install]
+WantedBy=multi-user.target

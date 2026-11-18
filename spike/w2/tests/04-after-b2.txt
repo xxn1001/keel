@@ -1,0 +1,6 @@
+echo "=== after B attempt 2 bootctl list"
+bootctl list
+echo "=== after B attempt 2 ls"
+ls -l /boot/EFI/Linux
+echo "=== after B attempt 2 boot-ok"
+cat /var/lib/keel/boot-ok

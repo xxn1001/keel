@@ -1,0 +1,106 @@
+#!/bin/sh
+# keel W-2 P0 initrd script. One-time spike code, not product code.
+set -eu
+
+PATH=/bin:/sbin
+export PATH
+
+fail=
+timeout_lvm=30
+timeout_root=15
+timeout_etc=15
+timeout_data=15
+timeout_esp=10
+
+mkdir -p /dev /proc /sys /run/keel /run/lvm /run/lock /sysroot /recovery
+
+# Do not rely on CONFIG_DEVTMPFS_MOUNT here: mount the pseudo filesystems
+# explicitly before reading /proc/cmdline.
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+
+echo "keel: cmdline: $(cat /proc/cmdline)"
+
+# cmdline is space separated; word splitting is intended here.
+# shellcheck disable=SC2013
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+        keel.fail=*)
+            fail=${arg#keel.fail=}
+            ;;
+        keel.timeout=*)
+            kv=${arg#keel.timeout=}
+            name=${kv%%:*}
+            secs=${kv##*:}
+            case "$name" in
+                lvm)  timeout_lvm=$secs ;;
+                root) timeout_root=$secs ;;
+                etc)  timeout_etc=$secs ;;
+                data) timeout_data=$secs ;;
+                esp)  timeout_esp=$secs ;;
+            esac
+            ;;
+    esac
+done
+
+# step <name> <seconds> <command...>
+step() {
+    _name=$1
+    _limit=$2
+    shift 2
+    if [ "$fail" = "$_name" ]; then
+        echo "keel: injecting failure at $_name"
+        : > "/run/keel/fail.$_name"
+        return 1
+    fi
+    timeout "$_limit" "$@"
+}
+
+rescue() {
+    echo "keel: $*; entering recovery"
+    if mount -t erofs -o ro /dev/vda2 /recovery; then
+        echo "keel: recovery mounted; switching root"
+        exec switch_root /recovery /sbin/init
+    fi
+    echo "keel: recovery mount failed; dropping to shell"
+    exec /bin/sh
+}
+
+if grep -q 'keel.recovery=1' /proc/cmdline; then
+    rescue "keel.recovery=1"
+fi
+
+step vglv "$timeout_lvm" /sbin/lvm vgchange --noudevsync -ay system \
+    || rescue "vgchange failed or timed out"
+
+/sbin/lvm vgmknodes || true
+
+if [ ! -e /dev/system/root_a ]; then
+    echo "keel: /dev/system/root_a is missing after vgmknodes"
+    ls -l /dev/system 2>/dev/null || true
+    /sbin/dmsetup ls 2>/dev/null || true
+fi
+
+step root "$timeout_root" mount -t erofs -o ro /dev/system/root_a /sysroot \
+    || rescue "root mount failed"
+
+step etc "$timeout_etc" mount -t ext4 -o rw,noatime /dev/system/etc /sysroot/etc \
+    || rescue "etc mount failed"
+
+step data "$timeout_data" mount -t btrfs -o rw,noatime,compress=zstd:3,subvol=var \
+    /dev/vda4 /sysroot/var \
+    || rescue "var mount failed"
+
+step data "$timeout_data" mount -t btrfs -o rw,noatime,compress=zstd:3,subvol=home \
+    /dev/vda4 /sysroot/home \
+    || rescue "home mount failed"
+
+# ESP is degraded, not fatal.
+if step esp "$timeout_esp" mount -t vfat -o rw,noatime /dev/vda1 /sysroot/boot; then
+    echo "keel: ESP mounted at /boot"
+else
+    echo "keel: ESP mount failed; updates and boot counting unavailable"
+fi
+
+exec switch_root /sysroot /sbin/init

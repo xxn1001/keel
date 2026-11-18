@@ -1,0 +1,10 @@
+echo "=== final bootctl list"
+bootctl list
+echo "=== final ls"
+ls -l /boot/EFI/Linux
+echo "=== final boot-ok"
+cat /var/lib/keel/boot-ok
+echo "=== final failed"
+systemctl --failed
+echo "=== final state"
+systemctl is-system-running

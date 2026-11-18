@@ -1,0 +1,10 @@
+echo "=== after ESP repair bootctl list"
+bootctl list
+echo "=== after ESP repair ls"
+ls -l /boot/EFI/Linux
+echo "=== boot-repair log"
+cat /run/keel/boot-repair.log
+echo "=== remove ESP-fail entry"
+rm -f /boot/EFI/Linux/keel-z-esp.efi
+echo "=== boot-ok"
+cat /var/lib/keel/boot-ok

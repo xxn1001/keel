@@ -1,0 +1,19 @@
+#!/bin/sh
+# Spike-only boot success marker. Product code would be compiled.
+set -eu
+
+mkdir -p /var/lib/keel
+
+slot=unknown
+cmdline=$(cat /proc/cmdline)
+case "$cmdline" in
+    *root=/dev/system/root_a*) slot=a ;;
+    *root=/dev/system/root_b*) slot=b ;;
+    *root=/dev/vda2*) slot=recovery ;;
+esac
+
+boot_id=$(cat /proc/sys/kernel/random/boot_id)
+now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+printf '%s slot=%s boot_id=%s\n' "$now" "$slot" "$boot_id" >> /var/lib/keel/boot-ok
+sync

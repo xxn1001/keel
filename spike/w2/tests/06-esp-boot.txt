@@ -1,0 +1,13 @@
+echo "=== ESP-fail findmnt boot"
+findmnt /boot
+echo "=== ESP-fail cmdline"
+cat /proc/cmdline
+echo "=== ESP-fail boot-ok"
+cat /var/lib/keel/boot-ok
+echo "=== ESP-fail failed"
+systemctl --failed
+echo "=== ESP-fail state"
+systemctl is-system-running
+echo "=== ESP-fail bootctl list"
+bootctl list
+echo "bootctl_rc=$?"

@@ -1,0 +1,12 @@
+echo "=== test1 bootctl list before bless"
+bootctl list
+echo "=== test1 ls EFI/Linux"
+ls -l /boot/EFI/Linux
+echo "=== test1 remove inspector entry"
+rm -f /boot/EFI/Linux/keel-z-inspect.efi
+echo "=== test1 set default A glob"
+bootctl set-default 'keel-a*'
+echo "=== test1 set oneshot A10"
+bootctl set-oneshot 'keel-a+10.efi'
+echo "=== test1 bootctl list after"
+bootctl list

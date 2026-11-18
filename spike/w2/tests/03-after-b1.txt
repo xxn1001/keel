@@ -1,0 +1,8 @@
+echo "=== after B attempt 1 bootctl list"
+bootctl list
+echo "=== after B attempt 1 ls"
+ls -l /boot/EFI/Linux
+echo "=== set oneshot B1"
+bootctl set-oneshot 'keel-b+1-1.efi'
+echo "=== after set oneshot"
+bootctl list

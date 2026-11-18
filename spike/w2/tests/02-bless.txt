@@ -1,0 +1,24 @@
+echo "=== test2 bootctl list after A bless"
+bootctl list
+echo "=== test2 ls EFI/Linux"
+ls -l /boot/EFI/Linux
+echo "=== test2 findmnt boot"
+findmnt /boot
+echo "=== test2 cmdline"
+cat /proc/cmdline
+echo "=== test2 boot-ok"
+cat /var/lib/keel/boot-ok
+echo "=== test2 failed"
+systemctl --failed
+echo "=== test2 state"
+systemctl is-system-running
+echo "=== test2 bless unit"
+systemctl status systemd-bless-boot.service --no-pager -l | tail -20
+echo "=== test2 rename B+10 to B+2"
+mv /boot/EFI/Linux/keel-b+10.efi /boot/EFI/Linux/keel-b+2.efi
+echo "=== test2 break root_b"
+dd if=/dev/zero of=/dev/system/root_b bs=1M count=1 conv=fsync
+echo "=== test2 set oneshot B2"
+bootctl set-oneshot 'keel-b+2.efi'
+echo "=== test2 list before poweroff"
+bootctl list

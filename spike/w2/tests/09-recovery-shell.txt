@@ -1,0 +1,10 @@
+echo "=== recovery attempt: ls ESP before restore"
+mkdir -p /mnt
+mount -t vfat -o rw /dev/vda1 /mnt
+ls -l /mnt/EFI/Linux
+echo "=== recovery attempt: restore normal A+10"
+rm -f /mnt/EFI/Linux/keel-a+9-1.efi
+cp /mnt/keel/uki/keel-a+10.efi /mnt/EFI/Linux/keel-a+10.efi
+sync
+echo "=== recovery attempt: ls after restore"
+ls -l /mnt/EFI/Linux

@@ -1,0 +1,57 @@
+#!/bin/sh
+# Spike-only early repair of exhausted systemd-boot counters.
+# The real implementation belongs in compiled code; this is W-2 evidence code.
+set -eu
+
+log=/run/keel/boot-repair.log
+mkdir -p /run/keel
+exec >>"$log" 2>&1
+echo "keel-boot-repair: start $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+if [ ! -s /var/lib/keel/boot-ok ]; then
+    echo "keel-boot-repair: no boot-ok record"
+    exit 0
+fi
+
+last=$(tail -n 1 /var/lib/keel/boot-ok)
+case "$last" in
+    *slot=*) ;;
+    *) echo "keel-boot-repair: malformed boot-ok record"; exit 0 ;;
+esac
+echo "keel-boot-repair: last=$last"
+
+if ! grep -q ' /boot ' /proc/mounts; then
+    echo "keel-boot-repair: /boot is not mounted"
+    exit 0
+fi
+
+if ! touch /boot/.keel-repair-write-test 2>/dev/null; then
+    echo "keel-boot-repair: /boot is not writable"
+    exit 0
+fi
+rm -f /boot/.keel-repair-write-test
+
+restored=0
+for f in /boot/EFI/Linux/keel-a+*.efi /boot/EFI/Linux/keel-b+*.efi; do
+    [ -e "$f" ] || continue
+    base=${f##*/}
+    slot=${base#keel-}
+    slot=${slot%%+*}
+    case "$base" in
+        *+0.efi|*+0-*.efi|*+bad.efi)
+            target=/boot/EFI/Linux/keel-${slot}+10.efi
+            if [ -e "$target" ]; then
+                echo "keel-boot-repair: target exists: $target"
+                continue
+            fi
+            mv "$f" "$target"
+            echo "keel-boot-repair: restored $base -> keel-${slot}+10.efi"
+            restored=$((restored + 1))
+            ;;
+    esac
+done
+
+if [ "$restored" -eq 0 ]; then
+    echo "keel-boot-repair: nothing to restore"
+fi
+sync
