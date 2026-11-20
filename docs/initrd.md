@@ -1,6 +1,6 @@
 # initrd
 
-> 状态：accepted | 更新：2026-11-14
+> 状态：accepted | 更新：2026-11-18
 > 目标：在 `switch_root` 之前挂好 root、`/etc`、`/var`、`/home`、`/boot`。
 > 任何关键挂载失败：进 physical recovery，不继续半启动。
 > 超时预算与故障注入见 [ADR-0015](decisions/ADR-0015-boot-failure-contract.md)；
@@ -214,6 +214,26 @@ lvm-activate.service
 
 ESP 挂不上时 initrd 仍然继续启动，因为 ESP 故障不应该把一个还能跑的机器降级成救援模式。
 
+### 5.3 cmdline 参数校验
+
+手抖输错一个参数，不能让系统行为**静默改变**。规则：
+
+| 输入 | 行为 |
+|---|---|
+| `keel.xxx=...`（未知键） | 打印 `keel: unknown parameter keel.xxx, ignored`，继续正常启动 |
+| `keel.fail=<未知值>` | 打印警告，忽略该注入，正常启动 |
+| `keel.timeout=root:abc` | 打印警告，忽略该条，用默认值 |
+| `keel.timeout=foo:30` | 打印警告，忽略未知 name |
+| `keel.timeout=root:0` / `:99999` | 收敛到 `[1, 600]`，打印实际生效值 |
+| `keel.recovery=1` | 只认精确的 `1`；`=true`/`=yes` 一律忽略并警告 |
+| `root=` 不在白名单 | 打印并进 recovery（这是唯一允许改变启动路径的非法输入） |
+| 同一参数出现两次 | 最后一个生效，并打印冲突警告 |
+
+原则：**只有 `root=` 非法才允许改变启动路径；`keel.*` 非法一律降级为"忽略 + 警告"。**
+
+理由：[ADR-0015](decisions/ADR-0015-boot-failure-contract.md) 的 `keel.fail=` 和
+`keel.timeout=` 是会写进 UKI cmdline 的，一次残留就会被当成正常配置执行。
+
 ## 6. recovery
 
 - `recovery` 分区 1 GiB，erofs ro，BusyBox init + shell。
@@ -253,6 +273,8 @@ keel.recovery=1
 - P0 没有 udev 时：`vgchange --noudevsync -ay system` + `vgmknodes`。
 - P1 有 systemd-udevd；仍然建议保留 `vgmknodes` 作为兜底。
 - LV 名用下划线，避免 `/dev/mapper` 的 `--` 转义。
+- **分区路径**（`/dev/disk/by-partlabel/*`）在无 udev 时不存在，`PARTLABEL=` 挂载选项
+  busybox 也不支持。分区怎么找见 [Q-0012](open/Q-0012-initrd-device-discovery.md)。
 
 ## 9. fstab 策略
 

@@ -45,6 +45,18 @@ headless 服务器更新失败时没人按键；必须自动回旧槽。
 - 没有 delta/压缩传输；每次写整块 erofs。
 - 依赖 systemd-boot 的 boot counting/bless 行为。
 
+## Verified behavior (2026-11-18)
+
+W-2 在 E2 上实测了两条与本 ADR 措辞不符的行为，结论保留、判据需要跟进：
+
+- `systemd-bless-boot.service` 在 **`basic.target`** 就标记 good，而不是本 ADR 写的
+  "`multi-user.target` + 关键挂载检查"。也就是说**回滚判据实际上比设计更宽松**：
+  起到 basic.target 之后才失败的服务不会触发回滚。对策见 [Q-0013](../open/Q-0013-bless-point.md)。
+- boot counting 的减一发生在 systemd-boot 启动条目时，早于 cmdline 解析。
+  因此 `keel.recovery=1` 也会消耗一次尝试。
+
+证据：[evidence/2026-11-18-w2-boot.md](../evidence/2026-11-18-w2-boot.md)。
+
 ## Alternatives rejected
 
 - **systemd-sysupdate**：label 语义与固定 `root-a/b` 冲突；v1 不用，仅参考。

@@ -153,7 +153,7 @@ W-1 单次不超过 **2 个工作日**。到点没跑到 multi-user 就写结论
 | 3 | 把 B 的 root LV 写坏，切到 B | 每次尝试 tries 递减；到 0 后自动回 A |
 | 4 | ESP 不可挂载 | 系统仍启动成功；`/var/lib/keel/boot-ok` 记录到这次启动 |
 | 5 | 恢复 ESP 后重启 | tries 被修复回 `+10`（自愈），见 ADR-0015 |
-| 6 | `keel.recovery=1` | 正常 UKI 启动后由 initrd 跳进 recovery 分区；tries 不变 |
+| 6 | `keel.recovery=1` | 正常 UKI 启动后由 initrd 跳进 recovery 分区；**tries 会减一**，靠 `keel-boot-repair` 在下一次健康启动还原 |
 
 第 3 项为了省时间，可以把 tries 临时设成 `+2` 再测。
 
