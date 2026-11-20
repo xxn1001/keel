@@ -62,7 +62,7 @@ reboot                                  # 进新槽
 |---|---|
 | `/sbin/keel-update` | C 二进制，随 recovery 树发布；system root 里没有 |
 | `keel.mode=update` | recovery 的 init 按此分派，直接执行 `keel-update stage /mnt/data/lib/keel/staging` |
-| `/dev/system/root_a|root_b` | 目标 LV 标准路径 |
+| `/dev/system/root_a` / `root_b` | 目标 LV 标准路径 |
 | `/boot/EFI/Linux/keel-<slot>+3.efi` | 候选 UKI |
 | `bootctl set-oneshot keel-<slot>` | 一次性启动 |
 | `boot-complete.target` | 成功判据 |
