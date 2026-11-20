@@ -4,7 +4,7 @@ title: Rescue and recovery
 status: accepted
 target: v0.1/v0.3
 owner: TBD
-updated: 2026-11-14
+updated: 2026-11-20
 depends: [F-002, F-004, F-015]
 ---
 
@@ -20,6 +20,8 @@ v1 不做签名/verity；救援是唯一安全网。没有演练过的救援路�
 包含：
 
 - 物理 `recovery` 分区（1G erofs ro），自包含救援 rootfs。
+- **同一棵 recovery 树兼作安装介质与更新执行环境**（`keel.mode=install|rescue|update`），
+  见 [ADR-0016](../decisions/ADR-0016-maintenance-in-recovery.md)。
 - ESP 上的 recovery UKI。
 - 正常 initrd 在 LVM/root/etc/data 失败时自动 fallback。
 - `keel.recovery=1` 强制进入 recovery。
@@ -45,6 +47,7 @@ v1 不做签名/verity；救援是唯一安全网。没有演练过的救援路�
 | 接口 | 说明 |
 |---|---|
 | `keel.recovery=1` | 强制 recovery |
+| `keel.mode=install\|rescue\|update` | recovery 自己的分派；缺省 `rescue` |
 | `/dev/disk/by-partlabel/recovery` | 物理救援 rootfs |
 | `EFI/Linux/keel-recovery.efi` | ESP 上的 recovery UKI |
 | `vgcfgbackup -f /boot/lvm/...` | 元数据备份 |
@@ -66,6 +69,16 @@ mount /dev/system/root_a /mnt/root
 mount /dev/system/etc /mnt/etc
 mount -t btrfs -o subvol=var /dev/disk/by-partlabel/data /mnt/var
 ```
+
+同一棵树有两种打包形态、三个入口（[ADR-0016](../decisions/ADR-0016-maintenance-in-recovery.md)）：
+
+| `keel.mode=` | 形态 | 用途 |
+|---|---|---|
+| `install` | `recovery.cpio`（RAM，不落盘） | 对空盘执行 `keel-install` |
+| `rescue`（缺省） | `recovery.erofs`（分区） | 交互 shell |
+| `update` | `recovery.erofs`（分区） | 执行 `keel-update` |
+
+`keel-install` / `keel-update` 只存在于这套环境里；system root 中**没有**任何写盘工具。
 
 ### 5.2 recovery UKI 与 fallback
 
@@ -129,3 +142,4 @@ E3：真机至少做一次“清空 ESP + 恢复”和“破坏 VG 元数据 + r
 | 2026-11-10 | 初稿（ESP rescue + USB） |
 | 2026-11-13 | 增加物理 recovery 分区、recovery UKI、initrd fallback |
 | 2026-11-14 | 术语统一：`rescue UKI` 改为 `recovery UKI` |
+| 2026-11-20 | recovery 兼作安装介质与更新执行环境（`keel.mode=`） |

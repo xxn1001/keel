@@ -16,9 +16,9 @@
 
 | 版本 | 主题 | 特征 | Gate |
 |---|---|---|---|
-| v0.1 | walking skeleton | F-001, F-002, F-004, F-015, F-005(P0), F-006, F-012(基础) | QEMU 登录；root/etc/data 挂载正确；LVM 失败进 recovery；5 次重启。执行契约见 [design-v01-skeleton.md](design-v01-skeleton.md) |
+| v0.1 | walking skeleton | F-001, F-002, F-004, F-015, F-005(P0), F-006, F-011(最小), F-012(基础) | QEMU 登录；root/etc/data 挂载正确；LVM 失败进 recovery；5 次重启。执行契约见 [design-v01-skeleton.md](design-v01-skeleton.md) |
 | v0.2 | 引导链 | F-003(手动 A/B), F-012(USB/recovery UKI) | UKI + systemd-boot；手动切槽；10 次重启 |
-| v0.3 | 安装与回滚 | F-003(自动), F-007, F-011, F-012(完整) | 空盘安装；破坏 B 槽自动回 A；recovery 演练通过 |
+| v0.3 | 安装与回滚 | F-003(自动), F-007, F-011(完整), F-012(完整) | 空盘安装；破坏 B 槽自动回 A；recovery 演练通过 |
 | v0.4 | 用户态 | F-008, F-013, F-014 | podman hello-world；状态可读；备份可恢复 |
 | v1.0 | 稳定 | 收口、长跑、文档 | 真服务器连续运行一周；断电/重启 10 次 |
 | future | 扩展 | F-009 VFIO, F-010 Secure Boot/verity, data fs zfs | 单独设计，不阻塞 v1 |
@@ -41,6 +41,7 @@
 - F-005 P0（脚本 initrd）。
 - F-006 headless（串口 + 有线 + SSH）。
 - F-012 基础 recovery（分区 + initrd fallback；UKI 在 v0.2）。
+- F-011 最小安装器（非交互，从 recovery 启动，用于造盘和验收）。
 
 Gate：
 

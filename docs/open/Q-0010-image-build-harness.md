@@ -61,3 +61,14 @@ A。核心理由不是"省事"，是**测试路径和产品路径合一**：安�
 
 W-1 开始前。至少要确定：qcow2 尺寸（建议 64 GiB）、phase 1 用哪个镜像、
 以及 CI 里怎么等待 phase 1 结束（串口匹配字符串还是退出码）。
+
+## Resolution (2026-11-20)
+
+选 A。补充三点：
+
+- **安装器住在 recovery 树里**（[ADR-0016](../decisions/ADR-0016-maintenance-in-recovery.md)）。
+  phase 1 用 `recovery.cpio` 当 initramfs 启动：`-kernel bzImage -initrd recovery.cpio`，
+  cmdline 带 `keel.mode=install`。RAM 里跑，不需要先有盘。
+- **载荷放一块单独挂进来的盘**（U 盘 / QEMU 的第二块盘），挂在 `/mnt/usb`，
+  `keel-install --source /mnt/usb --disk /dev/vdX`。安装器只认目录，不认传输方式。
+- 目标盘用 64 GiB 稀疏 raw。**`qcow2` 不能直接 `losetup`**（W-1 踩过）。
