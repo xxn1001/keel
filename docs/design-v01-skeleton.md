@@ -22,12 +22,13 @@
 
 | 项 | 内容 | 对应 feature |
 |---|---|---|
-| 构建 | Buildroot + br2-external，出 kernel + initrd + rootfs | F-001 |
+| 构建 | Buildroot + br2-external，出 kernel + initrd + system root（erofs）+ recovery（erofs / cpio） | F-001 |
 | 存储 | 4 分区 GPT：`esp` / `recovery` / `system`(LVM) / `data`(btrfs) | F-004, F-015 |
 | root | `system/root_a` erofs ro；`root_b` 建好但不切 | F-002 |
 | 可写配置 | `system/etc` ext4，initrd 里挂好 | F-004 |
 | initrd | P0 shell 脚本；失败进 recovery | F-005, F-012 |
-| recovery | 物理分区 + initrd 自动 fallback；ESP recovery UKI 在 v0.2 | F-012 |
+| recovery | 物理分区 + initrd 自动 fallback；**兼作安装与更新的执行环境**（`keel.mode=`）；ESP recovery UKI 在 v0.2 | F-012 |
+| 安装 | recovery 树的 `install` 模式跑 `keel-install`，非交互；系统 root 不含写盘工具 | F-011 |
 | 引导 | UEFI + systemd-boot + UKI A/B | F-001, F-002 |
 
 ### 2.2 明确不做

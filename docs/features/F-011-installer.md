@@ -58,7 +58,7 @@ depends: [F-001, F-002, F-004, F-015, F-005]
 
 | 接口 | 说明 |
 |---|---|
-| `installer/keel-install` | 入口；住在 recovery 树里，`/sbin/keel-install` |
+| `installer/keel-install` | 入口；住在 recovery 树里，`/sbin/keel-install`；**C 二进制**，shell 只做测试装置的胶水 |
 | `--disk /dev/vdX` | 目标盘 |
 | `--source <dir>` | 载荷目录（U 盘挂载点或任意目录）。**只认目录，不认传输方式** |
 | `--dry-run` | 打印计划，不动盘 |
@@ -83,6 +83,23 @@ depends: [F-001, F-002, F-004, F-015, F-005]
 7. `bootctl --esp-path=/boot install`；复制 UKI A/B；`loader.conf` default A。
 8. 写 NVRAM 指向目标 ESP；确认不是 USB。
 9. 首启生成 machine-id/ssh host key。
+
+实现语言：**C，静态链接优先**，与 `keel-update` 同一策略。安装器只调用外部工具
+（`sgdisk`/`lvm`/`mkfs.*`/`bootctl`），自己不解析分区表，但**顺序、拒绝条件、退出码、
+`--dry-run` 都由编译代码控制**——这是 [AGENTS.md](../../AGENTS.md) §5 "写盘逻辑必须编译"
+的范围。
+
+工具依赖（都进 recovery 树）：
+
+| 用途 | 工具 | 包 |
+|---|---|---|
+| 建 GPT | `sgdisk` | `gdisk` |
+| 写 ESP | `mkfs.vfat` | `dosfstools` |
+| `/etc` | `mkfs.ext4` | `e2fsprogs` |
+| data | `mkfs.btrfs`、`btrfs` | `btrfs-progs` |
+| root / recovery | `mkfs.erofs` | `erofs-utils` |
+| VG / LV | `lvm` | `lvm2` |
+| 引导条目 | `bootctl` | `systemd` |
 
 约束：
 

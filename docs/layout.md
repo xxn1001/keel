@@ -100,6 +100,11 @@ UEFI
 - ESP 挂不上：继续启动 + 警告；更新不可用。
 - `keel.recovery=1`：直接进 recovery。
 
+维护入口（v0.2 起）：ESP 上的 `keel-recovery` 条目。运行中的系统用
+`bootctl set-oneshot keel-recovery` 请求"下次启动进 recovery"，由它执行安装或更新。
+v0.1 没有该条目，只能靠 initrd 的 fallback 进入。见
+[ADR-0016](decisions/ADR-0016-maintenance-in-recovery.md)。
+
 ## 7. 为什么这样分
 
 ### 7.1 root 在 system VG

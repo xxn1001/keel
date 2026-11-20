@@ -243,10 +243,11 @@ ESP 挂不上时 initrd 仍然继续启动，因为 ESP 故障不应该把一个
 ```text
 root=PARTLABEL=recovery ro rootfstype=erofs
 keel.recovery=1
+keel.mode=rescue
 ```
 
 - 正常 initrd 在 LVM/root/etc/data 失败时自动 fallback。
-- recovery 工具：`lvm2`、`e2fsprogs`、`btrfs-progs`、`erofs-utils`、`bootctl`、`sgdisk`、`mount`、`blkid`、`dmesg`。
+- recovery 工具：`lvm2`、`e2fsprogs`、`btrfs-progs`、`erofs-utils`、`dosfstools`（`mkfs.vfat`，安装器要写 ESP）、`gdisk`（`sgdisk`）、`bootctl`、`mount`、`blkid`、`dmesg`。
 - recovery 是 known-good，不随 A/B 更新自动更新；ESP recovery UKI + USB 仍保留。
 - 详见 [F-012](features/F-012-rescue.md) / [ADR-0014](decisions/ADR-0014-recovery-partition.md)。
 

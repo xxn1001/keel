@@ -54,7 +54,7 @@ Gate：
 - 破坏 VG 元数据，能自动进 recovery 并 `vgcfgrestore`。
 - data 挂不上时能进 recovery。
 
-不包含：UKI A/B 完整回滚、自动更新、安装器、podman、zram。
+不包含：UKI A/B 完整回滚、自动更新、安装器的交互界面、podman、zram。
 
 ## 4. v0.2 引导链
 
@@ -63,19 +63,19 @@ Gate：
 包含：
 
 - F-005 P1（systemd initrd units）。
-- F-003 手动 A/B（`stage`/`switch`，先不自动回滚）。
+- F-003 手动 A/B（`stage`/`switch`，先不自动回滚）；`keel-update` 住在 recovery。
 - F-012 USB rescue + recovery UKI（基础）。
 
 Gate：
 
 - `bootctl list` 看到 `keel-a.efi`、`keel-b.efi`、`keel-recovery.efi`。
 - 手动 `bootctl set-default keel-b.efi` 后重启进入 B 槽；`findmnt /` 是 erofs ro。
-- `keel-update stage` 能写非活动 LV；ESP 里有 `keel-b+3.efi`。
+- 从 recovery 跑 `keel-update stage` 能写非活动 LV；ESP 里有 `keel-b+3.efi`。
 - 连续 10 次重启，无 emergency。
 - `keel.recovery=1` 能进 recovery。
 - 破坏 B 槽 root，能切回 A。
 
-不包含：自动回滚、安装器、podman、zram。
+不包含：自动回滚、安装器完整版、podman、zram。
 
 ## 5. v0.3 安装与回滚
 
@@ -85,7 +85,7 @@ Gate：
 
 - F-003 自动回滚（boot counting + `systemd-bless-boot` + `panic=-1` + watchdog + emergency timer）。
 - F-007 zram。
-- F-011 安装器（GPT/LVM/btrfs/recovery/`bootctl install`）。
+- F-011 安装器完整版（交互确认、进度输出、U 盘自动找载荷）。
 - F-012 完整救援（recovery + USB + LVM/data 备份）。
 
 Gate：

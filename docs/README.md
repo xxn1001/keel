@@ -9,7 +9,7 @@
 |---|---|---|
 | [`outline.md`](outline.md) | 稳定地图：特征、磁盘布局、initrd、版本规划 | 低 |
 | [`roadmap.md`](roadmap.md) | 版本、特征映射、gate | 中 |
-| [`design-v01-skeleton.md`](design-v01-skeleton.md) | v0.1 执行契约：范围冻结、工作项、验收、失败归因 | 中 |
+| [`design-v01-skeleton.md`](design-v01-skeleton.md) | v0.1 执行契约：范围冻结、工作项、验收、失败归因、施工顺序 | 中 |
 | [`layout.md`](layout.md) | GPT / LVM / 文件系统 / 挂载的精确表 | 低 |
 | [`initrd.md`](initrd.md) | 启动阶段、systemd units、挂载顺序、救援入口 | 低 |
 | [`workflow.md`](workflow.md) | 分支、commit、设计 PR、review、merge、release | 低 |
@@ -99,9 +99,9 @@
 
 ## 5. 当前阶段
 
-- 文档框架：v0.2（system VG + data 分区 + recovery）。
-- 协作规则：已定稿（`workflow.md`、`testing.md`、`ci.md`）。
-- 仓库：已 `git init -b main`，尚未提交；等待 initial commit。
-- 代码：未开始。
-- 第一批要验证的假设：`verification.md` 的 A-001、A-002、A-004、A-017、A-018。
-- 在这些假设通过之前，不写安装器和自动回滚。
+- 设计：v0.1 范围冻结，施工顺序见 [`design-v01-skeleton.md`](design-v01-skeleton.md) §10（六期）。
+- 已归档：W-0 / W-1 / W-2 三个 spike 全部 PASS，证据在 [`evidence/`](evidence/)。
+- 代码：v0.1 第一期开工（构建参数 + initrd 设备发现）。
+- 安装器已进入 v0.1（最小非交互版），住在 recovery 树里，见
+  [ADR-0016](decisions/ADR-0016-maintenance-in-recovery.md)。
+- 仍未做：自动回滚（v0.2）、安装器交互界面（v0.3）。

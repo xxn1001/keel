@@ -60,7 +60,8 @@ v1 不做签名/verity；救援是唯一安全网。没有演练过的救援路�
 
 - 1 GiB，erofs ro，BusyBox init + shell；`/run`/`/tmp` tmpfs。
 - 不依赖 system VG，也不依赖 data。
-- 工具：`lvm2`、`e2fsprogs`、`btrfs-progs`、`erofs-utils`、`bootctl`、`sgdisk`、`mount`、`blkid`、`dmesg`。
+- 工具：`lvm2`、`e2fsprogs`、`btrfs-progs`、`erofs-utils`、`dosfstools`（`mkfs.vfat`）、
+  `gdisk`（`sgdisk`）、`bootctl`、`mount`、`blkid`、`dmesg`。
 - 可手动挂 system root、`/etc`、data：
 
 ```sh
