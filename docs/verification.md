@@ -63,6 +63,7 @@
 | A-022 | 设备不出现时 initrd 在超时预算内失败并进 recovery，不挂死 | untested | E1/E2 | `keel.timeout=root:5` + 拿掉 root 设备；用串口时间戳计时 | — |
 | A-023 | ESP 不可写时仍启动成功并写 `/var/lib/keel/boot-ok`；ESP 恢复后 tries 被还原成 `+10` | E2-pass | E2 | `keel.fail=esp`；`cat /var/lib/keel/boot-ok`；修好 ESP 后 `bootctl list` | ESP 失败仍到 multi-user，boot-ok 有记录；下次启动 repair 还原 B+10；[W-2](evidence/2026-11-18-w2-boot.md) |
 | A-024 | 所有条目都是 bad 时 systemd-boot 仍会启动其中一个，不会彻底不启动 | doc-confirmed | E0 | systemd-boot 文档 Boot Counting 一节 | 文档原文 |
+| A-025 | 非法 `keel.*` 参数不改变启动路径：拼错、未知值、超范围一律忽略并警告，只有非法 `root=` 进 recovery | untested | E1/E2 | 分别注入 `keel.xxx=1`、`keel.fail=bogus`、`keel.timeout=root:abc`、`keel.timeout=root:0`、`keel.recovery=true`；观察串口与是否仍到 multi-user | — |
 
 ## 5. 特征测试矩阵
 
