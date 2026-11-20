@@ -11,3 +11,8 @@ CONFIG_VFAT_FS=y
 # vfat ESP needs these codepages; without them mount fails (W-1).
 CONFIG_NLS_CODEPAGE_437=y
 CONFIG_NLS_ISO8859_1=y
+# W-2: systemd-stub needs these; without them UEFI load fails
+# with "Bad kernel image: Load error".
+CONFIG_EFI=y
+CONFIG_EFI_STUB=y
+CONFIG_EFIVAR_FS=y
