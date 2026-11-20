@@ -65,8 +65,9 @@ system 分区 6 GiB；VG 约 1 GiB 空闲。`etc` 可 `lvextend` + `resize2fs` �
 
 ### 5.2 播种 `/etc`
 
-1. 挂 `system/etc` 到临时目录。
-2. `cp -a` 镜像 `/etc/.`。
+1. root LV 写完之后，`mount -o ro /dev/system/root_a` 到临时目录。
+2. 挂 `system/etc` 到另一个临时目录，`cp -a` **root 里的** `/etc/.`。
+   `/etc` 只有这一个来源：不打 `etc.tar`，也不 loop 挂镜像文件。
 3. 清空 `machine-id`；删除 ssh host key；设置 hostname。
 4. 保留 `/usr/share/factory/etc` 作为 diff 基准。
 5. 写 fstab 注释模板，不写核心挂载。

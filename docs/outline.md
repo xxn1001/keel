@@ -9,10 +9,11 @@ keel2 是一个**自己构建的最小 Linux 系统**，目标形态是 **headle
 
 - 只读 **erofs** 基底，A/B 两个 LVM LV。
 - 可写状态：`/etc` 是 system VG 的独立 ext4 LV；`/var`/`/home` 在独立 data 分区（btrfs）。
-- 物理 **recovery** 分区，LVM/root/etc/data 失败时自动进救援。
+- 物理 **recovery** 分区，LVM/root/etc/data 失败时自动进救援；**安装器与更新器也住在这里**，
+  系统 root 不含写盘工具。
 - **systemd** 是唯一 init；initrd 最终也用 systemd。
 - **Buildroot LTS** 构建；没有 mkosi、nix、发行版包管理器。
-- 更新器是**编译型** `keel-update`，不是 shell 状态机。
+- 更新器是**编译型** `keel-update`，在 recovery 里运行，不是 shell 状态机。
 - 用户态软件后续用 podman；VFIO 是未来特征。
 
 设计原则：**可解释、可重建、可救援**。先让系统能稳定启动和回滚，再加功能。
@@ -31,7 +32,7 @@ keel2 是一个**自己构建的最小 Linux 系统**，目标形态是 **headle
 | F-008 | podman 用户态 | accepted | v0.4 | F-015 | [F-008](features/F-008-podman.md) |
 | F-009 | VFIO / 设备直通 | idea | future | F-006 | [F-009](features/F-009-vfio.md) |
 | F-010 | Secure Boot + dm-verity | deferred | future | F-002, F-005 | [F-010](features/F-010-secureboot-verity.md) |
-| F-011 | 安装器（空盘 GPT/LVM/btrfs/recovery） | accepted | v0.3 | F-001/002/004/015 | [F-011](features/F-011-installer.md) |
+| F-011 | 安装器（空盘 GPT/LVM/btrfs/recovery） | accepted | v0.1/v0.3 | F-001/002/004/015 | [F-011](features/F-011-installer.md) |
 | F-012 | 救援与恢复 | accepted | v0.1/v0.3 | F-002/004/015 | [F-012](features/F-012-rescue.md) |
 | F-013 | 状态与可观测性 | proposed | v0.4 | F-003 | [F-013](features/F-013-status.md) |
 | F-014 | 备份与快照 | proposed | v0.4 | F-004/015 | [F-014](features/F-014-backup.md) |
@@ -90,9 +91,9 @@ vgchange -ay system
 
 | 版本 | 主题 | 包含特征 | Gate |
 |---|---|---|---|
-| v0.1 | walking skeleton | F-001, F-002, F-004, F-015, F-005(P0), F-006, F-012(basic) | QEMU 登录；root/etc/data 挂载正确；LVM 失败能进 recovery；连续 5 次重启 |
+| v0.1 | walking skeleton | F-001, F-002, F-004, F-015, F-005(P0), F-006, F-011(最小), F-012(basic) | QEMU 登录；root/etc/data 挂载正确；LVM 失败能进 recovery；连续 5 次重启 |
 | v0.2 | 引导链 | F-005(P1), F-003(手动 A/B), F-012(USB/recovery UKI) | UKI + systemd-boot；手动切槽；10 次重启 |
-| v0.3 | 安装与回滚 | F-003(自动), F-007, F-011, F-012(完整) | 空盘安装；破坏 B 槽自动回 A；recovery 演练通过 |
+| v0.3 | 安装与回滚 | F-003(自动), F-007, F-011(完整), F-012(完整) | 空盘安装；破坏 B 槽自动回 A；recovery 演练通过 |
 | v0.4 | 用户态 | F-008, F-013, F-014 | podman hello-world；状态可读；备份可恢复 |
 | v1.0 | 稳定 | 收口、长跑、文档 | 真服务器连续运行一周；断电/重启 10 次 |
 | future | 扩展 | F-009 VFIO, F-010 Secure Boot/verity, data fs zfs | 单独设计，不阻塞 v1 |

@@ -226,6 +226,7 @@ ESP 挂不上时 initrd 仍然继续启动，因为 ESP 故障不应该把一个
 | `keel.timeout=foo:30` | 打印警告，忽略未知 name |
 | `keel.timeout=root:0` / `:99999` | 收敛到 `[1, 600]`，打印实际生效值 |
 | `keel.recovery=1` | 只认精确的 `1`；`=true`/`=yes` 一律忽略并警告 |
+| `keel.mode=<install\|rescue\|update>` | initrd **不消费**，原样透传给 recovery；不要当成未知参数警告 |
 | `root=` 不在白名单 | 打印并进 recovery（这是唯一允许改变启动路径的非法输入） |
 | 同一参数出现两次 | 最后一个生效，并打印冲突警告 |
 
@@ -242,12 +243,39 @@ ESP 挂不上时 initrd 仍然继续启动，因为 ESP 故障不应该把一个
 ```text
 root=PARTLABEL=recovery ro rootfstype=erofs
 keel.recovery=1
+keel.mode=rescue
 ```
 
 - 正常 initrd 在 LVM/root/etc/data 失败时自动 fallback。
-- recovery 工具：`lvm2`、`e2fsprogs`、`btrfs-progs`、`erofs-utils`、`bootctl`、`sgdisk`、`mount`、`blkid`、`dmesg`。
+- recovery 工具：`lvm2`、`e2fsprogs`、`btrfs-progs`、`erofs-utils`、`dosfstools`（`mkfs.vfat`，安装器要写 ESP）、`gdisk`（`sgdisk`）、`bootctl`、`mount`、`blkid`、`dmesg`。
 - recovery 是 known-good，不随 A/B 更新自动更新；ESP recovery UKI + USB 仍保留。
 - 详见 [F-012](features/F-012-rescue.md) / [ADR-0014](decisions/ADR-0014-recovery-partition.md)。
+
+### 6.1 维护模式（`keel.mode=`）
+
+recovery 树同时是安装介质和更新执行环境（[ADR-0016](decisions/ADR-0016-maintenance-in-recovery.md)）。
+进去以后干什么，由 cmdline 决定：
+
+| `keel.mode=` | 打包形态 | 启动条件 | 行为 |
+|---|---|---|---|
+| `install` | `recovery.cpio`（RAM） | 目标盘为空 | 跑 `keel-install`，写完提示重启 |
+| `rescue`（缺省） | `recovery.erofs`（分区） | 任何情况 | 掉进 shell，工具齐全 |
+| `update` | `recovery.erofs`（分区） | data 上有载荷 | 跑 `keel-update`，写完重启 |
+
+两层参数不要混：
+
+- `keel.recovery=1` 是 **initrd 层**的"别继续启动了，直接去 recovery"，由正常启动的
+  initrd 消费（§3 的 `rescue()`）。
+- `keel.mode=` 是 **recovery 层**的"你进去以后干什么"，由 recovery 自己的 `/sbin/init`
+  消费。缺省 `rescue`，未知值按 `rescue` 处理并打印警告。
+
+载荷位置（同一个文件的两个视角）：
+
+| 视角 | 路径 |
+|---|---|
+| 运行中的系统 | `/var/lib/keel/staging/` |
+| recovery（data 挂在 `/mnt/data`，`-o subvol=var`） | `/mnt/data/lib/keel/staging/` |
+| 安装时（U 盘 / QEMU 第二块盘挂在 `/mnt/usb`） | `/mnt/usb/` |
 
 ## 7. initrd 内容
 

@@ -22,6 +22,7 @@
 | [ADR-0013](ADR-0013-data-partition.md) | 独立 data 分区承载 `/var` `/home` | accepted | 2026-11-13 |
 | [ADR-0014](ADR-0014-recovery-partition.md) | recovery 分区 + initrd fallback | accepted | 2026-11-13 |
 | [ADR-0015](ADR-0015-boot-failure-contract.md) | 启动尝试计数（tries=10）、`/var` 自愈标记、超时契约、`keel.fail=` 注入 | accepted | 2026-11-14 |
+| [ADR-0016](ADR-0016-maintenance-in-recovery.md) | 安装/更新工具只放 recovery；`keel.mode=` 三入口；ESP 为写入口例外 | accepted | 2026-11-20 |
 
 ## 规则
 

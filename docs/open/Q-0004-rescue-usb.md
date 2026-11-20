@@ -13,6 +13,10 @@ updated: 2026-11-14
 ESP recovery UKI 依赖目标盘；ESP 坏/清空时需要 USB。
 USB 可能过期；工具太少修不了，太多则体积/维护成本高。
 
+[ADR-0016](../decisions/ADR-0016-maintenance-in-recovery.md) 之后多一层要求：recovery
+自己不能自我更新，**USB 是它唯一的更新介质**。所以 USB 不只要能救 root，还要能重写
+`recovery` 分区（`dd` 一个 `recovery.erofs`，或用 `mkfs.erofs` 重做）。
+
 ## Options
 
 ### A. 最小工具集（建议）

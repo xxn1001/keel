@@ -70,3 +70,15 @@ keel.recovery=1
 - [initrd.md](../initrd.md)
 - [ADR-0011](ADR-0011-rescue-media.md)
 - [ADR-0012](ADR-0012-system-vg.md)
+
+## Note (2026-11-20)：职责扩展
+
+本文的结论全部不变（物理分区、erofs ro、BusyBox init、known-good、不随 A/B 自动更新）。
+
+变化的是**职责范围**：recovery 从"只在故障时进入的救援环境"扩展为
+"救援 + 安装 + 更新"三种用途，由 `keel.mode=install|rescue|update` 分派。
+`keel-install` 与 `keel-update` 只存在于这个分区，system root 不含写盘工具。
+见 [ADR-0016](ADR-0016-maintenance-in-recovery.md)。
+
+工具集相应补齐：`mkfs.vfat`（`dosfstools`，安装器要写 ESP）和 `sgdisk`（`gdisk`）。
+上面 Decision 里列的工具清单按"至少需要这些"理解，不是封顶。

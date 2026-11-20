@@ -27,6 +27,7 @@
 | 播种 | seed | 安装时把镜像 `/etc` 复制到 `system/etc` |
 | 救援分区 | recovery partition | 物理 `recovery`，erofs ro，独立救援 rootfs |
 | 救援模式 | rescue mode | `keel.recovery=1`，进 recovery |
+| 维护模式 | maintenance mode | recovery 的分派：`keel.mode=install / rescue / update` |
 | 救援 UKI | recovery UKI | ESP 上的 `keel-recovery.efi` |
 | 更新器 | updater | `keel-update`，编译型 |
 | 暂存 | stage | 写非活动 root LV + UKI + set-oneshot |

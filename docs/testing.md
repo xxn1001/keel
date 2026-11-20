@@ -41,7 +41,7 @@ C 测试的构建方式：
 
 优先测纯函数和状态转换：
 
-- `/proc/cmdline` 的 `root=/dev/system/root_a|root_b` 解析。
+- `/var/lib/keel/boot-ok` 的 `slot=` 解析（当前槽判定）；`/proc/cmdline` 的 `keel.*` 解析。
 - 当前槽/目标槽选择；拒绝目标等于当前。
 - payload 大小、分区大小、ESP 剩余空间检查。
 - boot entry 文件名：`keel-b+3.efi` vs entry ID `keel-b`。
@@ -90,7 +90,7 @@ make build
 
 检查：
 
-- `out/images/` 有 root.erofs、recovery.erofs、UKI、initrd、manifest。
+- `out/images/` 有 root.erofs、recovery.erofs、recovery.cpio、UKI、initrd、manifest。
 - `out/build/` 没有编译警告（`-Werror`）。
 - `make savedefconfig` 后 `configs/*_defconfig` 无 drift。
 - `utils/check-package -b package/...` 通过。

@@ -5,10 +5,12 @@ A minimal, self-built Linux system for a **headless server**:
 - **erofs read-only root**, A/B on two LVM LVs in the `system` VG.
 - **system VG** for root A/B and `/etc` (thick LVs).
 - **data partition** for `/var` and `/home` (btrfs subvolumes).
-- **physical recovery partition** for LVM/root/etc/data failures.
+- **physical recovery partition** for LVM/root/etc/data failures. It also carries the
+  installer and the updater, so the running system has no tool that can rewrite its own root.
 - **systemd** as the only init; initrd eventually uses systemd too.
 - **Buildroot LTS** as the build system; no mkosi, no nix, no distro package manager on the host.
-- **Compiled updater** (`keel-update`), no shell state machine.
+- **Compiled updater** (`keel-update`), no shell state machine; runs from recovery, not from the
+  running system.
 - **podman** for userland software (later); VFIO is a future feature.
 
 This repository is currently **design-only**. There is no bootable artifact yet.

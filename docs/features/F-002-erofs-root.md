@@ -45,7 +45,7 @@ depends: [F-001, F-005]
 | `/dev/system/root_b` | B 槽标准 LVM 路径 |
 | `root=... rootfstype=erofs` | UKI cmdline |
 | `mkfs.erofs` | 构建 root LV 镜像 |
-| `keel-update` | 写非活动槽（F-003） |
+| `keel-update` | 写非活动槽（F-003）；在 recovery 里运行，system root 没有它 |
 
 ## 5. Design
 

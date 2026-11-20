@@ -4,7 +4,7 @@ title: Atomic A/B update and rollback
 status: accepted
 target: v0.2/v0.3
 owner: TBD
-updated: 2026-11-13
+updated: 2026-11-20
 depends: [F-002, F-005]
 ---
 
@@ -19,7 +19,8 @@ headless 服务器起不来没人按键；更新必须原子，失败必须自�
 
 包含：
 
-- `keel-update`：`stage` / `switch` / `status`。
+- `keel-update`：`stage` / `switch` / `status`，**只存在于 recovery 分区**，不进 system root。
+- 运行中的系统只负责"把镜像取回 `/var/lib/keel/staging/`"和"请求下次启动进 recovery"。
 - 写非活动 root LV + 写 UKI + `bootctl set-oneshot`。
 - boot counting + `systemd-bless-boot`。
 - `panic=-1` + 运行时看门狗 + emergency 超时重启。
@@ -31,29 +32,41 @@ headless 服务器起不来没人按键；更新必须原子，失败必须自�
 - 自动下载/定时更新。
 - 增量更新/delta。
 - Secure Boot/verity（F-010）。
+- 在运行中的系统里直接写 root LV —— 那是 recovery 的活，见
+  [ADR-0016](../decisions/ADR-0016-maintenance-in-recovery.md)。
 
 ## 3. User-visible behavior
 
 ```text
-keel-update stage <payload-dir>
-keel-update switch a|b
+# 1) 运行中的系统：只取回，不写盘
+cp root-2026.11.20.erofs /var/lib/keel/staging/root.erofs
+bootctl set-oneshot keel-recovery      # 下次启动进 recovery
+reboot
+
+# 2) recovery：真的写盘
+keel-update stage /mnt/data/lib/keel/staging
+keel-update switch b
 keel-update status
+reboot                                  # 进新槽
 ```
 
-- `stage`：把 payload 写进非活动 root LV，安排下次启动。
-- `switch`：改默认槽。
+- `stage`：把 payload 写进非活动 root LV，安排下次启动。**只在 recovery 里可用。**
+- `switch`：改默认槽。只在 recovery 里可用。
 - `status`：当前槽、ESP 条目、LV 大小、上次结果。
+- 第一部分由 systemd 的常规工具（`cp`/`scp`/`curl`）就能完成，不需要 `keel-*`；
+  真正的写入器只在 recovery 里。
 
 ## 4. Interfaces
 
 | 接口 | 说明 |
 |---|---|
-| `/usr/bin/keel-update` | C 静态 musl 二进制；无 shell |
-| `keel-update.service` | systemd unit，`ExecStart=/usr/bin/keel-update stage <dir>` |
-| `/dev/system/root_a|root_b` | 目标 LV 标准路径 |
+| `/sbin/keel-update` | C 二进制，随 recovery 树发布；system root 里没有 |
+| `keel.mode=update` | recovery 的 init 按此分派，直接执行 `keel-update stage /mnt/data/lib/keel/staging` |
+| `/dev/system/root_a` / `root_b` | 目标 LV 标准路径 |
 | `/boot/EFI/Linux/keel-<slot>+3.efi` | 候选 UKI |
 | `bootctl set-oneshot keel-<slot>` | 一次性启动 |
 | `boot-complete.target` | 成功判据 |
+| `/var/lib/keel/staging/` | 载荷落地位置（运行中视角） |
 
 payload 目录：
 
@@ -66,9 +79,27 @@ payload 目录：
 
 ## 5. Design
 
+### 5.0 执行位置
+
+`keel-update` 只存在于 recovery 分区（[ADR-0016](../decisions/ADR-0016-maintenance-in-recovery.md)）。
+运行中的系统没有它，因此"改 root"这件事在物理上只有一条路径：进 recovery。
+
+| 步骤 | 谁做 | 备注 |
+|---|---|---|
+| 取回镜像 | 运行中的系统 | 普通 `cp`/`scp`/`curl`，不用 `keel-*` |
+| 请求下次进 recovery | 运行中的系统 | `bootctl set-oneshot keel-recovery` |
+| 写 root LV 与 ESP | recovery | `keel-update stage` |
+| 切默认槽 | recovery | `keel-update switch` |
+| 回滚判据 | 新槽启动时 | boot counting，见 §5.2 |
+
+这样做的好处是：删除 root 的任意文件都不会让更新能力消失；反过来，更新代码出问题
+也不会影响正常启动。代价是每次更新多一次重启。
+
 ### 5.1 stage 顺序
 
-1. 读 `/proc/cmdline` 的 `root=/dev/system/root_a|root_b`，确定当前槽。
+1. 确定"当前可用槽"：读 `/mnt/data/lib/keel/boot-ok` 里的 `slot=`（[ADR-0015](../decisions/ADR-0015-boot-failure-contract.md)
+   写的成功标记）。读不到时退到 ESP 的默认条目；两者都没有就拒绝执行。
+   **不要读 `/proc/cmdline`**：在 recovery 里它是 `root=PARTLABEL=recovery`，没有槽信息。
 2. 目标槽 = 另一个；拒绝目标 == 当前。
 3. 检查目标 LV 存在、payload 大小 ≤ LV、ESP 剩余空间足够。
 4. 检查目标 LV 没有被挂载（`/proc/self/mountinfo`/`findmnt`）。
@@ -148,3 +179,4 @@ E3：真机更新 5 轮。
 |---|---|
 | 2026-11-10 | 初稿（物理 root 分区） |
 | 2026-11-13 | 改为 root LV；路径 `/dev/system/*`；LVM 失败进 recovery |
+| 2026-11-20 | `keel-update` 移入 recovery；更新改两段式；当前槽从 `/var/lib/keel/boot-ok` 读 |

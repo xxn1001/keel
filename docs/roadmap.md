@@ -16,9 +16,9 @@
 
 | 版本 | 主题 | 特征 | Gate |
 |---|---|---|---|
-| v0.1 | walking skeleton | F-001, F-002, F-004, F-015, F-005(P0), F-006, F-012(基础) | QEMU 登录；root/etc/data 挂载正确；LVM 失败进 recovery；5 次重启。执行契约见 [design-v01-skeleton.md](design-v01-skeleton.md) |
+| v0.1 | walking skeleton | F-001, F-002, F-004, F-015, F-005(P0), F-006, F-011(最小), F-012(基础) | QEMU 登录；root/etc/data 挂载正确；LVM 失败进 recovery；5 次重启。执行契约见 [design-v01-skeleton.md](design-v01-skeleton.md) |
 | v0.2 | 引导链 | F-003(手动 A/B), F-012(USB/recovery UKI) | UKI + systemd-boot；手动切槽；10 次重启 |
-| v0.3 | 安装与回滚 | F-003(自动), F-007, F-011, F-012(完整) | 空盘安装；破坏 B 槽自动回 A；recovery 演练通过 |
+| v0.3 | 安装与回滚 | F-003(自动), F-007, F-011(完整), F-012(完整) | 空盘安装；破坏 B 槽自动回 A；recovery 演练通过 |
 | v0.4 | 用户态 | F-008, F-013, F-014 | podman hello-world；状态可读；备份可恢复 |
 | v1.0 | 稳定 | 收口、长跑、文档 | 真服务器连续运行一周；断电/重启 10 次 |
 | future | 扩展 | F-009 VFIO, F-010 Secure Boot/verity, data fs zfs | 单独设计，不阻塞 v1 |
@@ -41,6 +41,7 @@
 - F-005 P0（脚本 initrd）。
 - F-006 headless（串口 + 有线 + SSH）。
 - F-012 基础 recovery（分区 + initrd fallback；UKI 在 v0.2）。
+- F-011 最小安装器（非交互，从 recovery 启动，用于造盘和验收）。
 
 Gate：
 
@@ -53,7 +54,7 @@ Gate：
 - 破坏 VG 元数据，能自动进 recovery 并 `vgcfgrestore`。
 - data 挂不上时能进 recovery。
 
-不包含：UKI A/B 完整回滚、自动更新、安装器、podman、zram。
+不包含：UKI A/B 完整回滚、自动更新、安装器的交互界面、podman、zram。
 
 ## 4. v0.2 引导链
 
@@ -62,19 +63,19 @@ Gate：
 包含：
 
 - F-005 P1（systemd initrd units）。
-- F-003 手动 A/B（`stage`/`switch`，先不自动回滚）。
+- F-003 手动 A/B（`stage`/`switch`，先不自动回滚）；`keel-update` 住在 recovery。
 - F-012 USB rescue + recovery UKI（基础）。
 
 Gate：
 
 - `bootctl list` 看到 `keel-a.efi`、`keel-b.efi`、`keel-recovery.efi`。
 - 手动 `bootctl set-default keel-b.efi` 后重启进入 B 槽；`findmnt /` 是 erofs ro。
-- `keel-update stage` 能写非活动 LV；ESP 里有 `keel-b+3.efi`。
+- 从 recovery 跑 `keel-update stage` 能写非活动 LV；ESP 里有 `keel-b+3.efi`。
 - 连续 10 次重启，无 emergency。
 - `keel.recovery=1` 能进 recovery。
 - 破坏 B 槽 root，能切回 A。
 
-不包含：自动回滚、安装器、podman、zram。
+不包含：自动回滚、安装器完整版、podman、zram。
 
 ## 5. v0.3 安装与回滚
 
@@ -84,7 +85,7 @@ Gate：
 
 - F-003 自动回滚（boot counting + `systemd-bless-boot` + `panic=-1` + watchdog + emergency timer）。
 - F-007 zram。
-- F-011 安装器（GPT/LVM/btrfs/recovery/`bootctl install`）。
+- F-011 安装器完整版（交互确认、进度输出、U 盘自动找载荷）。
 - F-012 完整救援（recovery + USB + LVM/data 备份）。
 
 Gate：

@@ -1,6 +1,6 @@
 # v0.1 Walking Skeleton 设计
 
-> 状态：draft | 更新：2026-11-14
+> 状态：draft | 更新：2026-11-20
 > 这是**执行契约**，不是架构文档。架构见 [ADR-0010](decisions/ADR-0010-buildroot.md) /
 > [ADR-0012](decisions/ADR-0012-system-vg.md) / [ADR-0013](decisions/ADR-0013-data-partition.md) /
 > [ADR-0014](decisions/ADR-0014-recovery-partition.md) / [ADR-0015](decisions/ADR-0015-boot-failure-contract.md)。
@@ -22,12 +22,13 @@
 
 | 项 | 内容 | 对应 feature |
 |---|---|---|
-| 构建 | Buildroot + br2-external，出 kernel + initrd + rootfs | F-001 |
+| 构建 | Buildroot + br2-external，出 kernel + initrd + system root（erofs）+ recovery（erofs / cpio） | F-001 |
 | 存储 | 4 分区 GPT：`esp` / `recovery` / `system`(LVM) / `data`(btrfs) | F-004, F-015 |
 | root | `system/root_a` erofs ro；`root_b` 建好但不切 | F-002 |
 | 可写配置 | `system/etc` ext4，initrd 里挂好 | F-004 |
 | initrd | P0 shell 脚本；失败进 recovery | F-005, F-012 |
-| recovery | 物理分区 + initrd 自动 fallback；ESP recovery UKI 在 v0.2 | F-012 |
+| recovery | 物理分区 + initrd 自动 fallback；**兼作安装与更新的执行环境**（`keel.mode=`）；ESP recovery UKI 在 v0.2 | F-012 |
+| 安装 | recovery 树的 `install` 模式跑 `keel-install`，非交互；系统 root 不含写盘工具 | F-011 |
 | 引导 | UEFI + systemd-boot + UKI A/B | F-001, F-002 |
 
 ### 2.2 明确不做
@@ -35,7 +36,7 @@
 | 不做 | 原因 | 何时 |
 |---|---|---|
 | 自动 A/B 更新与回滚 | 依赖 boot counting 实测，W-2 之后 | v0.2 |
-| ESP 上的 recovery UKI | v0.1 的 fallback 直接挂 recovery 分区，不需要额外 UKI；它防的是 initrd 本身坏掉 | v0.2 |
+| ESP 上的 recovery UKI | v0.1 的 fallback 直接挂 recovery 分区，不需要额外 UKI；它防的是 initrd 本身坏掉。**ADR-0016 起它还是"下次启动进 recovery"的入口，不再是可选项** | v0.2 |
 | P1（systemd initrd） | 见 [Q-0011](open/Q-0011-initrd-p1.md) | 未定 |
 | 安装器的交互界面 | 先只有非交互 | v0.3 |
 | zram、podman、备份、状态工具 | 与启动链正交 | v0.3+ |
@@ -201,3 +202,41 @@ spike 分支**不合并**，但也不删除；分支名 + commit sha 必须写�
 - W-0 之前的工具选择（Buildroot 版本）：[Q-0003](open/Q-0003-buildroot-components.md)。
 - 安装器的完整流程：F-011。
 - 更新的原子性与回滚策略：F-003、ADR-0006。
+
+## 10. v0.1 施工顺序（2026-11-20）
+
+§2 冻结的是**范围**，本节冻结的是**顺序**。共六期，前一期没验收完不开下一期。
+
+| 期 | 分支 | 内容 | 主要风险 |
+|---|---|---|---|
+| V1 | `chore/build-params` | `tools/build.sh` 按宿主机算 jobs；`BR2_JLEVEL` 解耦；`check-ascii.sh` 覆盖 `configs/` `board/` | 低 |
+| V2 | `feat/initrd-discovery` | P0 initrd 产品化：按 GPT 名发现分区、cmdline 校验、超时、故障注入 | **高** |
+| V3 | `feat/image-assembly` | 出两棵树：system root（erofs）+ recovery（erofs / cpio）；`keel.mode=` 分派 | 中 |
+| V4 | `feat/installer` | `keel-install` 装在 recovery 树里，从 `recovery.cpio` 启动装盘 | 中 |
+| V5 | `feat/boot-services` | `keel-boot-ok` / `keel-boot-repair`（W-2 的代码移植成产品代码） | 低 |
+| V6 | `test/v01-acceptance` | 端到端验收 + 证据 + A 台账 | 低 |
+
+依赖与理由：
+
+- **V2 排在 V3/V4 之前**：设备发现是唯一"没有第二套实现可以对照"的逻辑，必须最先钉死。
+  它用 spike 的一次性装置验证——这反过来证明 initrd 不依赖安装器的内部实现。
+- **V3 一次出两棵树**：同一份 recovery 内容既打成 `recovery.erofs`（分区用）又打成
+  `recovery.cpio`（安装时 RAM 用），见 [ADR-0016](decisions/ADR-0016-maintenance-in-recovery.md)。
+- **V5 只做移植**：`keel-boot-ok` / `keel-boot-repair` 在 W-2 已经跑通，这一期是把
+  spike 代码整理成可维护的产品代码，不新增行为。
+
+### 10.1 与 §2 的差异（2026-11-20 调整）
+
+| 调整 | 理由 |
+|---|---|
+| **F-011 进入 v0.1**（最小非交互版） | [Q-0010](open/Q-0010-image-build-harness.md) 决定安装器就是测试装置；没有它造不出可验收的盘 |
+| **写盘工具移到 recovery** | [ADR-0016](decisions/ADR-0016-maintenance-in-recovery.md)；system root 不含 `keel-install` / `keel-update` |
+| v0.1 仍**不做** A/B 切换 | §2.2 不变：`root_b` 建出来但不切 |
+
+### 10.2 测试要求（六期通用）
+
+- 能在**无 root、无 loop、无 QEMU** 的机器上跑的测试优先写：纯函数 + fixture 目录树。
+  理由：审代码的一方没有 KVM，只能靠这些测试独立验证逻辑。
+- 需要真内核/真盘的验证，每个 PR 至少跑一次，把串口片段贴进 PR。
+- 两者不能互相替代：fixture 证分支，QEMU 证内核行为。
+- 证据格式仍然按 §8；一次运行一份文件，写进 `docs/evidence/`。
