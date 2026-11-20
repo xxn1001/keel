@@ -68,6 +68,16 @@ v0.1 连取回都不做：手动放进 `/var/lib/keel/staging/` 即可。
 安装时目标盘还没有这些，载荷来自一块单独挂进来的介质（U 盘 /
 QEMU 的第二块盘），挂在 `/mnt/usb`，`keel-install --source /mnt/usb`。
 
+### 3.1 怎么进 recovery
+
+初始化时进 recovery 靠 ESP 上的一个引导条目（`keel-recovery`），
+"下次启动进 recovery"就是给它排一次 one-shot：`bootctl set-oneshot keel-recovery`
+（systemd 256 已确认有该子命令）。
+
+这个条目的载体是 ESP recovery UKI。它在 v0.1 不存在（v0.1 的 recovery 只由 initrd
+的 fallback 进入），到 v0.2 随更新流程一起加入。**它从"可选"变成"更新路径的必要入口"**，
+这是 ADR-0016 带来的变化：没有它，运行中的系统无法要求"下次进 recovery"。
+
 ### 4. recovery 不自我更新
 
 它不能重写自己正在运行的文件系统。recovery 的更新只能靠**外部介质**

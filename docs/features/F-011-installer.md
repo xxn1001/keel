@@ -72,18 +72,25 @@ depends: [F-001, F-002, F-004, F-015, F-005]
    安装器**只认目录**，不关心载荷是 U 盘、9p 还是别的什么。
 1. 拒绝：目标 == 当前根盘、已挂载、非块设备、容量不足。
 2. `sgdisk --zap-all`；建 p1 ESP 1G、p2 recovery 1G、p3 system 6G、p4 data 剩余；设置 label/type。
-3. `mkfs.vfat` ESP；`mkfs.erofs` recovery；`pvcreate`；`vgcreate system`；`lvcreate root_a/root_b/etc`；`mkfs.erofs` root；`mkfs.ext4` etc。
-4. `mkfs.btrfs` data；`btrfs subvolume create var`、`home`。
-5. 挂 root_a、etc、var、home、ESP；`cp -a` rootfs；播种 `/etc`；写 fstab 注释模板；建 `/home/root`、`/var/log/journal`、`/var/lib/containers`（P4）。
-6. `bootctl --esp-path=/boot install`；复制 UKI A/B/recovery；`loader.conf` default A。
-7. 写 NVRAM 指向目标 ESP；确认不是 USB。
-8. 首启生成 machine-id/ssh host key。
+3. `mkfs.vfat` ESP；`pvcreate`；`vgcreate system`；`lvcreate root_a/root_b/etc`。
+4. **先写 root**：`root.erofs` → `root_a` 和 `root_b`（两槽写同一份，A/B 起点一致）；
+   recovery 镜像 → `p2`。
+5. **再从 root 播种 `/etc`**：`mount -o ro /dev/system/root_a /mnt/root`；
+   `mkfs.ext4` etc LV，挂 `/mnt/etc`，`cp -a /mnt/root/etc/. /mnt/etc/`。
+   这份 `/etc` 只有这一个来源——不打 `etc.tar`，也不 loop 挂镜像文件。
+6. `mkfs.btrfs` data；`btrfs subvolume create var`、`home`；挂 var/home；建
+   `/home/root`、`/var/log/journal`、`/var/lib/containers`（P4）；写 fstab 注释模板。
+7. `bootctl --esp-path=/boot install`；复制 UKI A/B；`loader.conf` default A。
+8. 写 NVRAM 指向目标 ESP；确认不是 USB。
+9. 首启生成 machine-id/ssh host key。
 
 约束：
 
 - **不要**把带 LVM 的镜像直接 `dd` 到多块盘：VG/PV UUID 冲突。安装时现建。
 - 安装脚本只做一次；不要把更新逻辑塞进来。
 - 所有 `mkfs`/`lvcreate`/`btrfs subvolume` 失败都要停下，不继续。
+- **播种 `/etc` 必须在 root LV 写完之后**，从已挂载的 root 复制。不要为了拿 `/etc`
+  去 loop 挂镜像文件：`CONFIG_BLK_DEV_LOOP` 和 busybox 的 loop 支持都不保证在。
 - `/etc/fstab` 只放注释，不写核心挂载。
 
 ## 6. Failure modes / recovery
@@ -127,3 +134,4 @@ E2：空盘（qcow2）安装 → 首启 → 重启；E3：目标服务器（保�
 | 2026-11-10 | 初稿 |
 | 2026-11-13 | 新 GPT/LVM/btrfs/recovery；fstab 注释 |
 | 2026-11-20 | 移入 recovery 树；`--payload` 改 `--source`；v0.1 出非交互最小版 |
+| 2026-11-20 | `/etc` 播种改为"先写 root，再从挂载的 root 复制"；明确不用 `etc.tar`、不 loop 挂镜像 |

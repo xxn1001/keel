@@ -35,7 +35,7 @@
 | 不做 | 原因 | 何时 |
 |---|---|---|
 | 自动 A/B 更新与回滚 | 依赖 boot counting 实测，W-2 之后 | v0.2 |
-| ESP 上的 recovery UKI | v0.1 的 fallback 直接挂 recovery 分区，不需要额外 UKI；它防的是 initrd 本身坏掉 | v0.2 |
+| ESP 上的 recovery UKI | v0.1 的 fallback 直接挂 recovery 分区，不需要额外 UKI；它防的是 initrd 本身坏掉。**ADR-0016 起它还是"下次启动进 recovery"的入口，不再是可选项** | v0.2 |
 | P1（systemd initrd） | 见 [Q-0011](open/Q-0011-initrd-p1.md) | 未定 |
 | 安装器的交互界面 | 先只有非交互 | v0.3 |
 | zram、podman、备份、状态工具 | 与启动链正交 | v0.3+ |
