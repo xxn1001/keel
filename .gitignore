@@ -8,6 +8,7 @@
 /buildroot/
 
 # Local build trees
+/build.local
 /build/
 /cmake-build-*/
 /meson-*/
