@@ -1,0 +1,45 @@
+#!/bin/sh
+# keel2 recovery entry point. Installed as /init and /sbin/init.
+set -eu
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+
+mkdir -p /proc /sys /dev /run /tmp /etc/lvm/backup /etc/lvm/archive
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mount -t tmpfs -o mode=0755 tmpfs /run 2>/dev/null || true
+mount -t tmpfs -o mode=1777 tmpfs /tmp 2>/dev/null || true
+
+mode=rescue
+read -r cmdline < /proc/cmdline
+set -f
+# Word splitting is intended; cmdline is a space-separated string.
+# shellcheck disable=SC2086
+set -- $cmdline
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        keel.mode=*) mode=${1#keel.mode=} ;;
+    esac
+    shift
+done
+set +f
+
+case "$mode" in
+    install|update)
+        name="keel-${mode}"
+        if [ -x "/sbin/${name}" ]; then
+            exec "/sbin/${name}"
+        fi
+        echo "keel: error: ${name} not present" >&2
+        exec /bin/sh
+        ;;
+    rescue)
+        exec /bin/sh
+        ;;
+    *)
+        echo "keel: warn: unknown keel.mode=${mode}, using rescue" >&2
+        exec /bin/sh
+        ;;
+esac
