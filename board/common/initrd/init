@@ -1,0 +1,86 @@
+#!/bin/sh
+# keel2 P0 initrd: mount the system and switch root, or enter recovery.
+set -eu
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+mkdir -p /dev /proc /sys /run/keel /run/lvm /run/lock /sysroot /recovery
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+# shellcheck source=/dev/null
+. /lib/cmdline.sh
+# shellcheck source=/dev/null
+. /lib/discover.sh
+keel_step() {
+    _keel_step_name=$1
+    _keel_step_limit=$2
+    shift 2
+    if [ "$KEEL_FAIL" = "$_keel_step_name" ]; then
+        echo "keel: injecting failure at $_keel_step_name"
+        : > "/run/keel/fail.$_keel_step_name"
+        return 1
+    fi
+    if timeout "$_keel_step_limit" "$@"; then
+        return 0
+    else
+        _keel_step_rc=$?
+    fi
+    case "$_keel_step_rc" in
+        124|137|143) echo "keel: $_keel_step_name: timed out after ${_keel_step_limit}s" ;;
+        *) echo "keel: $_keel_step_name: command failed" ;;
+    esac
+    return 1
+}
+keel_drop_shell() {
+    _keel_shell_code=$1
+    /bin/sh
+    exit "$_keel_shell_code"
+}
+keel_wait_discover() {
+    _keel_deadline=$(( $(date +%s) + KEEL_T_LVM ))
+    until keel_discover; do
+        [ "${_KEEL_DISCOVER_REASON:-}" = missing ] || return 1
+        if [ "$(date +%s)" -ge "$_keel_deadline" ]; then
+            echo "keel: discover: timed out after ${KEEL_T_LVM}s"
+            return 1
+        fi
+        sleep 1
+    done
+}
+keel_rescue() {
+    _keel_rescue_reason=$1
+    _keel_rescue_code=${2:-1}
+    echo "keel: rescue: $_keel_rescue_reason"
+    if [ -z "${KEEL_DEV_RECOVERY:-}" ]; then
+        if keel_discover; then
+            keel_install_links
+        fi
+    fi
+    if mount -t erofs -o ro /dev/disk/by-partlabel/recovery /recovery; then
+        echo "keel: rescue: switching to recovery"
+        exec switch_root /recovery /sbin/init
+    fi
+    echo "keel: error: recovery mount failed; dropping to shell"
+    keel_drop_shell "$_keel_rescue_code"
+}
+_keel_cmdline=$(cat /proc/cmdline)
+if ! keel_parse_cmdline "$_keel_cmdline"; then
+    keel_rescue "invalid root= on kernel cmdline" 2
+fi
+if ! keel_wait_discover; then
+    echo "keel: error: partition discovery failed; dropping to shell"
+    keel_drop_shell 3
+fi
+keel_install_links
+if [ "$KEEL_RECOVERY" -eq 1 ]; then
+    keel_rescue "keel.recovery=1"
+fi
+keel_step vglv "$KEEL_T_LVM" /sbin/lvm vgchange --noudevsync -ay system \
+    || keel_rescue "vgchange failed or timed out"
+timeout "$KEEL_T_LVM" /sbin/lvm vgmknodes || echo "keel: warn: vgmknodes failed"
+keel_step root "$KEEL_T_ROOT" mount -t erofs -o ro "$KEEL_ROOT" /sysroot || keel_rescue "root mount failed"
+keel_step etc "$KEEL_T_ETC" mount -t ext4 -o rw,noatime /dev/system/etc /sysroot/etc || keel_rescue "etc mount failed"
+keel_step data "$KEEL_T_DATA" mount -t btrfs -o rw,noatime,compress=zstd:3,subvol=var /dev/disk/by-partlabel/data /sysroot/var || keel_rescue "var mount failed"
+keel_step data "$KEEL_T_DATA" mount -t btrfs -o rw,noatime,compress=zstd:3,subvol=home /dev/disk/by-partlabel/data /sysroot/home || keel_rescue "home mount failed"
+keel_step esp "$KEEL_T_ESP" mount -t vfat -o rw,noatime /dev/disk/by-partlabel/esp /sysroot/boot || echo "keel: warn: esp mount failed; continuing without ESP"
+exec switch_root /sysroot /sbin/init

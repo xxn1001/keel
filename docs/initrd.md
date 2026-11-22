@@ -35,107 +35,75 @@ P0 脚本仍然是脚本，不允许长成第二个 shell 状态机：只做挂�
 
 ## 3. P0：最小脚本
 
-```sh
-#!/bin/sh
-set -eu
+P0 是一个顺序脚本，只做挂载和失败判定。代码位置：
 
-# cmdline knobs: see docs/decisions/ADR-0015-boot-failure-contract.md
-fail=
-timeout_lvm=30
-timeout_root=15
-timeout_etc=15
-timeout_data=15
-timeout_esp=10
+| 文件 | 作用 |
+|---|---|
+| `board/common/initrd/init` | 只写启动顺序 |
+| `board/common/initrd/lib/cmdline.sh` | 解析并校验 cmdline |
+| `board/common/initrd/lib/discover.sh` | 按 GPT 分区名发现设备并建链接 |
 
-# cmdline is space separated; word splitting is intended here.
-# shellcheck disable=SC2013
-for arg in $(cat /proc/cmdline); do
-    case "$arg" in
-        keel.fail=*)
-            fail=${arg#keel.fail=}
-            ;;
-        keel.timeout=*)
-            kv=${arg#keel.timeout=}
-            name=${kv%%:*}
-            secs=${kv##*:}
-            case "$name" in
-                lvm)  timeout_lvm=$secs ;;
-                root) timeout_root=$secs ;;
-                etc)  timeout_etc=$secs ;;
-                data) timeout_data=$secs ;;
-                esp)  timeout_esp=$secs ;;
-            esac
-            ;;
-    esac
-done
+行为清单：
 
-mkdir -p /run/keel /sysroot /recovery
-mount -t devtmpfs devtmpfs /dev
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-
-# step <name> <seconds> <command...>
-step() {
-    _name=$1
-    _limit=$2
-    shift 2
-    if [ "$fail" = "$_name" ]; then
-        echo "keel: injecting failure at $_name"
-        : > "/run/keel/fail.$_name"
-        return 1
-    fi
-    timeout "$_limit" "$@"
-}
-
-rescue() {
-    echo "keel: $*; entering recovery"
-    if mount -t erofs -o ro /dev/disk/by-partlabel/recovery /recovery; then
-        exec switch_root /recovery /sbin/init
-    fi
-    echo "keel: recovery mount failed; dropping to shell"
-    exec /bin/sh
-}
-
-if grep -q 'keel.recovery=1' /proc/cmdline; then
-    rescue "keel.recovery=1"
-fi
-
-step vglv "$timeout_lvm" /sbin/vgchange --noudevsync -ay system \
-    || rescue "vgchange failed or timed out"
-/sbin/vgmknodes
-
-step root "$timeout_root" mount -t erofs -o ro /dev/system/root_a /sysroot \
-    || rescue "root mount failed"
-
-step etc "$timeout_etc" mount -t ext4 -o rw,noatime /dev/system/etc /sysroot/etc \
-    || rescue "etc mount failed"
-
-step data "$timeout_data" mount -t btrfs -o rw,noatime,compress=zstd:3,subvol=var \
-    /dev/disk/by-partlabel/data /sysroot/var \
-    || rescue "var mount failed"
-
-step data "$timeout_data" mount -t btrfs -o rw,noatime,compress=zstd:3,subvol=home \
-    /dev/disk/by-partlabel/data /sysroot/home \
-    || rescue "home mount failed"
-
-# ESP is degraded, not fatal.
-step esp "$timeout_esp" mount -t vfat -o rw,noatime /dev/disk/by-partlabel/esp /sysroot/boot \
-    || echo "keel: ESP mount failed; updates and boot counting unavailable"
-
-exec switch_root /sysroot /sbin/init
-```
+1. 挂 `devtmpfs`、`proc`、`sysfs`。
+2. 解析 `/proc/cmdline`；`root=` 非法时进 recovery（§5.3）。
+3. 按 §3.1 发现 `system` 所在盘和 `recovery`/`data`/`esp`；发现失败掉 shell。
+4. `keel.recovery=1` 直接进 recovery。
+5. `vgchange --noudevsync -ay system`，然后 `vgmknodes`。
+6. 依次挂 root、`/etc`、`/var`、`/home`，每步有超时；失败进 recovery。
+7. 挂 ESP；失败只警告，继续启动。
+8. `switch_root` 到 systemd。
 
 要求：
 
-- `set -eu`；关键挂载失败调用 `rescue`；每个步骤都有超时，不靠默认值。
-- `/sysroot`、`/recovery` 必须是挂载点；`switch_root` 前 `/sysroot` 必须真的挂着东西。
-- `vgchange` 后跑 `vgmknodes`，确保 `/dev/system/root_a`、`/dev/system/etc` 存在。
-- P0 可以先写死 `root_a`；从 cmdline 的 `root=` 读槽位是加分项，不是 v0.1 必须。
-- 不要用 `rd.*`；那是 dracut 约定。
-- `keel.fail=<step>` 只影响该步骤，注入时必须打印一行
-  `keel: injecting failure at <step>`，并在 `/run/keel/` 留标记，避免和真故障混淆。
-- `keel.timeout=<name>:<seconds>` 只调整对应步骤的等待时间，不影响 recovery 里的操作。
-- busybox 必须带 `timeout` applet；没有的话改用 `-t` 轮询，不能裸跑 `mount`。
+- `set -eu`；关键挂载失败调用 recovery；每个等待步骤都有超时（ADR-0015）。
+- `root=` 只接受 `/dev/system/root_a` 和 `/dev/system/root_b`；其他值进 recovery。
+- `keel.fail`/`keel.timeout` 的校验见 §5.3；注入时必须打印
+  `keel: injecting failure at <step>` 并在 `/run/keel/` 留标记。
+- busybox 必须带 `timeout` applet；设备慢时发现重试到 `KEEL_T_LVM`，不新增第六个超时名字。
+
+### 3.1 设备发现
+
+只认 GPT 分区名，不认设备名。锚点是 `PARTNAME=system` 所在的那块盘：
+
+1. 枚举 `/sys/class/block/*/uevent`，取 `DEVTYPE=partition` 且 `PARTNAME=system` 的分区。
+2. 所属盘用 `basename(dirname(readlink -f /sys/class/block/<part>))` 得到，不按设备名裁剪。
+3. 只在锚点那块盘上找 `recovery`、`data`、`esp`；其他盘上的同名标签一律忽略。
+4. 锚点盘两块，或同一盘上某标签出现两次：打印候选，返回 3，不建链接；零锚点算缺失，由调用方重试。
+5. 节点由 devtmpfs 提供，缺失时才用 uevent 的 `MAJOR`/`MINOR` 补建，再建
+   `/dev/disk/by-partlabel/<label>` 链接。
+6. 零锚点且 `blkid` 存在时，用 `blkid -t PARTLABEL=system -o device` 反推；
+   仍找不到返回 3。
+
+发现成功固定打印一行：
+
+```text
+keel: discover: disk=vda system=vda3 recovery=vda2 data=vda4 esp=vda1
+```
+
+缺失的标签留空。决定记录在 [Q-0012](open/Q-0012-initrd-device-discovery.md)。
+
+### 3.2 退出码与日志
+
+固定日志格式：
+
+```text
+keel: <step>: <message>
+keel: <step>: timed out after <n>s
+keel: warn: <message>
+keel: error: <message>
+```
+
+退出码：
+
+| 码 | 含义 |
+|---|---|
+| 0 | 不会出现；成功路径一定 `exec switch_root` |
+| 1 | 进 recovery 失败，落 shell |
+| 2 | `root=` 非法且无法进 recovery |
+| 3 | 设备发现失败，落 shell |
+
+只有 `root=` 非法会改变启动路径；其他 `keel.*` 参数非法时只警告并忽略（§5.3）。
 
 ## 4. P1：systemd units
 
@@ -220,7 +188,7 @@ ESP 挂不上时 initrd 仍然继续启动，因为 ESP 故障不应该把一个
 
 | 输入 | 行为 |
 |---|---|
-| `keel.xxx=...`（未知键） | 打印 `keel: unknown parameter keel.xxx, ignored`，继续正常启动 |
+| `keel.xxx=...`（未知键） | 打印 `keel: warn: unknown parameter keel.xxx, ignored`，继续正常启动 |
 | `keel.fail=<未知值>` | 打印警告，忽略该注入，正常启动 |
 | `keel.timeout=root:abc` | 打印警告，忽略该条，用默认值 |
 | `keel.timeout=foo:30` | 打印警告，忽略未知 name |
@@ -302,7 +270,7 @@ recovery 树同时是安装介质和更新执行环境（[ADR-0016](decisions/AD
 - P1 有 systemd-udevd；仍然建议保留 `vgmknodes` 作为兜底。
 - LV 名用下划线，避免 `/dev/mapper` 的 `--` 转义。
 - **分区路径**（`/dev/disk/by-partlabel/*`）在无 udev 时不存在，`PARTLABEL=` 挂载选项
-  busybox 也不支持。分区怎么找见 [Q-0012](open/Q-0012-initrd-device-discovery.md)。
+  busybox 也不支持。分区怎么找见 §3.1 和 [Q-0012](open/Q-0012-initrd-device-discovery.md)。
 
 ## 9. fstab 策略
 
