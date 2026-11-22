@@ -1,0 +1,9 @@
+#!/bin/sh
+for arg in "$@"; do
+    case "$arg" in
+        PARTLABEL=system) echo /dev/vda3 ;;
+        PARTLABEL=recovery) echo /dev/vda2 ;;
+        PARTLABEL=data) echo /dev/vda4 ;;
+        PARTLABEL=esp) echo /dev/vda1 ;;
+    esac
+done
