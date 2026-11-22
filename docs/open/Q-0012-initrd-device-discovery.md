@@ -3,7 +3,8 @@ id: Q-0012
 question: How does the initrd find its partitions without udev?
 blocking: F-005 / v0.1
 owner: TBD
-updated: 2026-11-18
+status: closed
+updated: 2026-11-22
 ---
 
 # Q-0012 initrd 的设备发现方式
@@ -83,3 +84,16 @@ done
 
 v0.1 的 P0 initrd 产品化之前。开工前要确认 6.12 内核的 `uevent` 里确实有 `PARTNAME`；
 没有就整条走 `blkid` 兜底。
+
+## Resolution (2026-11-22)
+
+选 B：扫 sysfs 建链接，`blkid` 只做兜底。规则写进
+[initrd.md §3.1](../initrd.md#31-设备发现)。
+
+- `board/common/initrd/lib/discover.sh`：锚定 `PARTNAME=system` 所在盘，只在该盘上
+  解析 `recovery`/`data`/`esp`；歧义返回 3，缺标签返回成功但留空。
+- `board/common/initrd/lib/cmdline.sh` 与 `board/common/initrd/init`：发现失败掉 shell，
+  不在发现阶段猜设备名。
+- `tests/initrd/` 用假 sysfs 符号链接树覆盖 `vda`、`nvme0n1`、双锚点、重复 `data`、缺 `data`、`blkid` 兜底。
+
+QEMU 6.12.117 实测 `uevent` 含 `PARTNAME=system`。
