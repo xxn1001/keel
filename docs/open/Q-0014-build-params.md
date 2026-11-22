@@ -3,7 +3,8 @@ id: Q-0014
 question: How are host-specific build parameters kept out of the committed config?
 blocking: F-001 / v0.1
 owner: TBD
-updated: 2026-11-18
+status: closed
+updated: 2026-11-22
 ---
 
 # Q-0014 构建参数与宿主机解耦
@@ -58,3 +59,15 @@ A。要覆盖的参数一共四个，都归 `build.local`：
 ## Decision gate
 
 v0.1 第一次"别人在这台机器之外构建"之前。在那之前 `BR2_JLEVEL=12` 只是记录现状。
+
+## Resolution (2026-11-22)
+
+已实现于 PR #16。
+
+- `tools/build.sh`：`keel_jobs <nproc> <ram_gib>` = `min(nproc, ram_gib - 2, 16)`，下限 1；
+  优先级 `--jobs N` > `build.local` 的 `KEEL_JOBS` > 自动。
+- `BR2_JLEVEL` 通过 make 命令行传入，**不写回 `out/.config`**——所以在 `.config` 里看到
+  的是 defconfig 的保守值 4，实际生效值看构建日志里的 `PARALLEL_JOBS=<n>`。
+- `configs/keel_qemu_x86_64_defconfig` 保留 `BR2_JLEVEL=4` 兜底。
+- `build.local.example` 提交，`build.local` 进 `.gitignore`。
+- `DL_DIR` / `O` 仍是 Buildroot 默认与 `out/`；等真需要再参数化。

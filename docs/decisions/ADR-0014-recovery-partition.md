@@ -82,3 +82,8 @@ keel.recovery=1
 
 工具集相应补齐：`mkfs.vfat`（`dosfstools`，安装器要写 ESP）和 `sgdisk`（`gdisk`）。
 上面 Decision 里列的工具清单按"至少需要这些"理解，不是封顶。
+
+另外，上面 Decision 里 recovery UKI 的 cmdline 带了 `root=PARTLABEL=recovery`。
+P0 的 `root=` 白名单（Q-0012）实现后这个值会被判为非法，打印一条 `keel: error:` 之后
+仍然进 recovery——去处对，但日志误导。实际实现时 cmdline 只保留 `keel.recovery=1` 和
+`keel.mode=rescue`，不写 `root=`，理由见 [initrd.md](../initrd.md) §6。

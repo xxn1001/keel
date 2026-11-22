@@ -99,7 +99,7 @@ payload 目录：
 
 1. 确定"当前可用槽"：读 `/mnt/data/lib/keel/boot-ok` 里的 `slot=`（[ADR-0015](../decisions/ADR-0015-boot-failure-contract.md)
    写的成功标记）。读不到时退到 ESP 的默认条目；两者都没有就拒绝执行。
-   **不要读 `/proc/cmdline`**：在 recovery 里它是 `root=PARTLABEL=recovery`，没有槽信息。
+   **不要读 `/proc/cmdline`**：在 recovery 里 cmdline 不带 `root=`，没有槽信息。
 2. 目标槽 = 另一个；拒绝目标 == 当前。
 3. 检查目标 LV 存在、payload 大小 ≤ LV、ESP 剩余空间足够。
 4. 检查目标 LV 没有被挂载（`/proc/self/mountinfo`/`findmnt`）。

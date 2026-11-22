@@ -209,10 +209,13 @@ ESP 挂不上时 initrd 仍然继续启动，因为 ESP 故障不应该把一个
 - ESP 上有独立 recovery UKI，cmdline：
 
 ```text
-root=PARTLABEL=recovery ro rootfstype=erofs
 keel.recovery=1
 keel.mode=rescue
 ```
+
+- **不要写 `root=`。** P0 只接受 `root=/dev/system/root_a|root_b`（§5.3），
+  `root=PARTLABEL=recovery` 会先触发一条 `keel: error: invalid root=`；而 initrd
+  根本不使用这个值——`keel.recovery=1` 在挂任何东西之前就把控制权交给 recovery。
 
 - 正常 initrd 在 LVM/root/etc/data 失败时自动 fallback。
 - recovery 工具：`lvm2`、`e2fsprogs`、`btrfs-progs`、`erofs-utils`、`dosfstools`（`mkfs.vfat`，安装器要写 ESP）、`gdisk`（`sgdisk`）、`bootctl`、`mount`、`blkid`、`dmesg`。
