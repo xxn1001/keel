@@ -81,6 +81,14 @@ mount -t btrfs -o subvol=var /dev/disk/by-partlabel/data /mnt/var
 
 `keel-install` / `keel-update` 只存在于这套环境里；system root 中**没有**任何写盘工具。
 
+代码与产物：
+
+- 入口：`board/common/recovery/init`，安装为 `/sbin/init`，`/init` 指向它。
+- 组装：`tools/mkrecovery.sh`，输出 `out/images/recovery.erofs` 与
+  `out/images/recovery.cpio`，两者来自同一棵 `out/target-full` 树。
+- system root 的删除清单：`board/common/recovery/system-root-exclude.txt`。
+- V3a 暂不放 `bootctl`；V4 需要时再加，其余工具从 `target-full` 取。
+
 ### 5.2 recovery UKI 与 fallback
 
 - ESP 上的 recovery UKI：cmdline 只有 `keel.recovery=1` 和 `keel.mode=rescue`，
