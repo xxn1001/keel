@@ -83,7 +83,10 @@ mount -t btrfs -o subvol=var /dev/disk/by-partlabel/data /mnt/var
 
 ### 5.2 recovery UKI 与 fallback
 
-- ESP 上的 recovery UKI：`root=PARTLABEL=recovery ro rootfstype=erofs`，`keel.recovery=1`。
+- ESP 上的 recovery UKI：cmdline 只有 `keel.recovery=1` 和 `keel.mode=rescue`，
+  **不写 `root=`**——P0 的白名单只认 `/dev/system/root_a|root_b`，
+  而 recovery 的根由 initrd 的 `switch_root` 决定，不经过 `root=`。
+  见 [initrd.md](../initrd.md) §5.3。
 - 正常 initrd 在 `vgchange`/root/etc/data 失败时挂 recovery 并 `switch_root`。
 - `keel.recovery=1` 直接进 recovery。
 - P1 unit 实现见 [Q-0009](../open/Q-0009-recovery-fallback.md)。
