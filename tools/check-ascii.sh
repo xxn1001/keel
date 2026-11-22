@@ -3,20 +3,21 @@
 # Documents may contain Chinese; source/config/scripts must be ASCII.
 set -eu
 
-roots=""
-for d in src buildroot initrd image installer update rescue tools tests; do
-    [ -d "$d" ] && roots="$roots $d"
+set --
+for d in src buildroot initrd image installer update rescue tools tests configs board; do
+    [ -d "$d" ] && set -- "$@" "$d"
 done
 
-if [ -z "$roots" ]; then
+if [ "$#" -eq 0 ]; then
     echo "check-ascii: no source directories found"
     exit 0
 fi
 
-matches=$(find $roots -type f \
+matches=$(find "$@" -type f \
     \( -name '*.c' -o -name '*.h' -o -name '*.cc' -o -name '*.cpp' \
     -o -name '*.rs' -o -name '*.sh' -o -name '*.py' -o -name '*.go' \
     -o -name '*.conf' -o -name '*.service' -o -name '*.network' \
+    -o -name '*_defconfig' -o -name '*.fragment' -o -name '*.config' \
     -o -name 'Makefile' -o -name '*.mk' \) \
     -exec env LC_ALL=C grep -l '[^[:print:][:space:]]' {} + 2>/dev/null || true)
 

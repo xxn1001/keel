@@ -1,0 +1,8 @@
+# Per-host build settings. Copy this file to build.local and edit it.
+# build.local is ignored by git.
+#
+# Number of parallel build jobs. When unset, tools/build.sh uses
+# min(nproc, RAM_GiB - 2, 16). The command line flag --jobs N wins over
+# this value. Do not set 0: Buildroot treats BR2_JLEVEL=0 as nproc+1.
+#
+# KEEL_JOBS=8
