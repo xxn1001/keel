@@ -52,3 +52,9 @@ deciders: [maintainer]
 - [layout.md](../layout.md)
 - [F-004](../features/F-004-lvm-state.md)
 - [F-007](../features/F-007-zram.md)
+
+## Note (2026-11-23)：基线位置改了
+
+上面 Decision 里写的 `diff -r /usr/share/factory/etc` 路径已作废——那个目录是 systemd 的
+默认值目录，不是 `/etc` 的出厂快照。基线改为 `/usr/etc`，比较与合并规则见
+[ADR-0017](ADR-0017-etc-baseline.md)。本文其余结论（独立 LV、thick、播种一次）不变。
