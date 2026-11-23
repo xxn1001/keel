@@ -4,7 +4,7 @@ title: System VG for root and /etc
 status: accepted
 target: v0.1
 owner: TBD
-updated: 2026-11-13
+updated: 2026-11-23
 depends: [F-001]
 ---
 
@@ -24,7 +24,7 @@ depends: [F-001]
 - `system/root_a`、`system/root_b`（2G erofs）。
 - `system/etc`（1G ext4）。
 - VG 约 1G 空闲（16%）。
-- `/etc` 安装时从镜像播种一次；保留 `/usr/share/factory/etc`。
+- `/etc` 安装时从镜像播种一次；保留 `/usr/etc` 作为出厂基线。
 - `/etc/fstab` 只放注释/非关键项，不重复核心挂载。
 - LVM 元数据备份到 ESP/USB。
 
@@ -49,7 +49,7 @@ depends: [F-001]
 | `system` | VG 名 |
 | `/dev/system/root_a`、`root_b`、`etc` | LV 标准路径 |
 | `vgcfgbackup -f /boot/lvm/...` | 元数据备份 |
-| `/usr/share/factory/etc` | 出厂默认配置 |
+| `/usr/etc` | 出厂配置基线，供后续三方合并 |
 
 ## 5. Design
 
@@ -69,7 +69,10 @@ system 分区 6 GiB；VG 约 1 GiB 空闲。`etc` 可 `lvextend` + `resize2fs` �
 2. 挂 `system/etc` 到另一个临时目录，`cp -a` **root 里的** `/etc/.`。
    `/etc` 只有这一个来源：不打 `etc.tar`，也不 loop 挂镜像文件。
 3. 清空 `machine-id`；删除 ssh host key；设置 hostname。
-4. 保留 `/usr/share/factory/etc` 作为 diff 基准。
+4. 出厂基线是 `/usr/etc`：`post-build.sh` 在 os-release、fstab、machine-id 处理完后，
+   先删旧目录，再把整个 `out/target/etc` 复制成 `/usr/etc`。整棵树搬家后相对符号链接
+   会悬空，这是预期行为；比较基线时用 `diff -r --no-dereference`，不要解引用。
+   systemd 的 `/usr/share/factory/etc` 只是它自己的默认值，不是我们的基线，不要往里写。
 5. 写 fstab 注释模板，不写核心挂载。
 
 ### 5.3 fstab

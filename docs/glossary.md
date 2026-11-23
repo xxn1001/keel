@@ -23,7 +23,7 @@
 | 切根 | switch_root | initrd 切换到真正 root |
 | 只读根 | read-only root | erofs 挂 `ro` |
 | 可写层 | writable layer | `/etc` LV + data 子卷，不是 overlay upper |
-| 工厂配置 | factory `/etc` | `/usr/share/factory/etc`，用于 diff |
+| 工厂配置 | factory `/etc` | `/usr/etc`，post-build 从构建时 `/etc` 复制的基线，只做结构化比较 |
 | 播种 | seed | 安装时把镜像 `/etc` 复制到 `system/etc` |
 | 救援分区 | recovery partition | 物理 `recovery`，erofs ro，独立救援 rootfs |
 | 救援模式 | rescue mode | `keel.recovery=1`，进 recovery |
