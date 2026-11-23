@@ -4,7 +4,7 @@ title: Rescue and recovery
 status: accepted
 target: v0.1/v0.3
 owner: TBD
-updated: 2026-11-20
+updated: 2026-11-23
 depends: [F-002, F-004, F-015]
 ---
 
@@ -80,6 +80,13 @@ mount -t btrfs -o subvol=var /dev/disk/by-partlabel/data /mnt/var
 | `update` | `recovery.erofs`（分区） | 执行 `keel-update` |
 
 `keel-install` / `keel-update` 只存在于这套环境里；system root 中**没有**任何写盘工具。
+
+代码与产物：
+
+- 入口：`board/common/recovery/init`，安装为 `/sbin/init`，`/init` 指向它。
+- 组装：`tools/mkrecovery.sh`，输出 `out/images/recovery.erofs` 与
+  `out/images/recovery.cpio`，两者来自同一棵 `out/target` 树。
+- V3a 暂不放 `bootctl`；V4 需要时再加，其余工具从 `out/target` 取。
 
 ### 5.2 recovery UKI 与 fallback
 

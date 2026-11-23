@@ -3,7 +3,7 @@ id: Q-0006
 question: How to diff/merge /etc against factory defaults after an update?
 blocking: F-004
 owner: TBD
-updated: 2026-11-10
+updated: 2026-11-23
 ---
 
 # Q-0006 `/etc` factory 合并
@@ -15,7 +15,7 @@ updated: 2026-11-10
 
 ## Options
 
-### A. 手工 `diff -r /usr/share/factory/etc /etc`（建议 v1）
+### A. 手工 `diff -r --no-dereference /usr/etc /etc`（建议 v1）
 
 - 简单；文件少时够用。
 - 缺点：靠人；容易忘。
@@ -37,3 +37,8 @@ v1 用 A，文档写清步骤；如果 `/etc` 文件数量增长，再做 B。
 ## Decision gate
 
 v0.4 前定；至少确定 factory 目录和 diff 命令。
+
+## Notes (2026-11-23)
+
+基线位置已定为 `/usr/etc`；合并算法待更新器设计时定，参考 ostree
+`merge_configuration_from` 的判定表。

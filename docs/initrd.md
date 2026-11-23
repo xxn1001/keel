@@ -265,6 +265,16 @@ recovery 树同时是安装介质和更新执行环境（[ADR-0016](decisions/AD
 - `mount`、`blkid`、`dmesg`。
 - `/etc/lvm/lvm.conf`（最小配置）。
 
+### 7.3 组装
+
+- `out/target` 是唯一来源；initrd 和 recovery 都直接从这棵树取文件。
+- `tools/mkinitrd.sh` 组装 `out/images/initrd.cpio`；`tools/mkrecovery.sh` 用同一棵
+  recovery 树输出 `out/images/recovery.erofs` 和 `out/images/recovery.cpio`。
+- `tools/lib/collect-deps.py` 用 PATH 里的 `readelf -d` 递归收集 NEEDED 闭包；
+  缺库或缺少动态加载器时非零退出。
+- `board/qemu/x86_64/post-image.sh` 调用上面两个脚本；工具和目录清单以脚本为准。
+- cpio 为 newc，属主 0:0：优先 `cpio --owner=0:0`，否则用 fakeroot。
+
 ## 8. LVM 路径
 
 - 标准路径：`/dev/system/root_a`、`/dev/system/etc`。

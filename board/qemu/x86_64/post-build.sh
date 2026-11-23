@@ -21,3 +21,9 @@ EOF
 
 # Do not ship a machine identity. systemd generates this on first boot.
 : > "${target_dir}/etc/machine-id"
+
+# Keep a structured factory baseline for future three-way merges. This must
+# run after the edits above. The relative symlinks intentionally stay as they
+# are; compare the baseline without dereferencing links.
+rm -rf "${target_dir}/usr/etc"
+cp -a "${target_dir}/etc" "${target_dir}/usr/etc"
