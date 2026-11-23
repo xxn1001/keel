@@ -50,3 +50,10 @@ root 是只读 erofs；`/etc` 必须可写（machine-id、ssh host key、network
 - [layout.md](../layout.md)
 - [F-004](../features/F-004-lvm-state.md)
 - [ADR-0004](ADR-0004-initrd-mount-order.md)
+
+## Note (2026-11-23)：基线位置与合并方式改了
+
+上面 Decision 里"保留 `/usr/share/factory/etc`，更新后手工 `diff -r` 合并"已作废：
+那个目录属于 systemd。基线改为 `/usr/etc`，合并改为更新时的三方合并（借 ostree 的规则），
+见 [ADR-0017](ADR-0017-etc-baseline.md)。本文其余结论（独立 ext4 LV、不 overlay、
+initrd 里挂好）不变。
