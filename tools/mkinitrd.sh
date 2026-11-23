@@ -3,7 +3,7 @@
 set -eu
 
 repo_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-target_dir="${repo_dir}/out/target-full"
+target_dir="${repo_dir}/out/target"
 work_dir="${repo_dir}/out/initrd"
 images_dir="${repo_dir}/out/images"
 archive="${images_dir}/initrd.cpio"

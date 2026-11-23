@@ -22,25 +22,8 @@ EOF
 # Do not ship a machine identity. systemd generates this on first boot.
 : > "${target_dir}/etc/machine-id"
 
-# Keep the full tree for initrd and recovery assembly, then prune write tools
-# from the system root. Restore files removed by an earlier run first, so an
-# incremental build does not copy an already-pruned target.
-repo_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/../../.." && pwd)
-full_dir="${repo_dir}/out/target-full"
-if [ -d "${full_dir}" ]; then
-    while IFS= read -r path; do
-        [ -n "${path}" ] || continue
-        if [ -e "${full_dir}${path}" ] && [ ! -e "${target_dir}${path}" ]; then
-            mkdir -p "$(dirname "${target_dir}${path}")"
-            cp -a "${full_dir}${path}" "${target_dir}${path}"
-        fi
-    done < "${repo_dir}/board/common/recovery/system-root-exclude.txt"
-fi
-rm -rf "${full_dir}"
-mkdir -p "${full_dir}"
-cp -a "${target_dir}/." "${full_dir}/"
-
-while IFS= read -r path; do
-    [ -n "${path}" ] || continue
-    rm -f "${target_dir}${path}"
-done < "${repo_dir}/board/common/recovery/system-root-exclude.txt"
+# Keep a structured factory baseline for future three-way merges. This must
+# run after the edits above. The relative symlinks intentionally stay as they
+# are; compare the baseline without dereferencing links.
+rm -rf "${target_dir}/usr/etc"
+cp -a "${target_dir}/etc" "${target_dir}/usr/etc"

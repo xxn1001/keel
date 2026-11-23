@@ -1,5 +1,0 @@
-/usr/bin/mkfs.erofs
-/usr/sbin/mkfs.fat
-/usr/sbin/mkfs.vfat
-/usr/sbin/sgdisk
-/usr/bin/mkfs.btrfs
