@@ -4,7 +4,7 @@ title: Installer
 status: accepted
 target: v0.1/v0.3
 owner: TBD
-updated: 2026-11-20
+updated: 2026-11-24
 depends: [F-001, F-002, F-004, F-015, F-005]
 ---
 
@@ -77,6 +77,10 @@ depends: [F-001, F-002, F-004, F-015, F-005]
 3. `partx -a`，然后调 `/sbin/keel-discover`（复用 initrd 的 `discover.sh`），
    轮询到四个 `/dev/disk/by-partlabel/*` 都在；超时退出 4。
    **不要在 C 里再写一遍 sysfs 扫描**。
+   - 没有 udev 时，`partx` 新加的分区在 sysfs `uevent` 里可能没有 `PARTNAME`；
+     `discover.sh` 用 `blkid -c /dev/null -t PARTLABEL=...` 回退补齐。
+   - `partx -a` 之前先做一次 best-effort 的 `partx -d`，清掉内核里的旧分区映射，
+     这样 `--force` 重装已有分区表的盘也能走通。
 4. `pvcreate` / `vgcreate system` / `lvcreate` `root_a` 2G、`root_b` 2G、`etc` 1G；
    `vgmknodes`；轮询到 `/dev/system/root_a` 出现（recovery 里没有 udev，这一步必须等）。
 5. **先写 root**：`rootfs.erofs` → `root_a` 和 `root_b`（两槽写同一份，A/B 起点一致）；

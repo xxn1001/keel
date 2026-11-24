@@ -250,6 +250,10 @@ recovery 树同时是安装介质和更新执行环境（[ADR-0016](decisions/AD
 | recovery（data 挂在 `/mnt/data`，`-o subvol=var`） | `/mnt/data/lib/keel/staging/` |
 | 安装时（U 盘 / QEMU 第二块盘挂在 `/mnt/usb`） | `/mnt/usb/` |
 
+`keel.mode=install` 时，recovery 先看 `keel.install.source` 目录里有没有
+`rootfs.erofs`；没有就用 `blkid -c /dev/null -L KEELPAYLOAD` 找到载荷盘，挂到该目录。
+安装器本身仍然只认目录，不关心载荷是 U 盘、QEMU 第二块盘还是别的什么。
+
 ## 7. initrd 内容
 
 ### 7.1 模块
