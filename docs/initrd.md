@@ -1,6 +1,6 @@
 # initrd
 
-> 状态：accepted | 更新：2026-11-23
+> 状态：accepted | 更新：2026-11-24
 > 目标：在 `switch_root` 之前挂好 root、`/etc`、`/var`、`/home`、`/boot`。
 > 任何关键挂载失败：进 physical recovery，不继续半启动。
 > 超时预算与故障注入见 [ADR-0015](decisions/ADR-0015-boot-failure-contract.md)；
@@ -289,7 +289,9 @@ recovery 树同时是安装介质和更新执行环境（[ADR-0016](decisions/AD
 | `keel-a.efi`、`keel-b.efi` | A/B UKI |
 | `manifest.txt` | sha256、字节数、文件名 |
 
-`tools/mkuki.sh` 用 `out/target/usr/lib/systemd/boot/efi/linuxx64.efi.stub` 加四个段：
+`tools/mkuki.sh` 调用宿主 `ukify build`，`--stub` 显式指向目标树里的
+`out/target/usr/lib/systemd/boot/efi/linuxx64.efi.stub`；不使用宿主自己的 stub。
+至少要生成这四个段：
 
 | 段 | 来源 |
 |---|---|
@@ -297,6 +299,8 @@ recovery 树同时是安装介质和更新执行环境（[ADR-0016](decisions/AD
 | `.cmdline` | 脚本生成 |
 | `.linux` | `out/images/bzImage` |
 | `.initrd` | `out/images/initrd.cpio` |
+
+ukify 可能额外加 `.uname`、`.sbat`，属正常现象。
 
 cmdline 两个槽只差 `root=`：
 
@@ -306,10 +310,9 @@ root=/dev/system/root_a ro rootfstype=erofs console=tty0 console=ttyS0,115200 sy
 
 - 不加 `keel.fail=`/`keel.timeout=`；测试注入走 QEMU cmdline，不改产物。
 - 产物名不带 `+N`。boot counting 的 `+N` 由安装器写 ESP 时加，v0.2 才验证。
-- VMA 不写死：从 `objdump -p` 读 `ImageBase`/`SectionAlignment`，从 `objdump -h` 读最后一段；
-  `rva0 = align_up(last_vma - ImageBase + last_size, SectionAlignment)`，后续段依次
-  `rva(n+1) = align_up(rva(n) + size(n), SectionAlignment)`；objcopy 要绝对 VMA，
-  所以传 `ImageBase + rva`。
+- `mkuki.sh` 不自己算 VMA，也不写 image base；段布局由 ukify 处理。脚本依次查找
+  `command -v ukify`、`/usr/lib/systemd/ukify`、`/usr/bin/ukify`，找不到就失败，
+  不回退到手写实现。
 - `board/qemu/x86_64/post-image.sh` 的顺序是 initrd → recovery → UKI → manifest；
   manifest 最后生成，保证哈希覆盖的是最终文件。
 - `tools/qemu/run-uki-smoke.sh` 是测试装置：造 64 MiB vfat ESP，用 OVMF 启动
