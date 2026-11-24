@@ -118,7 +118,8 @@ v0.1 没有该条目，只能靠 initrd 的 fallback 进入。见
 - `/etc` 是关键配置；不能和 `/var` 共享剩余空间。
 - ext4 简单、可 fsck、可在线扩、可 tar/快照。
 - `/etc` 不跟 root 槽走；换槽不丢 machine-id/ssh key/networkd。
-- 新镜像的 `/etc` 默认值不自动生效；保留 `/usr/share/factory/etc` 做 diff。
+- 新镜像的 `/etc` 默认值不自动生效；出厂基线在 `/usr/etc`，用
+  `diff -r --no-dereference /usr/etc /etc` 比较（见 [ADR-0017](decisions/ADR-0017-etc-baseline.md)）。
 
 ### 7.3 `/var`/`/home` 在 data
 

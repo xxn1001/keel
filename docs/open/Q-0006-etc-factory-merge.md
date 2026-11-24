@@ -3,7 +3,8 @@ id: Q-0006
 question: How to diff/merge /etc against factory defaults after an update?
 blocking: F-004
 owner: TBD
-updated: 2026-11-23
+status: closed
+updated: 2026-11-24
 ---
 
 # Q-0006 `/etc` factory 合并
@@ -31,12 +32,20 @@ updated: 2026-11-23
 
 ## Recommendation
 
-v1 用 A，文档写清步骤；如果 `/etc` 文件数量增长，再做 B。
-不做自动三方合并（旧项目的教训：复杂度高、收益低）。
+已被 [ADR-0017](../decisions/ADR-0017-etc-baseline.md) 取代：
+
+- 基线位置定为 `/usr/etc`；
+- 更新时做**三方合并**（旧基线 A / 新基线 B / 当前 `/etc` C），规则借 ostree 的
+  `merge_configuration_from`，不再是"手工 diff"；
+- 手工 `diff -r --no-dereference /usr/etc /etc` 降级为排障手段，不是流程本身。
+
+选项 B（`keel-etc-diff` 独立工具）不单独做：合并是 `keel-update` 的一步，不做成
+第二个命令。选项 C（每次重新播种）仍然否决。
 
 ## Decision gate
 
-v0.4 前定；至少确定 factory 目录和 diff 命令。
+已决定（2026-11-24），见 [ADR-0017](../decisions/ADR-0017-etc-baseline.md)。
+实现随更新器（F-003 / v0.2）落地。
 
 ## Notes (2026-11-23)
 

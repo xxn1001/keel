@@ -90,7 +90,8 @@ make build
 
 检查：
 
-- `out/images/` 有 root.erofs、recovery.erofs、recovery.cpio、UKI、initrd、manifest。
+- `out/images/` 有 `bzImage`、`rootfs.erofs`、`recovery.erofs`、`recovery.cpio`、
+  `initrd.cpio`、`keel-a.efi`、`keel-b.efi`、`manifest.txt`。
 - `out/build/` 没有编译警告（`-Werror`）。
 - `make savedefconfig` 后 `configs/*_defconfig` 无 drift。
 - `utils/check-package -b package/...` 通过。

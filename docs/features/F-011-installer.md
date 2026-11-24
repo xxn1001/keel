@@ -61,8 +61,9 @@ depends: [F-001, F-002, F-004, F-015, F-005]
 | `installer/keel-install` | 入口；住在 recovery 树里，`/sbin/keel-install`；**C 二进制**，shell 只做测试装置的胶水 |
 | `--disk /dev/vdX` | 目标盘 |
 | `--source <dir>` | 载荷目录（U 盘挂载点或任意目录）。**只认目录，不认传输方式** |
-| `--dry-run` | 打印计划，不动盘 |
+| `--dry-run` | 打印计划，不动盘；允许对普通文件跑（测试用），真实运行只接受块设备 |
 | `--force` | 盘上已有分区时覆盖 |
+| `--timeout <sec>` | 每步等待的上限，默认 60；没有无限循环 |
 | `efibootmgr`/`bootctl` | NVRAM |
 
 ## 5. Design
@@ -70,36 +71,52 @@ depends: [F-001, F-002, F-004, F-015, F-005]
 0. 运行环境：从 `recovery.cpio` 启动（`keel.mode=install`），RAM 里跑，目标盘是一块空盘。
    载荷来自 `--source`；这个目录可以是 U 盘挂载点，也可以是 QEMU 挂进来的第二块盘。
    安装器**只认目录**，不关心载荷是 U 盘、9p 还是别的什么。
-1. 拒绝：目标 == 当前根盘、已挂载、非块设备、容量不足。
-2. `sgdisk --zap-all`；建 p1 ESP 1G、p2 recovery 1G、p3 system 6G、p4 data 剩余；设置 label/type。
-3. `mkfs.vfat` ESP；`pvcreate`；`vgcreate system`；`lvcreate root_a/root_b/etc`。
-4. **先写 root**：`root.erofs` → `root_a` 和 `root_b`（两槽写同一份，A/B 起点一致）；
-   recovery 镜像 → `p2`。
-5. **再从 root 播种 `/etc`**：`mount -o ro /dev/system/root_a /mnt/root`；
+1. 拒绝：不是块设备、已被挂载、上面已有激活的 VG、小于 8 GiB、`--source` 里缺文件。
+2. `wipefs -a`；`sfdisk` 写 GPT：p1 `esp` 1 GiB (`EF00`)、p2 `recovery` 1 GiB (`8300`)、
+   p3 `system` 6 GiB (`8E00`)、p4 `data` 到盘尾 (`8300`)，1 MiB 对齐。
+3. `partx -a`，然后调 `/sbin/keel-discover`（复用 initrd 的 `discover.sh`），
+   轮询到四个 `/dev/disk/by-partlabel/*` 都在；超时退出 4。
+   **不要在 C 里再写一遍 sysfs 扫描**。
+4. `pvcreate` / `vgcreate system` / `lvcreate` `root_a` 2G、`root_b` 2G、`etc` 1G；
+   `vgmknodes`；轮询到 `/dev/system/root_a` 出现（recovery 里没有 udev，这一步必须等）。
+5. **先写 root**：`rootfs.erofs` → `root_a` 和 `root_b`（两槽写同一份，A/B 起点一致）；
+   `recovery.erofs` → `p2`。
+6. **再从 root 播种 `/etc`**：`mount -o ro /dev/system/root_a /mnt/root`；
    `mkfs.ext4` etc LV，挂 `/mnt/etc`，`cp -a /mnt/root/etc/. /mnt/etc/`。
    这份 `/etc` 只有这一个来源——不打 `etc.tar`，也不 loop 挂镜像文件。
-6. `mkfs.btrfs` data；`btrfs subvolume create var`、`home`；挂 var/home；建
-   `/home/root`、`/var/log/journal`、`/var/lib/containers`（P4）；写 fstab 注释模板。
-7. `bootctl --esp-path=/boot install`；复制 UKI A/B；`loader.conf` default A。
-8. 写 NVRAM 指向目标 ESP；确认不是 USB。
+7. `mkfs.btrfs` data；`btrfs subvolume create var`、`home`；挂 var/home；建
+   `/home/root`（0700）、`/var/lib/keel`、`/var/log/journal`。
+8. （V4b）`mkfs.vfat` ESP；复制 `systemd-bootx64.efi` 与 UKI A/B；`loader.conf`
+   default `keel-a`；`bootctl --esp-path=/boot install`；写 NVRAM。
 9. 首启生成 machine-id/ssh host key。
 
+验收也按这个切：**V4a 只验内容**（`sfdisk -d`、`lvs`、`blkid`、`dump.erofs`、
+挂上 root 看 `/etc` 与 `/usr/etc`），**V4b 才验启动**。
+
 实现语言：**C，静态链接优先**，与 `keel-update` 同一策略。安装器只调用外部工具
-（`sgdisk`/`lvm`/`mkfs.*`/`bootctl`），自己不解析分区表，但**顺序、拒绝条件、退出码、
+（`sfdisk`/`lvm`/`mkfs.*`/`bootctl`），自己不解析分区表，但**顺序、拒绝条件、退出码、
 `--dry-run` 都由编译代码控制**——这是 [AGENTS.md](../../AGENTS.md) §5 "写盘逻辑必须编译"
-的范围。
+的范围。外部命令一律 `fork` + `execvp` 传 argv 数组，**不出现 `system()` / `popen()`**。
+
+非交互入口：recovery 的 init 在 `keel.mode=install` 下，若 cmdline 同时带
+`keel.install.disk=` 和 `keel.install.source=`，就直接执行
+`keel-install --disk <d> --source <s>`，结束后打印一行并掉 shell；否则打印用法。
 
 工具依赖（都进 recovery 树）：
 
 | 用途 | 工具 | 包 |
 |---|---|---|
-| 建 GPT | `sgdisk` | `gdisk` |
+| 建 GPT | `sfdisk`、`wipefs` | `util-linux` |
+| 重读分区表 | `partx` | `util-linux` |
 | 写 ESP | `mkfs.vfat` | `dosfstools` |
 | `/etc` | `mkfs.ext4` | `e2fsprogs` |
 | data | `mkfs.btrfs`、`btrfs` | `btrfs-progs` |
-| root / recovery | `mkfs.erofs` | `erofs-utils` |
+| root / recovery | `mkfs.erofs`、`dump.erofs` | `erofs-utils` |
 | VG / LV | `lvm` | `lvm2` |
 | 引导条目 | `bootctl` | `systemd` |
+
+`gdisk`（`sgdisk`）目前仍由 defconfig 打开，但安装器用 `sfdisk`；等 V4 落地后可以把它
+和随之而来的 `BR2_TOOLCHAIN_BUILDROOT_CXX` 一起去掉。
 
 约束：
 
@@ -123,11 +140,12 @@ depends: [F-001, F-002, F-004, F-015, F-005]
 
 ## 7. Acceptance criteria
 
-- [ ] 从 `recovery.cpio`（`keel.mode=install`）启动，对空盘安装成功。
+- [ ] 从 `recovery.cpio`（`keel.mode=install` + `keel.install.disk/source`）启动，对空盘安装成功。
+- [ ] `--dry-run` 在不碰盘的情况下打印完整计划（分区表、LV、要写的文件）。
 - [ ] 空盘安装 → 首启 → 登录。
 - [ ] `findmnt -R /` 正确：erofs/ext4/btrfs/vfat。
 - [ ] `lvs` 三个 LV active。
-- [ ] `bootctl list` 有 A/B/recovery。
+- [ ] `bootctl list` 有 A/B（recovery UKI 是 v0.2）。
 - [ ] `efibootmgr -v` 指向目标 ESP。
 - [ ] `/etc/machine-id` 非空且唯一。
 - [ ] `/etc/fstab` 没有核心挂载 entry。

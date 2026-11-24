@@ -195,6 +195,7 @@ ESP 挂不上时 initrd 仍然继续启动，因为 ESP 故障不应该把一个
 | `keel.timeout=root:0` / `:99999` | 收敛到 `[1, 600]`，打印实际生效值 |
 | `keel.recovery=1` | 只认精确的 `1`；`=true`/`=yes` 一律忽略并警告 |
 | `keel.mode=<install\|rescue\|update>` | initrd **不消费**，原样透传给 recovery；不要当成未知参数警告 |
+| `keel.install.disk=<dev>` / `keel.install.source=<dir>` | 只由 recovery 的 `install` 模式消费；initrd 不消费、不警告 |
 | `root=` 不在白名单 | 打印并进 recovery（这是唯一允许改变启动路径的非法输入） |
 | 同一参数出现两次 | 最后一个生效，并打印冲突警告 |
 
@@ -218,7 +219,8 @@ keel.mode=rescue
   根本不使用这个值——`keel.recovery=1` 在挂任何东西之前就把控制权交给 recovery。
 
 - 正常 initrd 在 LVM/root/etc/data 失败时自动 fallback。
-- recovery 工具：`lvm2`、`e2fsprogs`、`btrfs-progs`、`erofs-utils`、`dosfstools`（`mkfs.vfat`，安装器要写 ESP）、`gdisk`（`sgdisk`）、`bootctl`、`mount`、`blkid`、`dmesg`。
+- recovery 工具：`lvm2`、`e2fsprogs`、`btrfs-progs`、`erofs-utils`、`dosfstools`（`mkfs.vfat`）、
+  `util-linux`（`blkid`、`sfdisk`、`partx`）、`mount`、`dmesg`。`bootctl` 在 V4b 写 ESP 时才加。
 - recovery 是 known-good，不随 A/B 更新自动更新；ESP recovery UKI + USB 仍保留。
 - 详见 [F-012](features/F-012-rescue.md) / [ADR-0014](decisions/ADR-0014-recovery-partition.md)。
 

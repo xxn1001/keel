@@ -3,7 +3,8 @@ id: Q-0010
 question: How are disk images built and tested without loop devices or root?
 blocking: W-1 / v0.1
 owner: TBD
-updated: 2026-11-14
+status: closed
+updated: 2026-11-24
 ---
 
 # Q-0010 镜像构建与测试装置
