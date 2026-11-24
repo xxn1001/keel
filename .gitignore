@@ -10,6 +10,7 @@
 # Local build trees
 /build.local
 /build/
+/src/installer/keel-install
 /cmake-build-*/
 /meson-*/
 /target/

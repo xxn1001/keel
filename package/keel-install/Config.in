@@ -1,0 +1,7 @@
+config BR2_PACKAGE_KEEL_INSTALL
+	bool "keel-install"
+	depends on BR2_x86_64
+	help
+	  keel2 disk installer. The binary is installed into the images
+	  directory and only the recovery tree picks it up; it never enters
+	  the system root.

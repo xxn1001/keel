@@ -1,0 +1,12 @@
+#!/bin/sh
+# Thin wrapper around the shared initrd discovery library.
+set -eu
+
+# shellcheck source=/dev/null
+. /lib/discover.sh
+
+keel_discover || exit $?
+keel_install_links
+printf 'disk=%s system=%s recovery=%s data=%s esp=%s\n' \
+    "$KEEL_DISK" "$KEEL_DEV_SYSTEM" "$KEEL_DEV_RECOVERY" \
+    "$KEEL_DEV_DATA" "$KEEL_DEV_ESP"

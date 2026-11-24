@@ -2,7 +2,7 @@
 # keel2 recovery entry point. Installed as /init and /sbin/init.
 set -eu
 
-PATH=/bin:/sbin:/usr/bin:/usr/sbin
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
 export PATH
 
 mkdir -p /proc /sys /dev /run /tmp /etc/lvm/backup /etc/lvm/archive
@@ -13,6 +13,8 @@ mount -t tmpfs -o mode=0755 tmpfs /run 2>/dev/null || true
 mount -t tmpfs -o mode=1777 tmpfs /tmp 2>/dev/null || true
 
 mode=rescue
+install_disk=
+install_source=
 read -r cmdline < /proc/cmdline
 set -f
 # Word splitting is intended; cmdline is a space-separated string.
@@ -21,18 +23,46 @@ set -- $cmdline
 while [ "$#" -gt 0 ]; do
     case "$1" in
         keel.mode=*) mode=${1#keel.mode=} ;;
+        keel.install.disk=*) install_disk=${1#keel.install.disk=} ;;
+        keel.install.source=*) install_source=${1#keel.install.source=} ;;
     esac
     shift
 done
 set +f
 
+# Reuse the initrd discovery library before mode dispatch. A missing system
+# is normal for install mode and must not block the rescue shell.
+if [ -x /sbin/keel-discover ]; then
+    /sbin/keel-discover || echo "keel: warn: partition discovery failed" >&2
+fi
+
 case "$mode" in
-    install|update)
-        name="keel-${mode}"
-        if [ -x "/sbin/${name}" ]; then
-            exec "/sbin/${name}"
+    install)
+        if [ -z "$install_disk" ] || [ -z "$install_source" ]; then
+            echo "keel: usage: keel.mode=install keel.install.disk=<disk> keel.install.source=<dir>" >&2
+            exec /bin/sh
         fi
-        echo "keel: error: ${name} not present" >&2
+        if [ ! -f "$install_source/rootfs.erofs" ]; then
+            mkdir -p "$install_source"
+            payload=$(/sbin/blkid -c /dev/null -L KEELPAYLOAD 2>/dev/null || true)
+            if [ -z "$payload" ] || ! mount "$payload" "$install_source"; then
+                echo "keel: error: no payload at $install_source (LABEL=KEELPAYLOAD)" >&2
+                exec /bin/sh
+            fi
+        fi
+        if /sbin/keel-install --disk "$install_disk" --source "$install_source"; then
+            echo "keel: install finished, reboot to continue"
+        else
+            status=$?
+            echo "keel: install failed with status $status" >&2
+        fi
+        exec /bin/sh
+        ;;
+    update)
+        if [ -x /sbin/keel-update ]; then
+            exec /sbin/keel-update
+        fi
+        echo "keel: error: keel-update not present" >&2
         exec /bin/sh
         ;;
     rescue)
