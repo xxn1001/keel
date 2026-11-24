@@ -97,10 +97,10 @@ build -> smoke -> upload release artifact -> release notes
 
 Release 资产：
 
-- `root.erofs`
-- `keel-a.efi` / `keel-b.efi`（或构建时的槽 UKI）
-- `initrd`
-- `manifest`（Buildroot 版本、commit、defconfig hash、构建时间）
+- `rootfs.erofs`、`recovery.erofs`、`recovery.cpio`
+- `keel-a.efi` / `keel-b.efi`
+- `initrd.cpio`
+- `manifest.txt`（每个产物的 sha256 与字节数）
 - 测试日志
 
 v1 不做镜像签名；release 资产不带签名。

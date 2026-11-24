@@ -58,7 +58,7 @@ Rules:
 ## 5. Quality rules
 
 - **No shell state machines.** Shell is allowed only as thin glue. Critical logic (partition writes, update order, boot entry selection, status) is compiled (C, C++, or Rust).
-- **Write tools live in recovery.** `keel-install` and `keel-update` are part of the recovery tree; the system root ships no tool that can rewrite its own root LV. See `docs/decisions/ADR-0016-maintenance-in-recovery.md`.
+- **Maintenance tools live in recovery.** `keel-install` and `keel-update` are built into `out/images/` and only the recovery tree picks them up; they never enter the system root. Generic filesystem tools (`mkfs.*`, `sgdisk`, `lvm`) do stay in the system root — see `docs/decisions/ADR-0018-system-root-tools.md`.
 - **No machine identity in the repository or image**: no `machine-id`, no SSH host keys, no real passwords, no private keys, no `authorized_keys` for a specific person.
 - **No "verified" without evidence.** A command returning 0 is not evidence. Record `findmnt`, `lvs`, `bootctl list`, `efibootmgr`, `journalctl -b`, or equivalent output in `docs/verification.md`.
 - **Walking skeleton first.** Do not add a feature until the previous gate in `docs/roadmap.md` is met.

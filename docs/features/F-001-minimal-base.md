@@ -50,12 +50,14 @@ depends: []
 
 ## 5. Design
 
-- Buildroot 出 rootfs tar；post-image 用 `mkfs.erofs` 生成 root 镜像。
-- initrd 用第二个 Buildroot 配置（`O=output/initrd`），避免把整个 rootfs 塞进去。
+- Buildroot 直接出 `rootfs.erofs`（`BR2_TARGET_ROOTFS_EROFS=y`）；不再产 `rootfs.tar`。
+- initrd 和 recovery 由 `tools/mkinitrd.sh` / `tools/mkrecovery.sh` 从同一棵 `out/target`
+  抽文件组装，**不需要第二个 Buildroot 配置**（早期设想的 `O=output/initrd` 没有采用）。
 - kernel 用 `BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE` + fragment；先 `localmodconfig` 再手工裁剪。
 - systemd 用 `BR2_INIT_SYSTEMD=y`；`BR2_ROOTFS_MERGED_USR=y`。
 - 串口：kernel cmdline `console=tty0 console=ttyS0,115200`。
-- 镜像组装：P0 可以手工 `dd`/QEMU；P1 用 genimage 或安装器。
+- 镜像组装：`tools/build.sh` 产出 `out/images/` 的固定清单；装盘由 recovery 里的
+  `keel-install` 完成，不用 genimage。
 
 ## 6. Failure modes / recovery
 

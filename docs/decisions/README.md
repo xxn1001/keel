@@ -24,6 +24,7 @@
 | [ADR-0015](ADR-0015-boot-failure-contract.md) | 启动尝试计数（tries=10）、`/var` 自愈标记、超时契约、`keel.fail=` 注入 | accepted | 2026-11-14 |
 | [ADR-0016](ADR-0016-maintenance-in-recovery.md) | 安装/更新工具只放 recovery；`keel.mode=` 三入口；ESP 为写入口例外 | accepted | 2026-11-20 |
 | [ADR-0017](ADR-0017-etc-baseline.md) | 出厂 `/etc` 基线在 `/usr/etc`；更新时按 ostree 规则三方合并 | accepted | 2026-11-23 |
+| [ADR-0018](ADR-0018-system-root-tools.md) | system root 保留通用文件系统工具；只有维护工具住在 recovery | accepted | 2026-11-24 |
 
 ## 规则
 

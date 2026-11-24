@@ -61,7 +61,9 @@ v1 不做签名/verity；救援是唯一安全网。没有演练过的救援路�
 - 1 GiB，erofs ro，BusyBox init + shell；`/run`/`/tmp` tmpfs。
 - 不依赖 system VG，也不依赖 data。
 - 工具：`lvm2`、`e2fsprogs`、`btrfs-progs`、`erofs-utils`、`dosfstools`（`mkfs.vfat`）、
-  `gdisk`（`sgdisk`）、`bootctl`、`mount`、`blkid`、`dmesg`。
+  `util-linux`（`blkid`、`sfdisk`、`partx`）、`mount`、`dmesg`。
+  v0.1 不带 `bootctl`（V4b 要用时再加，它会拖进一批 systemd 私有库）；
+  `gdisk` 在镜像里但安装器不用它。
 - 可手动挂 system root、`/etc`、data：
 
 ```sh
@@ -79,14 +81,18 @@ mount -t btrfs -o subvol=var /dev/disk/by-partlabel/data /mnt/var
 | `rescue`（缺省） | `recovery.erofs`（分区） | 交互 shell |
 | `update` | `recovery.erofs`（分区） | 执行 `keel-update` |
 
-`keel-install` / `keel-update` 只存在于这套环境里；system root 中**没有**任何写盘工具。
+`keel-install` / `keel-update` 只存在于这套环境里；system root 里**没有维护工具**
+（`mkfs.*`、`sgdisk` 这类通用工具仍然保留，见
+[ADR-0018](../decisions/ADR-0018-system-root-tools.md)）。
 
 代码与产物：
 
 - 入口：`board/common/recovery/init`，安装为 `/sbin/init`，`/init` 指向它。
 - 组装：`tools/mkrecovery.sh`，输出 `out/images/recovery.erofs` 与
   `out/images/recovery.cpio`，两者来自同一棵 `out/target` 树。
-- V3a 暂不放 `bootctl`；V4 需要时再加，其余工具从 `out/target` 取。
+- V3a 组装 recovery 树时不含 `bootctl`；V4b 写 ESP 时需要了再加，其余工具从 `out/target` 取。
+- `keel-install` 由 Buildroot 包装到 `out/images/`，只被 recovery 树取用，不进 system root
+  （[ADR-0018](../decisions/ADR-0018-system-root-tools.md)）。
 
 ### 5.2 recovery UKI 与 fallback
 

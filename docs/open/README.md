@@ -1,6 +1,6 @@
 # 未决问题
 
-> 状态：living index | 更新：2026-11-22
+> 状态：living index | 更新：2026-11-24
 > 未决问题不藏在聊天里；写进这里，决定后转 ADR/feature 并关闭。
 
 ## 索引
@@ -12,11 +12,11 @@
 | [Q-0003](Q-0003-buildroot-components.md) | Buildroot LTS/systemd-boot/ukify/LVM units | F-001/F-005 | closed |
 | [Q-0004](Q-0004-rescue-usb.md) | USB rescue 内容/维护 | F-012 | open |
 | [Q-0005](Q-0005-zram-generator.md) | zram generator vs 自写 unit | F-007 | open |
-| [Q-0006](Q-0006-etc-factory-merge.md) | `/etc` factory diff/合并流程 | F-004 | open |
+| [Q-0006](Q-0006-etc-factory-merge.md) | `/etc` factory diff/合并流程 | F-004 | closed |
 | [Q-0007](Q-0007-vfio-scope.md) | VFIO 范围/版本/设备 | F-009 | open |
 | [Q-0008](Q-0008-data-fs.md) | data 分区 btrfs vs zfs | F-015 / v0.1 | open |
 | [Q-0009](Q-0009-recovery-fallback.md) | 若做 P1，recovery fallback 的 unit 实现 | 无（等 Q-0011） | open |
-| [Q-0010](Q-0010-image-build-harness.md) | 无 loop/root 时镜像怎么造、测试怎么起 | W-1 / v0.1 | open |
+| [Q-0010](Q-0010-image-build-harness.md) | 无 loop/root 时镜像怎么造、测试怎么起 | W-1 / v0.1 | closed |
 | [Q-0011](Q-0011-initrd-p1.md) | P1（systemd initrd）是否值得做 | F-005 / v0.3 | open |
 | [Q-0012](Q-0012-initrd-device-discovery.md) | 无 udev 时 initrd 怎么找分区（不能靠设备名） | F-005 / v0.1 | closed |
 | [Q-0013](Q-0013-bless-point.md) | bless 的判定点：basic.target 太早 | F-003 / v0.2 | open |

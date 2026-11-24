@@ -10,7 +10,7 @@ keel2 是一个**自己构建的最小 Linux 系统**，目标形态是 **headle
 - 只读 **erofs** 基底，A/B 两个 LVM LV。
 - 可写状态：`/etc` 是 system VG 的独立 ext4 LV；`/var`/`/home` 在独立 data 分区（btrfs）。
 - 物理 **recovery** 分区，LVM/root/etc/data 失败时自动进救援；**安装器与更新器也住在这里**，
-  系统 root 不含写盘工具。
+  系统 root 里没有维护工具（通用 `mkfs.*` 仍保留，见 ADR-0018）。
 - **systemd** 是唯一 init；initrd 最终也用 systemd。
 - **Buildroot LTS** 构建；没有 mkosi、nix、发行版包管理器。
 - 更新器是**编译型** `keel-update`，在 recovery 里运行，不是 shell 状态机。

@@ -99,9 +99,10 @@
 
 ## 5. 当前阶段
 
-- 设计：v0.1 范围冻结，施工顺序见 [`design-v01-skeleton.md`](design-v01-skeleton.md) §10（六期）。
+- 设计：v0.1 范围冻结，施工顺序见 [`design-v01-skeleton.md`](design-v01-skeleton.md) §10。
 - 已归档：W-0 / W-1 / W-2 三个 spike 全部 PASS，证据在 [`evidence/`](evidence/)。
-- 代码：v0.1 第一期开工（构建参数 + initrd 设备发现）。
-- 安装器已进入 v0.1（最小非交互版），住在 recovery 树里，见
-  [ADR-0016](decisions/ADR-0016-maintenance-in-recovery.md)。
+- 已落地（v0.1）：V1 构建参数、V2 initrd 设备发现、V3a 镜像组装、V3b UKI 与 manifest。
+- 进行中：V4a 安装器（C）；之后是 V4b ESP、V5 启动服务、V6 端到端验收。
+- 安装器住在 recovery 树里，见 [ADR-0016](decisions/ADR-0016-maintenance-in-recovery.md)；
+  出厂 `/etc` 基线在 `/usr/etc`，见 [ADR-0017](decisions/ADR-0017-etc-baseline.md)。
 - 仍未做：自动回滚（v0.2）、安装器交互界面（v0.3）。

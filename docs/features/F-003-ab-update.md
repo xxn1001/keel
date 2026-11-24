@@ -39,7 +39,7 @@ headless 服务器起不来没人按键；更新必须原子，失败必须自�
 
 ```text
 # 1) 运行中的系统：只取回，不写盘
-cp root-2026.11.20.erofs /var/lib/keel/staging/root.erofs
+cp rootfs.erofs /var/lib/keel/staging/
 bootctl set-oneshot keel-recovery      # 下次启动进 recovery
 reboot
 
@@ -72,7 +72,7 @@ payload 目录：
 
 ```text
 <payload-dir>/
-|-- root.erofs
+|-- rootfs.erofs
 |-- keel-<slot>.efi
 `-- VERSION
 ```
@@ -103,7 +103,7 @@ payload 目录：
 2. 目标槽 = 另一个；拒绝目标 == 当前。
 3. 检查目标 LV 存在、payload 大小 ≤ LV、ESP 剩余空间足够。
 4. 检查目标 LV 没有被挂载（`/proc/self/mountinfo`/`findmnt`）。
-5. 打开 `/dev/system/root_b`（`O_WRONLY|O_SYNC`），顺序写 `root.erofs`，`fsync`。
+5. 打开 `/dev/system/root_b`（`O_WRONLY|O_SYNC`），顺序写 `rootfs.erofs`，`fsync`。
 6. 写 ESP `EFI/Linux/keel-<slot>+3.efi`，`fsync`。
 7. `bootctl set-oneshot keel-<slot>`（entry ID 不带 `+3`）。
 8. 返回 0；任一步失败返回非 0。

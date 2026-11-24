@@ -50,18 +50,20 @@ depends: [F-001, F-005]
 ## 5. Design
 
 - 每个 root LV 2 GiB；erofs 内容通常 300–600 MiB，留余量。
-- 安装时 `mkfs.erofs /dev/system/root_a rootfs/`。
-- cmdline 示例：
+- 安装时**不是**在目标机上现做 erofs，而是把构建好的 `out/images/rootfs.erofs`
+  原样写进 `root_a` 和 `root_b`（`dd` + fsync）。这样两个槽的起点完全一致，
+  也不需要安装环境里有 `mkfs.erofs` 的源目录。
+- 重建某个槽时才需要 `mkfs.erofs`（`--all-root`，直接写 LV）。
+- cmdline 示例（UKI 里的真实值）：
 
 ```text
-root=/dev/system/root_a ro rootfstype=erofs
-systemd.gpt_auto=no panic=-1 panic_on_oops=1
-console=tty0 console=ttyS0,115200
+root=/dev/system/root_a ro rootfstype=erofs console=tty0 console=ttyS0,115200 systemd.gpt_auto=no panic=-1
 ```
 
 - LVM 标准路径 `/dev/system/root_a`；`/dev/mapper/system-root_a` 是底层 dm 节点，不作为默认。
 - initrd 必须 `vgchange -ay system` + `vgmknodes`，再挂 root。
-- UKI 由 `ukify` 生成，包含 `.osrel`、`.cmdline`、`.ucode`。
+- UKI 由 `ukify build` 生成，至少包含 `.osrel`、`.cmdline`、`.linux`、`.initrd`；
+  ukify 可能再加 `.uname`、`.sbat`，属正常现象。
 - root LV 重建：`lvremove`/`lvcreate` 或 `lvresize` + `mkfs.erofs`；不能在线 grow erofs。
 
 ## 6. Failure modes / recovery

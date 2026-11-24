@@ -28,7 +28,7 @@
 | 可写配置 | `system/etc` ext4，initrd 里挂好 | F-004 |
 | initrd | P0 shell 脚本；失败进 recovery | F-005, F-012 |
 | recovery | 物理分区 + initrd 自动 fallback；**兼作安装与更新的执行环境**（`keel.mode=`）；ESP recovery UKI 在 v0.2 | F-012 |
-| 安装 | recovery 树的 `install` 模式跑 `keel-install`，非交互；系统 root 不含写盘工具 | F-011 |
+| 安装 | recovery 树的 `install` 模式跑 `keel-install`，非交互；system root 里没有维护工具 | F-011 |
 | 引导 | UEFI + systemd-boot + UKI A/B | F-001, F-002 |
 
 ### 2.2 明确不做
@@ -211,8 +211,10 @@ spike 分支**不合并**，但也不删除；分支名 + commit sha 必须写�
 |---|---|---|---|
 | V1 | `chore/build-params` | `tools/build.sh` 按宿主机算 jobs；`BR2_JLEVEL` 解耦；`check-ascii.sh` 覆盖 `configs/` `board/` | 低 |
 | V2 | `feat/initrd-discovery` | P0 initrd 产品化：按 GPT 名发现分区、cmdline 校验、超时、故障注入 | **高** |
-| V3 | `feat/image-assembly` | 出两棵树：system root（erofs）+ recovery（erofs / cpio）；`keel.mode=` 分派 | 中 |
-| V4 | `feat/installer` | `keel-install` 装在 recovery 树里，从 `recovery.cpio` 启动装盘 | 中 |
+| V3a | `feat/image-assembly` | 从 `out/target` 出两棵树：system root（erofs）+ recovery（erofs / cpio）；`keel.mode=` 分派 | 中 |
+| V3b | `feat/uki-assembly` | `ukify` 生成 A/B UKI + `manifest.txt`；OVMF 冒烟验证整条引导链 | 中 |
+| V4a | `feat/installer-disk` | C 安装器：分区 / LVM / 文件系统 / 写镜像 / 播种 `/etc`；不碰 ESP | **高** |
+| V4b | `feat/installer-esp` | ESP、UKI、引导条目；装完能启动到登录 | 中 |
 | V5 | `feat/boot-services` | `keel-boot-ok` / `keel-boot-repair`（W-2 的代码移植成产品代码） | 低 |
 | V6 | `test/v01-acceptance` | 端到端验收 + 证据 + A 台账 | 低 |
 

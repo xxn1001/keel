@@ -130,3 +130,17 @@ QEMU 的第二块盘），挂在 `/mnt/usb`，`keel-install --source /mnt/usb`�
 - [F-003](../features/F-003-ab-update.md) / [F-011](../features/F-011-installer.md) /
   [F-012](../features/F-012-rescue.md)
 - [initrd.md](../initrd.md) §6.1 `keel.mode=`
+
+## Note (2026-11-24)：把"写盘工具"读成"维护工具"
+
+V3a 实施时发现，本文里凡是把 `mkfs.*`、`sgdisk`、`bootctl` 也划进"不能进 system root"
+的地方（Decision 第 1 节末尾那句、Consequences 里"system root 变小变简单"那条），
+成本高于收益：这些通用工具对正常运维无害，删它们反而要维护一棵影子树。
+由 [ADR-0018](ADR-0018-system-root-tools.md) 取代。
+
+被取代的是**范围**，不是**结论**：
+
+- 仍然成立：`keel-install` / `keel-update` 只住在 recovery，改 root 只有一条被批准的路径；
+- 不再成立：system root 里连通用文件系统工具都没有。
+
+本文其余部分不变。阅读时把标题和 Consequences 里的"写盘工具"统一理解为"维护工具"。
