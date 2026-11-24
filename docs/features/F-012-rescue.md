@@ -94,6 +94,21 @@ mount -t btrfs -o subvol=var /dev/disk/by-partlabel/data /mnt/var
 - `keel-install` 由 Buildroot 包装到 `out/images/`，只被 recovery 树取用，不进 system root
   （[ADR-0018](../decisions/ADR-0018-system-root-tools.md)）。
 
+#### 为什么 recovery 里没有 udev
+
+v0.1 的 recovery 是 BusyBox init + 一套工具，**不带 udev**：
+
+- 设备枚举由 `discover.sh` 负责（和 initrd 同一份代码），按 GPT 分区名找，
+  遇到歧义直接报错而不是猜；
+- `sfdisk` 之后用 `partx -a` + 有界轮询等分区节点，不需要 `udevadm settle`；
+- LVM 用 `udev_sync=0` + `vgmknodes`（W-1 验证过的路径）。
+
+代价是每次"等设备"都要自己写轮询；收益是 recovery 里没有守护进程、没有
+`/run/udev` socket，故障面少一层，而且"设备怎么出现"全项目只有一套答案。
+
+**重新评估的判据**（出现任一条就回来看）：recovery 需要热插拔（开机后插 U 盘）；
+recovery 改用 systemd 做 init；需要规则驱动的设备命名或权限。
+
 ### 5.2 recovery UKI 与 fallback
 
 - ESP 上的 recovery UKI：cmdline 只有 `keel.recovery=1` 和 `keel.mode=rescue`，
