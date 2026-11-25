@@ -1,6 +1,6 @@
 # initrd
 
-> 状态：accepted | 更新：2026-11-24
+> 状态：accepted | 更新：2026-11-25
 > 目标：在 `switch_root` 之前挂好 root、`/etc`、`/var`、`/home`、`/boot`。
 > 任何关键挂载失败：进 physical recovery，不继续半启动。
 > 超时预算与故障注入见 [ADR-0015](decisions/ADR-0015-boot-failure-contract.md)；
@@ -72,8 +72,9 @@ P0 是一个顺序脚本，只做挂载和失败判定。代码位置：
 4. 锚点盘两块，或同一盘上某标签出现两次：打印候选，返回 3，不建链接；零锚点算缺失，由调用方重试。
 5. 节点由 devtmpfs 提供，缺失时才用 uevent 的 `MAJOR`/`MINOR` 补建，再建
    `/dev/disk/by-partlabel/<label>` 链接。
-6. 零锚点且 `blkid` 存在时，用 `blkid -t PARTLABEL=system -o device` 反推；
-   仍找不到返回 3。
+6. 零锚点且 `blkid` 存在时，用 `blkid -c /dev/null -t PARTLABEL=system -o device` 反推；
+   仍找不到返回 3。这条兜底需要 util-linux 的 blkid（`-c`/`-t`）；initrd 只有 busybox，
+   所以 initrd 里实际只走 `PARTNAME` 主路径，recovery 才有 util-linux 的 blkid。
 
 发现成功固定打印一行：
 

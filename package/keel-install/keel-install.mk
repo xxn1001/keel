@@ -1,5 +1,5 @@
 KEEL_INSTALL_VERSION = 0.1
-KEEL_INSTALL_SITE = $(BR2_EXTERNAL_KEEL_PATH)/src/installer
+KEEL_INSTALL_SITE = $(BR2_EXTERNAL_KEEL_PATH)/src
 KEEL_INSTALL_SITE_METHOD = local
 # TODO: choose the project license before release.
 KEEL_INSTALL_LICENSE = Proprietary
@@ -10,15 +10,15 @@ KEEL_INSTALL_INSTALL_TARGET = NO
 KEEL_INSTALL_INSTALL_IMAGES = YES
 
 define KEEL_INSTALL_BUILD_CMDS
-	$(TARGET_MAKE_ENV) $(MAKE) -C $(@D) clean
-	$(TARGET_MAKE_ENV) $(MAKE) -C $(@D) \
+	$(TARGET_MAKE_ENV) $(MAKE) -C $(@D)/installer clean
+	$(TARGET_MAKE_ENV) $(MAKE) -C $(@D)/installer \
 		CC="$(TARGET_CC)" \
 		CFLAGS="$(TARGET_CFLAGS) -std=c99 -Wall -Wextra -Werror" \
 		LDFLAGS="$(TARGET_LDFLAGS)"
 endef
 
 define KEEL_INSTALL_INSTALL_IMAGES_CMDS
-	$(INSTALL) -D -m 0755 $(@D)/keel-install $(BINARIES_DIR)/keel-install
+	$(INSTALL) -D -m 0755 $(@D)/installer/keel-install $(BINARIES_DIR)/keel-install
 endef
 
 $(eval $(generic-package))

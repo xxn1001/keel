@@ -1,17 +1,16 @@
 #define _GNU_SOURCE
 #include "installer.h"
 
+#include <keel/fs.h>
+#include <keel/proc.h>
+
 #include <errno.h>
-#include <fcntl.h>
 #include <getopt.h>
 #include <limits.h>
-#include <linux/fs.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <sys/stat.h>
-#include <sys/sysmacros.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -19,6 +18,19 @@
 #define MIB (1024ULL * 1024ULL)
 #define DISK_MIN (8ULL * GIB)
 #define DISK_WARN (32ULL * GIB)
+
+enum {
+    M_ROOT,
+    M_ETC,
+    M_DATA,
+    M_VAR,
+    M_HOME,
+    M_COUNT
+};
+
+static const char *const mount_targets[M_COUNT] = {
+    "/mnt/root", "/mnt/etc", "/mnt/data", "/mnt/var", "/mnt/home",
+};
 
 static const char *const source_files[] = {
     "rootfs.erofs",
@@ -44,28 +56,29 @@ static const char sfdisk_script[] =
 
 static void usage(FILE *out)
 {
-    fputs("usage: keel-install --disk <dev> --source <dir> "
-          "[--dry-run] [--force] [--timeout <sec>]\n"
-          "\n"
-          "  --disk    target disk (real runs require a block device)\n"
-          "  --source  directory with rootfs.erofs, recovery.erofs, "
-          "keel-a.efi, keel-b.efi\n"
-          "  --dry-run print the full plan; a regular file is accepted "
-          "for planning\n"
-          "  --force   overwrite an existing partition table\n"
-          "  --timeout seconds to wait for a device (default 60)\n",
-          out);
+    fprintf(out,
+            "usage: %s --disk <dev> --source <dir> "
+            "[--dry-run] [--force] [--timeout <sec>]\n"
+            "\n"
+            "  --disk    target disk (real runs require a block device)\n"
+            "  --source  directory with rootfs.erofs, recovery.erofs, "
+            "keel-a.efi, keel-b.efi\n"
+            "  --dry-run print the full plan; a regular file is accepted "
+            "for planning\n"
+            "  --force   overwrite an existing partition table\n"
+            "  --timeout seconds to wait for a device (default 60)\n",
+            keel_progname());
 }
 
 static int exec_argv(struct ctx *ctx, char *const argv[])
 {
     if (ctx->dry_run) {
-        print_argv("keel-install: plan: ", argv);
+        keel_print_argv("plan", argv);
         return 0;
     }
-    print_argv("keel-install: exec: ", argv);
-    if (run_argv(argv) != 0) {
-        fprintf(stderr, "keel-install: command failed: %s\n", argv[0]);
+    keel_print_argv("exec", argv);
+    if (keel_run(argv) != 0) {
+        keel_err("command failed: %s", argv[0]);
         return 4;
     }
     return 0;
@@ -74,159 +87,58 @@ static int exec_argv(struct ctx *ctx, char *const argv[])
 static int exec_input(struct ctx *ctx, char *const argv[], const char *input)
 {
     if (ctx->dry_run) {
-        print_argv("keel-install: plan: ", argv);
-        printf("keel-install: plan: stdin:\n%s", input);
+        keel_print_argv("plan", argv);
+        printf("%s: plan: stdin:\n%s", keel_progname(), input);
         return 0;
     }
-    print_argv("keel-install: exec: ", argv);
-    if (run_argv_input(argv, input) != 0) {
-        fprintf(stderr, "keel-install: command failed: %s\n", argv[0]);
+    keel_print_argv("exec", argv);
+    if (keel_run_input(argv, input) != 0) {
+        keel_err("command failed: %s", argv[0]);
         return 4;
     }
     return 0;
 }
 
 static int mount_fs(struct ctx *ctx, const char *source, const char *target,
-                    const char *type, const char *options, int *flag)
+                    const char *type, const char *options,
+                    struct keel_mount *m)
 {
     char *argv[] = { "mount", "-t", (char *)type, "-o", (char *)options,
                      (char *)source, (char *)target, NULL };
-    int rc = exec_argv(ctx, argv);
 
-    if (rc == 0)
-        *flag = 1;
-    return rc;
-}
-
-static int umount_fs(struct ctx *ctx, int *flag, const char *target)
-{
-    char *argv[] = { "umount", (char *)target, NULL };
-    int rc;
-
-    if (!*flag) {
-        if (ctx->dry_run) {
-            print_argv("keel-install: plan: ", argv);
-        }
+    if (ctx->dry_run) {
+        keel_print_argv("plan", argv);
         return 0;
     }
-    rc = exec_argv(ctx, argv);
-    if (rc == 0)
-        *flag = 0;
-    return rc;
+    return keel_mount(source, target, type, options, m) == 0 ? 0 : 4;
+}
+
+static int umount_fs(struct ctx *ctx, struct keel_mount *m)
+{
+    char *argv[] = { "umount", m->target, NULL };
+
+    if (ctx->dry_run) {
+        keel_print_argv("plan", argv);
+        return 0;
+    }
+    return keel_umount(m) == 0 ? 0 : 4;
 }
 
 static int make_dir(struct ctx *ctx, const char *path, mode_t mode)
 {
     if (ctx->dry_run) {
-        printf("keel-install: plan: mkdir -p %s (mode %04o)\n", path, mode);
+        keel_log("plan: mkdir -p %s (mode %04o)", path, mode);
         return 0;
     }
-    if (mkdir_p(path, mode) < 0) {
-        fprintf(stderr, "keel-install: cannot create %s: %s\n", path,
-                strerror(errno));
+    if (keel_mkdir_p(path, mode) < 0) {
+        keel_err("cannot create %s: %s", path, strerror(errno));
         return 4;
     }
-    if (chmod(path, mode) < 0 && mode != 0755) {
-        fprintf(stderr, "keel-install: cannot chmod %s: %s\n", path,
-                strerror(errno));
+    if (mode != 0755 && chmod(path, mode) < 0) {
+        keel_err("cannot chmod %s: %s", path, strerror(errno));
         return 4;
     }
     return 0;
-}
-
-static const char *disk_basename(const char *disk)
-{
-    const char *slash = strrchr(disk, '/');
-
-    return slash == NULL ? disk : slash + 1;
-}
-
-static int same_disk(const char *disk, dev_t dev)
-{
-    char link[PATH_MAX];
-    char disk_path[PATH_MAX];
-    char dev_path[PATH_MAX];
-    size_t len;
-
-    snprintf(link, sizeof(link), "/sys/class/block/%s", disk_basename(disk));
-    if (realpath(link, disk_path) == NULL)
-        return 0;
-    snprintf(link, sizeof(link), "/sys/dev/block/%u:%u", major(dev), minor(dev));
-    if (realpath(link, dev_path) == NULL)
-        return 0;
-    len = strlen(disk_path);
-    return strcmp(disk_path, dev_path) == 0 ||
-           (strncmp(disk_path, dev_path, len) == 0 && dev_path[len] == '/');
-}
-
-static int disk_is_mounted(const char *disk)
-{
-    struct stat st;
-    FILE *fp;
-    char line[4096];
-    int mounted = 0;
-
-    if (stat(disk, &st) < 0 || !S_ISBLK(st.st_mode))
-        return 0;
-    fp = fopen("/proc/self/mountinfo", "r");
-    if (fp == NULL)
-        return 0;
-    while (fgets(line, sizeof(line), fp) != NULL) {
-        unsigned maj, min;
-
-        if (sscanf(line, "%*d %*d %u:%u", &maj, &min) != 2)
-            continue;
-        if (same_disk(disk, makedev(maj, min))) {
-            mounted = 1;
-            break;
-        }
-    }
-    fclose(fp);
-    return mounted;
-}
-
-static int disk_has_table(const char *disk)
-{
-    unsigned char buf[4096];
-    ssize_t n;
-    int fd = open(disk, O_RDONLY);
-
-    if (fd < 0)
-        return -1;
-    n = pread(fd, buf, sizeof(buf), 0);
-    close(fd);
-    if (n < 512)
-        return 0;
-    if (buf[510] == 0x55 && buf[511] == 0xaa)
-        return 1;
-    if (n >= 520 && memcmp(buf + 512, "EFI PART", 8) == 0)
-        return 1;
-    return 0;
-}
-
-static int disk_size(const char *disk, unsigned long long *size)
-{
-    struct stat st;
-
-    if (stat(disk, &st) < 0)
-        return -1;
-    if (S_ISREG(st.st_mode)) {
-        *size = (unsigned long long)st.st_size;
-        return 0;
-    }
-    if (S_ISBLK(st.st_mode)) {
-        int fd = open(disk, O_RDONLY);
-
-        if (fd < 0)
-            return -1;
-        if (ioctl(fd, BLKGETSIZE64, size) < 0) {
-            close(fd);
-            return -1;
-        }
-        close(fd);
-        return 0;
-    }
-    return -1;
 }
 
 static int disk_has_vg(const char *disk)
@@ -237,14 +149,12 @@ static int disk_has_vg(const char *disk)
     char *line;
     char *save = NULL;
 
-    if (run_capture(argv, out, sizeof(out)) != 0)
+    if (keel_capture(argv, out, sizeof(out)) != 0)
         return -1;
     for (line = strtok_r(out, "\n", &save); line != NULL;
          line = strtok_r(NULL, "\n", &save)) {
         char *pv = line;
         char *vg;
-        struct stat st;
-
         while (*pv == ' ' || *pv == '\t')
             pv++;
         if (*pv == '\0')
@@ -259,8 +169,7 @@ static int disk_has_vg(const char *disk)
             vg++;
         if (*vg == '\0')
             continue;
-        if (stat(pv, &st) == 0 && S_ISBLK(st.st_mode) &&
-            same_disk(disk, st.st_rdev))
+        if (keel_path_belongs_to(pv, disk))
             return 1;
     }
     return 0;
@@ -276,7 +185,7 @@ static int check_source(struct ctx *ctx)
 
         snprintf(path, sizeof(path), "%s/%s", ctx->source, source_files[i]);
         if (stat(path, &st) < 0 || !S_ISREG(st.st_mode)) {
-            fprintf(stderr, "keel-install: missing source file: %s\n", path);
+            keel_err("missing source file: %s", path);
             return 2;
         }
     }
@@ -286,66 +195,67 @@ static int check_source(struct ctx *ctx)
 static int check_disk(struct ctx *ctx)
 {
     struct stat st;
+    unsigned sector;
     int table;
 
     if (stat(ctx->disk, &st) < 0) {
-        fprintf(stderr, "keel-install: cannot stat disk %s: %s\n", ctx->disk,
-                strerror(errno));
+        keel_err("cannot stat disk %s: %s", ctx->disk, strerror(errno));
         return 3;
     }
     if (!ctx->dry_run && !S_ISBLK(st.st_mode)) {
-        fprintf(stderr, "keel-install: not a block device: %s\n", ctx->disk);
+        keel_err("not a block device: %s", ctx->disk);
         return 3;
     }
     if (ctx->dry_run && !S_ISBLK(st.st_mode) && !S_ISREG(st.st_mode)) {
-        fprintf(stderr, "keel-install: not a disk or regular file: %s\n",
-                ctx->disk);
+        keel_err("not a disk or regular file: %s", ctx->disk);
         return 3;
     }
-    if (disk_size(ctx->disk, &ctx->disk_size) < 0) {
-        fprintf(stderr, "keel-install: cannot read disk size: %s\n", ctx->disk);
+    if (keel_path_device_size(ctx->disk, &ctx->disk_size) < 0) {
+        keel_err("cannot read disk size: %s", ctx->disk);
+        return 3;
+    }
+    if (keel_path_sector_size(ctx->disk, &sector) < 0) {
+        keel_err("cannot read logical sector size: %s", ctx->disk);
+        return 3;
+    }
+    if (sector != 512) {
+        keel_err("unsupported logical sector size %u; need 512", sector);
         return 3;
     }
     if (ctx->disk_size < DISK_MIN) {
-        fprintf(stderr,
-                "keel-install: disk too small: %s has %llu bytes, need 8 GiB\n",
-                ctx->disk, ctx->disk_size);
+        keel_err("disk too small: %s has %llu bytes, need 8 GiB",
+                 ctx->disk, ctx->disk_size);
         return 3;
     }
     if (ctx->disk_size < DISK_WARN)
-        fprintf(stderr, "keel-install: warn: disk is smaller than 32 GiB; "
-                        "data will be small\n");
+        keel_err("warn: disk is smaller than 32 GiB; data will be small");
     if (ctx->disk_size <= 8ULL * GIB + MIB) {
-        fprintf(stderr,
-                "keel-install: disk has no room for the data partition\n");
+        keel_err("disk has no room for the data partition");
         return 3;
     }
-    table = disk_has_table(ctx->disk);
+    table = keel_path_has_partition_table(ctx->disk);
     if (table < 0) {
-        fprintf(stderr, "keel-install: cannot read %s: %s\n", ctx->disk,
-                strerror(errno));
+        keel_err("cannot read %s: %s", ctx->disk, strerror(errno));
         return 3;
     }
     if (table && !ctx->force) {
-        fprintf(stderr,
-                "keel-install: disk already has a partition table; use --force\n");
+        keel_err("disk already has a partition table; use --force");
         return 3;
     }
     if (!ctx->dry_run) {
         int vg;
 
-        if (disk_is_mounted(ctx->disk)) {
-            fprintf(stderr, "keel-install: disk is mounted: %s\n", ctx->disk);
+        if (keel_path_is_mounted(ctx->disk)) {
+            keel_err("disk is mounted: %s", ctx->disk);
             return 3;
         }
         vg = disk_has_vg(ctx->disk);
         if (vg < 0) {
-            fprintf(stderr, "keel-install: cannot run pvs\n");
+            keel_err("cannot run pvs");
             return 4;
         }
         if (vg > 0) {
-            fprintf(stderr, "keel-install: disk already has a VG: %s\n",
-                    ctx->disk);
+            keel_err("disk already has a VG: %s", ctx->disk);
             return 3;
         }
     }
@@ -361,11 +271,11 @@ static int step_validate(struct ctx *ctx)
     rc = check_disk(ctx);
     if (rc != 0)
         return rc;
-    printf("keel-install: disk=%s source=%s size=%llu force=%d timeout=%u\n",
-           ctx->disk, ctx->source, ctx->disk_size, ctx->force, ctx->timeout);
+    keel_log("disk=%s source=%s size=%llu force=%d timeout=%u", ctx->disk,
+             ctx->source, ctx->disk_size, ctx->force, ctx->timeout);
     if (ctx->dry_run)
-        printf("keel-install: plan: block-device, mount, and VG checks "
-               "are skipped in dry-run\n");
+        keel_log("plan: block-device, mount, and VG checks are skipped in "
+                 "dry-run");
     return 0;
 }
 
@@ -381,17 +291,22 @@ static int step_partition(struct ctx *ctx)
     if (rc != 0)
         return rc;
     if (ctx->dry_run)
-        printf("keel-install: plan: gpt types: esp=EF00 recovery=8300 "
-               "system=8E00 data=8300\n");
+        keel_log("plan: gpt types: esp=EF00 recovery=8300 system=8E00 "
+                 "data=8300");
     rc = exec_input(ctx, sfdisk, sfdisk_script);
     if (rc != 0)
         return rc;
-    /* Best effort: drop old kernel mappings before adding the new table. */
+    /*
+     * partx uses BLKPG, which creates partition devices without a PARTNAME
+     * attribute in sysfs. Discovery therefore relies on the blkid PARTLABEL
+     * fallback until the kernel rescans at the next boot. Keep the kernel
+     * re-read out of this step; blockdev --rereadpt has not been verified.
+     */
     if (ctx->dry_run) {
-        print_argv("keel-install: plan: ", partx_drop);
+        keel_print_argv("plan", partx_drop);
     } else {
-        print_argv("keel-install: exec: ", partx_drop);
-        if (run_argv(partx_drop) < 0)
+        keel_print_argv("exec", partx_drop);
+        if (keel_run(partx_drop) < 0)
             return 4;
     }
     return exec_argv(ctx, partx);
@@ -406,22 +321,22 @@ static int step_discover(struct ctx *ctx)
     const char *missing = "none";
 
     if (ctx->dry_run) {
-        print_argv("keel-install: plan: ", argv);
+        keel_print_argv("plan", argv);
         for (i = 0; i < sizeof(part_labels) / sizeof(part_labels[0]); i++)
-            printf("keel-install: plan: wait for %s\n", part_labels[i]);
+            keel_log("plan: wait for %s", part_labels[i]);
         return 0;
     }
-    printf("keel-install: discover: waiting for partition links\n");
+    keel_log("discover: waiting for partition links");
     deadline = time(NULL) + (time_t)ctx->timeout;
     for (;;) {
         int ready;
 
-        last_rc = run_argv(argv);
+        last_rc = keel_run(argv);
         ready = last_rc == 0;
         missing = "none";
         for (i = 0; ready && i < sizeof(part_labels) / sizeof(part_labels[0]);
              i++) {
-            if (!path_exists(part_labels[i])) {
+            if (!keel_path_exists(part_labels[i])) {
                 missing = part_labels[i];
                 ready = 0;
             }
@@ -432,12 +347,10 @@ static int step_discover(struct ctx *ctx)
             return 4;
         if (time(NULL) >= deadline)
             break;
-        sleep_ms(500);
+        keel_sleep_ms(500);
     }
-    fprintf(stderr,
-            "keel-install: partition discovery timed out after %us "
-            "(last status %d, missing %s)\n",
-            ctx->timeout, last_rc, missing);
+    keel_err("partition discovery timed out after %us (last status %d, "
+             "missing %s)", ctx->timeout, last_rc, missing);
     return 4;
 }
 
@@ -467,124 +380,26 @@ static int step_lvm(struct ctx *ctx)
     }
     for (i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
         if (ctx->dry_run) {
-            printf("keel-install: plan: wait for %s\n", paths[i]);
+            keel_log("plan: wait for %s", paths[i]);
             continue;
         }
-        if (!wait_for_path(paths[i], ctx->timeout)) {
-            fprintf(stderr,
-                    "keel-install: timed out waiting for %s after %us\n",
-                    paths[i], ctx->timeout);
+        if (!keel_wait_for_path(paths[i], ctx->timeout)) {
+            keel_err("timed out waiting for %s after %us", paths[i],
+                     ctx->timeout);
             return 4;
         }
     }
     return 0;
 }
 
-static int write_all(int fd, const char *buf, size_t len)
+static int plan_write(struct ctx *ctx, const char *source,
+                      const char *target)
 {
-    size_t done = 0;
+    unsigned long long size = keel_path_size(source);
 
-    while (done < len) {
-        ssize_t n = write(fd, buf + done, len - done);
-
-        if (n < 0) {
-            if (errno == EINTR)
-                continue;
-            return -1;
-        }
-        done += (size_t)n;
-    }
+    keel_log("plan: write %s -> %s (%llu bytes)", source, target, size);
+    ctx->bytes_written += size;
     return 0;
-}
-
-static int write_image(struct ctx *ctx, const char *source,
-                       const char *target)
-{
-    unsigned long long source_size = path_size(source);
-    unsigned long long target_size = 0;
-    char *buf;
-    int in;
-    int out;
-    int rc = 0;
-
-    if (ctx->dry_run) {
-        printf("keel-install: plan: write %s -> %s (%llu bytes)\n", source,
-               target, source_size);
-        ctx->bytes_written += source_size;
-        return 0;
-    }
-    in = open(source, O_RDONLY);
-    if (in < 0) {
-        fprintf(stderr, "keel-install: cannot open %s: %s\n", source,
-                strerror(errno));
-        return 4;
-    }
-    out = open(target, O_WRONLY);
-    if (out < 0) {
-        fprintf(stderr, "keel-install: cannot open %s: %s\n", target,
-                strerror(errno));
-        close(in);
-        return 4;
-    }
-    if (ioctl(out, BLKGETSIZE64, &target_size) < 0) {
-        fprintf(stderr, "keel-install: cannot size %s: %s\n", target,
-                strerror(errno));
-        close(in);
-        close(out);
-        return 4;
-    }
-    if (source_size > target_size) {
-        fprintf(stderr, "keel-install: %s does not fit in %s\n", source,
-                target);
-        close(in);
-        close(out);
-        return 4;
-    }
-    buf = malloc(MIB);
-    if (buf == NULL) {
-        fprintf(stderr, "keel-install: out of memory\n");
-        close(in);
-        close(out);
-        return 4;
-    }
-    for (;;) {
-        ssize_t n = read(in, buf, MIB);
-
-        if (n < 0) {
-            if (errno == EINTR)
-                continue;
-            fprintf(stderr, "keel-install: read %s: %s\n", source,
-                    strerror(errno));
-            rc = 4;
-            break;
-        }
-        if (n == 0)
-            break;
-        if (write_all(out, buf, (size_t)n) < 0) {
-            fprintf(stderr, "keel-install: write %s: %s\n", target,
-                    strerror(errno));
-            rc = 4;
-            break;
-        }
-    }
-    free(buf);
-    if (rc == 0 && fsync(out) < 0) {
-        fprintf(stderr, "keel-install: fsync %s: %s\n", target,
-                strerror(errno));
-        rc = 4;
-    }
-    if (close(out) < 0 && rc == 0) {
-        fprintf(stderr, "keel-install: close %s: %s\n", target,
-                strerror(errno));
-        rc = 4;
-    }
-    close(in);
-    if (rc == 0) {
-        printf("keel-install: write: %s -> %s (%llu bytes)\n", source, target,
-               source_size);
-        ctx->bytes_written += source_size;
-    }
-    return rc;
 }
 
 static int step_write(struct ctx *ctx)
@@ -595,13 +410,19 @@ static int step_write(struct ctx *ctx)
 
     snprintf(rootfs, sizeof(rootfs), "%s/rootfs.erofs", ctx->source);
     snprintf(recovery, sizeof(recovery), "%s/recovery.erofs", ctx->source);
-    rc = write_image(ctx, rootfs, "/dev/system/root_a");
+    if (ctx->dry_run) {
+        plan_write(ctx, rootfs, "/dev/system/root_a");
+        plan_write(ctx, rootfs, "/dev/system/root_b");
+        return plan_write(ctx, recovery, "/dev/disk/by-partlabel/recovery");
+    }
+    rc = keel_write_image(rootfs, "/dev/system/root_a", &ctx->bytes_written);
     if (rc != 0)
-        return rc;
-    rc = write_image(ctx, rootfs, "/dev/system/root_b");
+        return 4;
+    rc = keel_write_image(rootfs, "/dev/system/root_b", &ctx->bytes_written);
     if (rc != 0)
-        return rc;
-    return write_image(ctx, recovery, "/dev/disk/by-partlabel/recovery");
+        return 4;
+    return keel_write_image(recovery, "/dev/disk/by-partlabel/recovery",
+                            &ctx->bytes_written) == 0 ? 0 : 4;
 }
 
 static int step_etc(struct ctx *ctx)
@@ -620,20 +441,20 @@ static int step_etc(struct ctx *ctx)
     if (rc != 0)
         return rc;
     rc = mount_fs(ctx, "/dev/system/root_a", "/mnt/root", "erofs", "ro",
-                  &ctx->mounted_root);
+                  &ctx->mounts[M_ROOT]);
     if (rc != 0)
         return rc;
     rc = mount_fs(ctx, "/dev/system/etc", "/mnt/etc", "ext4", "rw,noatime",
-                  &ctx->mounted_etc);
+                  &ctx->mounts[M_ETC]);
     if (rc != 0)
         return rc;
     rc = exec_argv(ctx, cp);
     if (rc != 0)
         return rc;
-    rc = umount_fs(ctx, &ctx->mounted_etc, "/mnt/etc");
+    rc = umount_fs(ctx, &ctx->mounts[M_ETC]);
     if (rc != 0)
         return rc;
-    return umount_fs(ctx, &ctx->mounted_root, "/mnt/root");
+    return umount_fs(ctx, &ctx->mounts[M_ROOT]);
 }
 
 static int step_data(struct ctx *ctx)
@@ -657,7 +478,7 @@ static int step_data(struct ctx *ctx)
     if (rc != 0)
         return rc;
     rc = mount_fs(ctx, "/dev/disk/by-partlabel/data", "/mnt/data", "btrfs",
-                  "rw,noatime", &ctx->mounted_data);
+                  "rw,noatime", &ctx->mounts[M_DATA]);
     if (rc != 0)
         return rc;
     rc = exec_argv(ctx, var);
@@ -666,11 +487,11 @@ static int step_data(struct ctx *ctx)
     rc = exec_argv(ctx, home);
     if (rc != 0)
         return rc;
-    rc = umount_fs(ctx, &ctx->mounted_data, "/mnt/data");
+    rc = umount_fs(ctx, &ctx->mounts[M_DATA]);
     if (rc != 0)
         return rc;
     rc = mount_fs(ctx, "/dev/disk/by-partlabel/data", "/mnt/var", "btrfs",
-                  "rw,noatime,subvol=var", &ctx->mounted_var);
+                  "rw,noatime,subvol=var", &ctx->mounts[M_VAR]);
     if (rc != 0)
         return rc;
     rc = make_dir(ctx, "/mnt/var/lib/keel", 0755);
@@ -679,34 +500,32 @@ static int step_data(struct ctx *ctx)
     rc = make_dir(ctx, "/mnt/var/log/journal", 0755);
     if (rc != 0)
         return rc;
-    rc = umount_fs(ctx, &ctx->mounted_var, "/mnt/var");
+    rc = umount_fs(ctx, &ctx->mounts[M_VAR]);
     if (rc != 0)
         return rc;
     rc = mount_fs(ctx, "/dev/disk/by-partlabel/data", "/mnt/home", "btrfs",
-                  "rw,noatime,subvol=home", &ctx->mounted_home);
+                  "rw,noatime,subvol=home", &ctx->mounts[M_HOME]);
     if (rc != 0)
         return rc;
     rc = make_dir(ctx, "/mnt/home/root", 0700);
     if (rc != 0)
         return rc;
-    return umount_fs(ctx, &ctx->mounted_home, "/mnt/home");
+    return umount_fs(ctx, &ctx->mounts[M_HOME]);
 }
 
 static int step_finish(struct ctx *ctx)
 {
     if (ctx->dry_run) {
-        printf("keel-install: plan: sync\n");
-        printf("keel-install: plan: complete disk=%s "
-               "partitions=esp,recovery,system,data lvs=root_a,root_b,etc "
-               "bytes=%llu\n",
-               ctx->disk, ctx->bytes_written);
+        keel_log("plan: sync");
+        keel_log("plan: complete disk=%s partitions=esp,recovery,system,data "
+                 "lvs=root_a,root_b,etc bytes=%llu",
+                 ctx->disk, ctx->bytes_written);
         return 0;
     }
     sync();
-    printf("keel-install: complete disk=%s "
-           "partitions=esp,recovery,system,data lvs=root_a,root_b,etc "
-           "bytes=%llu\n",
-           ctx->disk, ctx->bytes_written);
+    keel_log("complete disk=%s partitions=esp,recovery,system,data "
+             "lvs=root_a,root_b,etc bytes=%llu",
+             ctx->disk, ctx->bytes_written);
     return 0;
 }
 
@@ -750,8 +569,12 @@ int main(int argc, char **argv)
     int opt;
     size_t i;
 
+    keel_set_progname("keel-install");
     memset(&ctx, 0, sizeof(ctx));
     ctx.timeout = 60;
+    for (i = 0; i < M_COUNT; i++)
+        snprintf(ctx.mounts[i].target, sizeof(ctx.mounts[i].target), "%s",
+                 mount_targets[i]);
     while ((opt = getopt_long(argc, argv, "d:s:nft:h", options, NULL)) != -1) {
         switch (opt) {
         case 'd':
@@ -768,7 +591,7 @@ int main(int argc, char **argv)
             break;
         case 't':
             if (parse_timeout(optarg, &ctx.timeout) < 0) {
-                fprintf(stderr, "keel-install: invalid timeout: %s\n", optarg);
+                keel_err("invalid timeout: %s", optarg);
                 return 2;
             }
             break;
@@ -788,12 +611,11 @@ int main(int argc, char **argv)
         int rc = steps[i].run(&ctx);
 
         if (rc != 0) {
-            fprintf(stderr, "keel-install: step %s failed (%d)\n",
-                    steps[i].name, rc);
-            cleanup_mounts(&ctx);
+            keel_err("step %s failed (%d)", steps[i].name, rc);
+            keel_cleanup_mounts(ctx.mounts, M_COUNT);
             return rc;
         }
     }
-    cleanup_mounts(&ctx);
+    keel_cleanup_mounts(ctx.mounts, M_COUNT);
     return 0;
 }

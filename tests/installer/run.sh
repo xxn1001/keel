@@ -10,9 +10,12 @@ bin="${test_tmp}/keel-install"
 mkdir -p "$test_tmp"
 trap 'rm -rf "$test_tmp"' EXIT HUP INT TERM
 
-${CC:-cc} -std=c99 -Wall -Wextra -Werror -o "$bin" \
+${CC:-cc} -std=c99 -Wall -Wextra -Werror \
+    -I "$repo_dir/src/lib" -o "$bin" \
     "$repo_dir/src/installer/main.c" \
-    "$repo_dir/src/installer/run.c"
+    "$repo_dir/src/lib/keel/proc.c" \
+    "$repo_dir/src/lib/keel/fs.c" \
+    "$repo_dir/src/lib/keel/mount.c"
 
 KEEL_INSTALL_BIN="$bin" sh "$test_dir/test-dry-run.sh"
 echo "tests/installer: ok"

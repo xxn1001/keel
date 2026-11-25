@@ -35,6 +35,8 @@ run_install() {
     test_err=$(cat "$err_file")
 }
 
+# Regular files are treated as 512-byte-sector devices by the dry-run path;
+# this case also covers the logical-sector-size guard.
 run_install --disk "$disk_64" --source "$source_dir" --dry-run
 assert_status 0 "$test_status" "64 GiB dry-run status"
 assert_contains "$test_out" \
@@ -69,6 +71,11 @@ assert_contains "$test_out" "btrfs subvolume create /mnt/data/var" "var subvolum
 assert_contains "$test_out" "btrfs subvolume create /mnt/data/home" "home subvolume"
 assert_contains "$test_out" "partitions=esp,recovery,system,data" "summary partitions"
 assert_contains "$test_out" "lvs=root_a,root_b,etc" "summary LVs"
+
+# A regular file must stay on the 512-byte path; the 4Kn guard only applies
+# to real block devices.
+run_install --disk "$disk_64" --source "$source_dir" --dry-run
+assert_status 0 "$test_status" "regular-file sector size"
 
 run_install --disk "$disk_4" --source "$source_dir" --dry-run
 assert_status 3 "$test_status" "4 GiB disk status"
