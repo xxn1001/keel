@@ -1,0 +1,43 @@
+#!/bin/sh
+# Restore a successful slot's boot-counting filename after an ESP outage.
+set -eu
+
+log() { echo "keel-boot-repair: $*"; }
+marker=/var/lib/keel/boot-ok
+
+[ -s "$marker" ] || { log "no boot-ok record"; exit 0; }
+last=$(tail -n 1 "$marker")
+slot=
+case "$last" in
+    *slot=a*) slot=a ;;
+    *slot=b*) slot=b ;;
+esac
+[ -n "$slot" ] || { log "malformed boot-ok record: $last"; exit 0; }
+
+if ! findmnt -n -o TARGET /boot 2>/dev/null | grep -qx /boot; then
+    log "/boot is not mounted"
+    exit 0
+fi
+if ! touch /boot/.keel-repair-write-test 2>/dev/null; then
+    log "/boot is not writable"
+    exit 0
+fi
+rm -f /boot/.keel-repair-write-test
+
+target=/boot/EFI/Linux/keel-${slot}+10.efi
+if [ -e "$target" ]; then
+    log "keel-${slot}+10.efi already present"
+    exit 0
+fi
+for f in /boot/EFI/Linux/"keel-${slot}+"*.efi; do
+    [ -e "$f" ] || continue
+    base=${f##*/}
+    if mv "$f" "$target"; then
+        log "restored $base -> keel-${slot}+10.efi"
+        sync
+    else
+        log "cannot restore $base"
+    fi
+    exit 0
+done
+log "nothing to restore for slot $slot"
