@@ -4,7 +4,7 @@ title: Rescue and recovery
 status: accepted
 target: v0.1/v0.3
 owner: TBD
-updated: 2026-11-23
+updated: 2026-11-26
 depends: [F-002, F-004, F-015]
 ---
 
@@ -62,7 +62,7 @@ v1 不做签名/verity；救援是唯一安全网。没有演练过的救援路�
 - 不依赖 system VG，也不依赖 data。
 - 工具：`lvm2`、`e2fsprogs`、`btrfs-progs`、`erofs-utils`、`dosfstools`（`mkfs.vfat`）、
   `util-linux`（`blkid`、`sfdisk`、`partx`）、`mount`、`dmesg`。
-  v0.1 不带 `bootctl`（V4b 要用时再加，它会拖进一批 systemd 私有库）；
+  V4b 起带 `bootctl` 和 `systemd-bootx64.efi`（会拖进 systemd 私有库，recovery 约 +4.3 MiB）；
   `gdisk` 在镜像里但安装器不用它。
 - 可手动挂 system root、`/etc`、data：
 
@@ -90,7 +90,7 @@ mount -t btrfs -o subvol=var /dev/disk/by-partlabel/data /mnt/var
 - 入口：`board/common/recovery/init`，安装为 `/sbin/init`，`/init` 指向它。
 - 组装：`tools/mkrecovery.sh`，输出 `out/images/recovery.erofs` 与
   `out/images/recovery.cpio`，两者来自同一棵 `out/target` 树。
-- V3a 组装 recovery 树时不含 `bootctl`；V4b 写 ESP 时需要了再加，其余工具从 `out/target` 取。
+- V4b 起 recovery 树含 `bootctl`、`systemd-bootx64.efi` 和 `/etc/os-release`；其余工具从 `out/target` 取。
 - `keel-install` 由 Buildroot 包装到 `out/images/`，只被 recovery 树取用，不进 system root
   （[ADR-0018](../decisions/ADR-0018-system-root-tools.md)）。
 

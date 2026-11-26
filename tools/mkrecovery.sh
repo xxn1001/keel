@@ -38,6 +38,12 @@ wipefs=$(find_tool wipefs)
 partx=$(find_tool partx)
 dump_erofs=$(find_tool dump.erofs)
 blkid=$(find_tool blkid)
+bootctl=$(find_tool bootctl)
+systemd_boot="${target_dir}/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
+test -f "${systemd_boot}" || {
+    echo "mkrecovery: missing ${systemd_boot}" >&2
+    exit 1
+}
 
 keel_install="${images_dir}/keel-install"
 test -x "${keel_install}" || {
@@ -50,15 +56,17 @@ mkdir -p "${work_dir}/bin" "${work_dir}/sbin" "${work_dir}/lib"
 mkdir -p "${work_dir}/etc/lvm/backup" "${work_dir}/etc/lvm/archive"
 mkdir -p "${work_dir}/run/lvm" "${work_dir}/run/lock"
 mkdir -p "${work_dir}/proc" "${work_dir}/sys" "${work_dir}/dev" "${work_dir}/tmp"
-mkdir -p "${work_dir}/usr"
+mkdir -p "${work_dir}/usr/lib"
 ln -s lib "${work_dir}/lib64"
-ln -s ../lib "${work_dir}/usr/lib"
 mkdir -p "${images_dir}"
 
 install -m 0755 "${repo_dir}/board/common/recovery/init" "${work_dir}/sbin/init"
 ln -s sbin/init "${work_dir}/init"
 install -m 0644 "${repo_dir}/board/common/initrd/lib/discover.sh" "${work_dir}/lib/discover.sh"
 install -m 0755 "${repo_dir}/board/common/recovery/keel-discover" "${work_dir}/sbin/keel-discover"
+install -D -m 0644 "${systemd_boot}" \
+    "${work_dir}/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
+install -m 0644 "${target_dir}/usr/lib/os-release" "${work_dir}/etc/os-release"
 
 python3 "${repo_dir}/tools/lib/collect-deps.py" \
     "${target_dir}" "${work_dir}/bin" "${work_dir}/lib" \
@@ -69,6 +77,8 @@ python3 "${repo_dir}/tools/lib/collect-deps.py" \
     "${mkfs_ext4}" "${mkfs_btrfs}" "${btrfs}" "${sgdisk}" \
     "${sfdisk}" "${wipefs}" "${partx}" "${dump_erofs}" "${blkid}" \
     "${keel_install}"
+python3 "${repo_dir}/tools/lib/collect-deps.py" \
+    "${target_dir}" "${work_dir}/usr/bin" "${work_dir}/lib" "${bootctl}"
 
 "${work_dir}/lib/ld-linux-x86-64.so.2" --library-path "${work_dir}/lib" \
     "${work_dir}/bin/busybox" --install -s "${work_dir}/bin"

@@ -11,7 +11,7 @@ struct ctx {
     unsigned timeout;
     unsigned long long disk_size;
     unsigned long long bytes_written;
-    struct keel_mount mounts[5];
+    struct keel_mount mounts[6];
 };
 
 struct step {
