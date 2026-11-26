@@ -176,10 +176,16 @@ lvm-activate.service
 
 因此：
 
-- `keel-boot-ok.service` 在启动成功后写 `/var/lib/keel/boot-ok`（槽名、boot id、时间）。
-- `keel-boot-repair.service` 在早期检查：标记健康 + ESP 可写 + 条目名已坏，则用
-  `bootctl` 把 `keel-<slot>` 恢复到 `+10`。
-- 这一段**不在 initrd 里**，是正常运行时的 systemd 服务。
+- 原生 `systemd-bless-boot.service` 被 `/etc/systemd/system/` 下的 `/dev/null`
+  符号链接 mask 掉；它在 `basic.target` 就 bless，早于 ADR-0006 的判据。
+- `keel-boot-ok.service` 在 `multi-user.target` 之后检查 `/` 是 erofs ro、`/etc`
+  已挂、`/var`/`/home` 是 btrfs 子卷、`systemctl --failed` 为空；全过才显式调用
+  `/usr/lib/systemd/systemd-bless-boot good`，然后写 `/var/lib/keel/boot-ok`
+  （槽名、boot id、UTC 时间）。bless 失败（例如 ESP 不可写）仍写标记，见 ADR-0015。
+- `keel-boot-repair.service` 在 `sysinit.target` 读取 boot-ok；标记存在且 ESP 可写时，
+  把记录槽的 counted UKI（如 `keel-a+9-1.efi`）还原成 `keel-a+10.efi`。
+- 这一段**不在 initrd 里**，是正常运行时的 systemd 服务；决定见
+  [Q-0013](open/Q-0013-bless-point.md) 的 Resolution。
 
 ESP 挂不上时 initrd 仍然继续启动，因为 ESP 故障不应该把一个还能跑的机器降级成救援模式。
 
@@ -317,7 +323,8 @@ root=/dev/system/root_a ro rootfstype=erofs console=tty0 console=ttyS0,115200 sy
 ```
 
 - 不加 `keel.fail=`/`keel.timeout=`；测试注入走 QEMU cmdline，不改产物。
-- 产物名不带 `+N`。boot counting 的 `+N` 由安装器写 ESP 时加，v0.2 才验证。
+- Buildroot 产物名不带 `+N`。安装器写 ESP 时加 `+10`；`loader.conf` 用
+  `default keel-a*`，同时匹配 counted 的 `keel-a+10.efi` 和 bless 后的 `keel-a.efi`。
 - `mkuki.sh` 不自己算 VMA，也不写 image base；段布局由 ukify 处理。脚本依次查找
   `command -v ukify`、`/usr/lib/systemd/ukify`、`/usr/bin/ukify`，找不到就失败，
   不回退到手写实现。

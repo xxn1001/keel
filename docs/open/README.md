@@ -19,7 +19,7 @@
 | [Q-0010](Q-0010-image-build-harness.md) | 无 loop/root 时镜像怎么造、测试怎么起 | W-1 / v0.1 | closed |
 | [Q-0011](Q-0011-initrd-p1.md) | P1（systemd initrd）是否值得做 | F-005 / v0.3 | open |
 | [Q-0012](Q-0012-initrd-device-discovery.md) | 无 udev 时 initrd 怎么找分区（不能靠设备名） | F-005 / v0.1 | closed |
-| [Q-0013](Q-0013-bless-point.md) | bless 的判定点：basic.target 太早 | F-003 / v0.2 | open |
+| [Q-0013](Q-0013-bless-point.md) | bless 的判定点：basic.target 太早 | F-003 / v0.2 | closed |
 | [Q-0014](Q-0014-build-params.md) | 构建参数（JOBS/DL_DIR/O）怎么和宿主机解耦 | F-001 / v0.1 | closed |
 
 ## 规则
