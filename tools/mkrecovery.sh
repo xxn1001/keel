@@ -31,8 +31,19 @@ mkfs_erofs=$(find_tool mkfs.erofs)
 mkfs_vfat=$(find_tool mkfs.vfat)
 mkfs_ext4=$(find_tool mkfs.ext4)
 mkfs_btrfs=$(find_tool mkfs.btrfs)
+btrfs=$(find_tool btrfs)
 sgdisk=$(find_tool sgdisk)
+sfdisk=$(find_tool sfdisk)
+wipefs=$(find_tool wipefs)
+partx=$(find_tool partx)
+dump_erofs=$(find_tool dump.erofs)
 blkid=$(find_tool blkid)
+
+keel_install="${images_dir}/keel-install"
+test -x "${keel_install}" || {
+    echo "mkrecovery: missing ${keel_install}; run tools/build.sh first" >&2
+    exit 1
+}
 
 rm -rf "${work_dir}"
 mkdir -p "${work_dir}/bin" "${work_dir}/sbin" "${work_dir}/lib"
@@ -46,6 +57,8 @@ mkdir -p "${images_dir}"
 
 install -m 0755 "${repo_dir}/board/common/recovery/init" "${work_dir}/sbin/init"
 ln -s sbin/init "${work_dir}/init"
+install -m 0644 "${repo_dir}/board/common/initrd/lib/discover.sh" "${work_dir}/lib/discover.sh"
+install -m 0755 "${repo_dir}/board/common/recovery/keel-discover" "${work_dir}/sbin/keel-discover"
 
 python3 "${repo_dir}/tools/lib/collect-deps.py" \
     "${target_dir}" "${work_dir}/bin" "${work_dir}/lib" \
@@ -53,7 +66,9 @@ python3 "${repo_dir}/tools/lib/collect-deps.py" \
 python3 "${repo_dir}/tools/lib/collect-deps.py" \
     "${target_dir}" "${work_dir}/sbin" "${work_dir}/lib" \
     "${lvm}" "${dmsetup}" "${mkfs_erofs}" "${mkfs_vfat}" \
-    "${mkfs_ext4}" "${mkfs_btrfs}" "${sgdisk}" "${blkid}"
+    "${mkfs_ext4}" "${mkfs_btrfs}" "${btrfs}" "${sgdisk}" \
+    "${sfdisk}" "${wipefs}" "${partx}" "${dump_erofs}" "${blkid}" \
+    "${keel_install}"
 
 "${work_dir}/lib/ld-linux-x86-64.so.2" --library-path "${work_dir}/lib" \
     "${work_dir}/bin/busybox" --install -s "${work_dir}/bin"
@@ -67,7 +82,7 @@ for applet in mount dmesg; do
     }
 done
 
-for applet in vgchange vgmknodes lvs pvs vgs pvscan lvscan; do
+for applet in pvcreate vgcreate lvcreate vgchange vgmknodes lvs pvs vgs pvscan lvscan; do
     ln -sfn lvm "${work_dir}/sbin/${applet}"
 done
 

@@ -75,7 +75,11 @@ keel_discover() {
     done
 
     if [ "$_keel_count" -eq 0 ] && command -v blkid >/dev/null 2>&1; then
-        _keel_systems=$(blkid -t PARTLABEL=system -o device 2>/dev/null || true)
+        # This fallback needs util-linux blkid (-c and -t). The initrd only
+        # carries BusyBox blkid, so there it never matches; the PARTNAME
+        # path above is the only one that works in initrd. Recovery keeps
+        # util-linux blkid first in PATH.
+        _keel_systems=$(blkid -c /dev/null -t PARTLABEL=system -o device 2>/dev/null || true)
         # shellcheck disable=SC2086
         for _keel_path in $_keel_systems; do
             _keel_part=${_keel_path##*/}
@@ -132,7 +136,7 @@ keel_discover() {
             esac
             eval "_keel_current=\${$_keel_var:-}"
             [ -n "$_keel_current" ] && continue
-            _keel_parts=$(blkid -t "PARTLABEL=$_keel_label" \
+            _keel_parts=$(blkid -c /dev/null -t "PARTLABEL=$_keel_label" \
                 -o device 2>/dev/null || true)
             # shellcheck disable=SC2086
             for _keel_path in $_keel_parts; do

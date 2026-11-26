@@ -1,1 +1,1 @@
-# No external packages in W-0.
+include $(sort $(wildcard $(BR2_EXTERNAL_KEEL_PATH)/package/*/*.mk))

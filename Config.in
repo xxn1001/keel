@@ -1,1 +1,1 @@
-# No external packages in W-0.
+source "$BR2_EXTERNAL_KEEL_PATH/package/keel-install/Config.in"
