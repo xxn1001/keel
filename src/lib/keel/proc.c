@@ -1,5 +1,5 @@
 #define _GNU_SOURCE
-#include <keel/proc.h>
+#include "proc.h"
 
 #include <errno.h>
 #include <stdarg.h>
