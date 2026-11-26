@@ -4,7 +4,7 @@ title: Installer
 status: accepted
 target: v0.1/v0.3
 owner: TBD
-updated: 2026-11-25
+updated: 2026-11-26
 depends: [F-001, F-002, F-004, F-015, F-005]
 ---
 
@@ -91,8 +91,9 @@ depends: [F-001, F-002, F-004, F-015, F-005]
    这份 `/etc` 只有这一个来源——不打 `etc.tar`，也不 loop 挂镜像文件。
 7. `mkfs.btrfs` data；`btrfs subvolume create var`、`home`；挂 var/home；建
    `/home/root`（0700）、`/var/lib/keel`、`/var/log/journal`。
-8. （V4b）`mkfs.vfat` ESP；复制 `systemd-bootx64.efi` 与 UKI A/B；`loader.conf`
-   default `keel-a`；`bootctl --esp-path=/boot install`；写 NVRAM。
+8. （V4b）`mkfs.vfat` ESP；挂 `/mnt/esp`；复制 UKI A/B；`loader.conf`
+   default `keel-a.efi`（UKI 的 id 含 `.efi` 后缀，写 `keel-a` 匹配不到）；
+   `bootctl --esp-path=/mnt/esp install`；写 NVRAM；卸载。
 9. 首启生成 machine-id/ssh host key。
 
 验收也按这个切：**V4a 只验内容**（`sfdisk -d`、`lvs`、`blkid`、`dump.erofs`、

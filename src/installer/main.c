@@ -5,6 +5,7 @@
 #include <keel/proc.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <getopt.h>
 #include <limits.h>
 #include <stdio.h>
@@ -25,11 +26,13 @@ enum {
     M_DATA,
     M_VAR,
     M_HOME,
+    M_ESP,
     M_COUNT
 };
 
 static const char *const mount_targets[M_COUNT] = {
     "/mnt/root", "/mnt/etc", "/mnt/data", "/mnt/var", "/mnt/home",
+    "/mnt/esp",
 };
 
 static const char *const source_files[] = {
@@ -513,6 +516,107 @@ static int step_data(struct ctx *ctx)
     return umount_fs(ctx, &ctx->mounts[M_HOME]);
 }
 
+static int write_text(struct ctx *ctx, const char *path, const char *text)
+{
+    size_t len = strlen(text);
+    size_t done = 0;
+    int fd;
+
+    if (ctx->dry_run) {
+        keel_log("plan: write %s", path);
+        fputs(text, stdout);
+        return 0;
+    }
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        keel_err("cannot write %s: %s", path, strerror(errno));
+        return -1;
+    }
+    while (done < len) {
+        ssize_t n = write(fd, text + done, len - done);
+
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            keel_err("cannot write %s: %s", path, strerror(errno));
+            close(fd);
+            return -1;
+        }
+        done += (size_t)n;
+    }
+    if (fsync(fd) < 0) {
+        keel_err("cannot sync %s: %s", path, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    if (close(fd) < 0) {
+        keel_err("cannot close %s: %s", path, strerror(errno));
+        return -1;
+    }
+    keel_log("write: %s", path);
+    return 0;
+}
+
+static int esp_fail(const char *what)
+{
+    keel_err("disk is written but not bootable: %s", what);
+    return 4;
+}
+
+static int step_esp(struct ctx *ctx)
+{
+    char *mkfs[] = { "mkfs.vfat", "-F", "32", "-n", "KEELESP",
+                     "/dev/disk/by-partlabel/esp", NULL };
+    char *bootctl[] = { "bootctl", "--esp-path=/mnt/esp", "install", NULL };
+    char source_a[PATH_MAX];
+    char source_b[PATH_MAX];
+    char *cp_a[] = { "cp", "-a", source_a,
+                     "/mnt/esp/EFI/Linux/keel-a.efi", NULL };
+    char *cp_b[] = { "cp", "-a", source_b,
+                     "/mnt/esp/EFI/Linux/keel-b.efi", NULL };
+    int rc;
+
+    snprintf(source_a, sizeof(source_a), "%s/keel-a.efi", ctx->source);
+    snprintf(source_b, sizeof(source_b), "%s/keel-b.efi", ctx->source);
+    rc = make_dir(ctx, "/mnt/esp", 0755);
+    if (rc != 0)
+        return esp_fail("cannot create ESP mount point");
+    rc = exec_argv(ctx, mkfs);
+    if (rc != 0)
+        return esp_fail("mkfs.vfat failed");
+    rc = mount_fs(ctx, "/dev/disk/by-partlabel/esp", "/mnt/esp", "vfat", "rw",
+                  &ctx->mounts[M_ESP]);
+    if (rc != 0)
+        return esp_fail("ESP mount failed");
+    rc = make_dir(ctx, "/mnt/esp/EFI/Linux", 0755);
+    if (rc != 0)
+        return esp_fail("cannot create EFI/Linux");
+    rc = make_dir(ctx, "/mnt/esp/loader", 0755);
+    if (rc != 0)
+        return esp_fail("cannot create loader");
+    rc = exec_argv(ctx, cp_a);
+    if (rc != 0)
+        return esp_fail("cannot copy keel-a.efi");
+    rc = exec_argv(ctx, cp_b);
+    if (rc != 0)
+        return esp_fail("cannot copy keel-b.efi");
+    rc = write_text(ctx, "/mnt/esp/loader/loader.conf",
+                    "default keel-a.efi\ntimeout 3\n");
+    if (rc != 0)
+        return esp_fail("cannot write loader.conf");
+    rc = exec_argv(ctx, bootctl);
+    if (rc != 0)
+        return esp_fail("bootctl install failed");
+    if (!ctx->dry_run &&
+        (!keel_path_exists("/mnt/esp/EFI/Linux/keel-a.efi") ||
+         !keel_path_exists("/mnt/esp/EFI/Linux/keel-b.efi")))
+        return esp_fail("UKIs missing after bootctl install");
+    rc = umount_fs(ctx, &ctx->mounts[M_ESP]);
+    if (rc != 0)
+        return esp_fail("ESP unmount failed");
+    return 0;
+}
+
 static int step_finish(struct ctx *ctx)
 {
     if (ctx->dry_run) {
@@ -537,6 +641,7 @@ static const struct step steps[] = {
     { "write", step_write },
     { "etc", step_etc },
     { "data", step_data },
+    { "esp", step_esp },
     { "finish", step_finish },
 };
 

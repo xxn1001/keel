@@ -1,6 +1,6 @@
 # initrd
 
-> 状态：accepted | 更新：2026-11-25
+> 状态：accepted | 更新：2026-11-26
 > 目标：在 `switch_root` 之前挂好 root、`/etc`、`/var`、`/home`、`/boot`。
 > 任何关键挂载失败：进 physical recovery，不继续半启动。
 > 超时预算与故障注入见 [ADR-0015](decisions/ADR-0015-boot-failure-contract.md)；
@@ -221,7 +221,8 @@ keel.mode=rescue
 
 - 正常 initrd 在 LVM/root/etc/data 失败时自动 fallback。
 - recovery 工具：`lvm2`、`e2fsprogs`、`btrfs-progs`、`erofs-utils`、`dosfstools`（`mkfs.vfat`）、
-  `util-linux`（`blkid`、`sfdisk`、`partx`）、`mount`、`dmesg`。`bootctl` 在 V4b 写 ESP 时才加。
+  `util-linux`（`blkid`、`sfdisk`、`partx`）、`mount`、`dmesg`。V4b 起还带
+  `bootctl` 和 `systemd-bootx64.efi`。
 - recovery 是 known-good，不随 A/B 更新自动更新；ESP recovery UKI + USB 仍保留。
 - 详见 [F-012](features/F-012-rescue.md) / [ADR-0014](decisions/ADR-0014-recovery-partition.md)。
 

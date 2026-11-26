@@ -8,6 +8,9 @@ export PATH
 mkdir -p /proc /sys /dev /run /tmp /etc/lvm/backup /etc/lvm/archive
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
+if [ -d /sys/firmware/efi/efivars ]; then
+    mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
+fi
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 mount -t tmpfs -o mode=0755 tmpfs /run 2>/dev/null || true
 mount -t tmpfs -o mode=1777 tmpfs /tmp 2>/dev/null || true
