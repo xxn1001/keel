@@ -91,9 +91,13 @@ depends: [F-001, F-002, F-004, F-015, F-005]
    这份 `/etc` 只有这一个来源——不打 `etc.tar`，也不 loop 挂镜像文件。
 7. `mkfs.btrfs` data；`btrfs subvolume create var`、`home`；挂 var/home；建
    `/home/root`（0700）、`/var/lib/keel`、`/var/log/journal`。
-8. （V4b）`mkfs.vfat` ESP；挂 `/mnt/esp`；复制 UKI A/B；`loader.conf`
-   default `keel-a.efi`（UKI 的 id 含 `.efi` 后缀，写 `keel-a` 匹配不到）；
+8. （V4b/V5）`mkfs.vfat` ESP；挂 `/mnt/esp`；把 UKI 复制成
+   `keel-a+10.efi` / `keel-b+10.efi`；`loader.conf` default `keel-a*`；
    `bootctl --esp-path=/mnt/esp install`；写 NVRAM；卸载。
+   实测：带 `+10` 时 BLS 条目的显示 id 仍是 `keel-a.efi`（source 带 `+10`，
+   `tries: 10 left`），但 boot loader 另报一个 `keel-a+10.efi` 条目；
+   `default keel-a.efi` 不选中 counted 条目，启动会落到排序后的 `keel-b`。
+   `default keel-a*` 同时匹配 `keel-a+10.efi` 和 bless 后的 `keel-a.efi`。
 9. 首启生成 machine-id/ssh host key。
 
 验收也按这个切：**V4a 只验内容**（`sfdisk -d`、`lvs`、`blkid`、`dump.erofs`、

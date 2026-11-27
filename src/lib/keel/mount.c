@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
-#include <keel/mount.h>
-#include <keel/proc.h>
+#include "mount.h"
+#include "proc.h"
 
 #include <stdio.h>
 #include <string.h>

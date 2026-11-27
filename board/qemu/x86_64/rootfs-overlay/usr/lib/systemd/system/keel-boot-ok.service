@@ -1,0 +1,17 @@
+[Unit]
+Description=Record successful keel boot and bless the slot
+After=multi-user.target
+RequiresMountsFor=/var /etc
+ConditionPathIsMountPoint=/var
+ConditionPathIsMountPoint=/etc
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/keel/keel-boot-ok
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=30s
+
+[Install]
+WantedBy=multi-user.target

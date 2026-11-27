@@ -71,9 +71,9 @@ assert_contains "$test_out" "btrfs subvolume create /mnt/data/var" "var subvolum
 assert_contains "$test_out" "btrfs subvolume create /mnt/data/home" "home subvolume"
 assert_contains "$test_out" \
     'mkfs.vfat -F 32 -n KEELESP /dev/disk/by-partlabel/esp' "ESP mkfs"
-assert_contains "$test_out" "keel-a.efi /mnt/esp/EFI/Linux/keel-a.efi" \
+assert_contains "$test_out" "keel-a.efi /mnt/esp/EFI/Linux/keel-a+10.efi" \
     "ESP keel-a copy"
-assert_contains "$test_out" "default keel-a.efi" "ESP loader default"
+assert_contains "$test_out" "default keel-a*" "ESP loader default"
 assert_contains "$test_out" "bootctl --esp-path=/mnt/esp install" \
     "ESP bootctl install"
 assert_contains "$test_out" "partitions=esp,recovery,system,data" "summary partitions"

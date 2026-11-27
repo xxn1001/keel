@@ -571,9 +571,9 @@ static int step_esp(struct ctx *ctx)
     char source_a[PATH_MAX];
     char source_b[PATH_MAX];
     char *cp_a[] = { "cp", "-a", source_a,
-                     "/mnt/esp/EFI/Linux/keel-a.efi", NULL };
+                     "/mnt/esp/EFI/Linux/keel-a+10.efi", NULL };
     char *cp_b[] = { "cp", "-a", source_b,
-                     "/mnt/esp/EFI/Linux/keel-b.efi", NULL };
+                     "/mnt/esp/EFI/Linux/keel-b+10.efi", NULL };
     int rc;
 
     snprintf(source_a, sizeof(source_a), "%s/keel-a.efi", ctx->source);
@@ -601,15 +601,15 @@ static int step_esp(struct ctx *ctx)
     if (rc != 0)
         return esp_fail("cannot copy keel-b.efi");
     rc = write_text(ctx, "/mnt/esp/loader/loader.conf",
-                    "default keel-a.efi\ntimeout 3\n");
+                    "default keel-a*\ntimeout 3\n");
     if (rc != 0)
         return esp_fail("cannot write loader.conf");
     rc = exec_argv(ctx, bootctl);
     if (rc != 0)
         return esp_fail("bootctl install failed");
     if (!ctx->dry_run &&
-        (!keel_path_exists("/mnt/esp/EFI/Linux/keel-a.efi") ||
-         !keel_path_exists("/mnt/esp/EFI/Linux/keel-b.efi")))
+        (!keel_path_exists("/mnt/esp/EFI/Linux/keel-a+10.efi") ||
+         !keel_path_exists("/mnt/esp/EFI/Linux/keel-b+10.efi")))
         return esp_fail("UKIs missing after bootctl install");
     rc = umount_fs(ctx, &ctx->mounts[M_ESP]);
     if (rc != 0)

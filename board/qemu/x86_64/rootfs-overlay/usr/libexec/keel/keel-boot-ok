@@ -1,0 +1,52 @@
+#!/bin/sh
+# Mark a fully booted keel system as good and record the slot.
+set -eu
+
+log() { echo "keel-boot-ok: $*"; }
+skip() { log "$*"; exit 0; }
+
+slot=unknown
+case "$(cat /proc/cmdline)" in
+    *root=/dev/system/root_a*) slot=a ;;
+    *root=/dev/system/root_b*) slot=b ;;
+esac
+[ "$slot" != unknown ] || skip "cannot determine slot"
+
+root_fstype=$(findmnt -n -o FSTYPE / 2>/dev/null || true)
+root_opts=$(findmnt -n -o OPTIONS / 2>/dev/null || true)
+[ "$root_fstype" = erofs ] || skip "/ is not erofs: $root_fstype"
+case ",$root_opts," in
+    *,ro,*) ;;
+    *) skip "/ is not read-only: $root_opts" ;;
+esac
+
+[ "$(findmnt -n -o TARGET /etc 2>/dev/null || true)" = /etc ] || \
+    skip "/etc is not a separate mount"
+
+for path in /var /home; do
+    fstype=$(findmnt -n -o FSTYPE "$path" 2>/dev/null || true)
+    source=$(findmnt -n -o SOURCE "$path" 2>/dev/null || true)
+    [ "$fstype" = btrfs ] || skip "$path is not btrfs: $fstype"
+    case "$source" in
+        *"[$path]"*) ;;
+        *) skip "$path is not the right btrfs subvolume: $source" ;;
+    esac
+done
+
+failed=$(systemctl list-units --state=failed --no-legend --no-pager \
+    2>/dev/null || true)
+[ -z "$failed" ] || skip "failed units: $failed"
+
+if /usr/lib/systemd/systemd-bless-boot good; then
+    log "blessed slot $slot"
+else
+    log "bless failed; boot-ok still recorded"
+fi
+
+mkdir -p /var/lib/keel
+boot_id=$(cat /proc/sys/kernel/random/boot_id)
+now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+printf '%s slot=%s boot_id=%s\n' "$now" "$slot" "$boot_id" \
+    > /var/lib/keel/boot-ok
+sync
+log "recorded slot=$slot boot_id=$boot_id"

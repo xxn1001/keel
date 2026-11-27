@@ -4,7 +4,7 @@ title: Atomic A/B update and rollback
 status: accepted
 target: v0.2/v0.3
 owner: TBD
-updated: 2026-11-20
+updated: 2026-11-26
 depends: [F-002, F-005]
 ---
 
@@ -119,8 +119,12 @@ LVM 说明：
 
 ### 5.2 成功/失败
 
-- 成功：到达 `boot-complete.target`；`systemd-bless-boot` 把 `keel-<slot>+3.efi` 改名为 `keel-<slot>.efi`；`bootctl set-default`。
-- 失败：one-shot 已消费；下次启动回默认（旧槽）。
+- 成功：`keel-boot-ok.service` 在 `multi-user.target` 之后检查通过，调用
+  `systemd-bless-boot good`，把 `keel-<slot>+10.efi`（或已递减的中间名）改名为
+  `keel-<slot>.efi`，再写 `/var/lib/keel/boot-ok`。
+- 失败：计数在引导器阶段递减；减到 0 后 systemd-boot 选择默认/旧槽。
+- 原生 `systemd-bless-boot.service` 在 `basic.target` bless，已被 `/etc` 下的
+  `/dev/null` 符号链接 mask；只有 `keel-boot-ok.service` 显式调用 bless。
 - 三类系统失败：
   - panic：`panic=-1` 立即重启。
   - PID1 冻住：硬件看门狗/softdog 复位。
@@ -129,14 +133,15 @@ LVM 说明：
 
 ### 5.3 成功判据
 
-`boot-complete.target` 排在 `multi-user.target` 之后，并检查：
+`keel-boot-ok.service` 排在 `multi-user.target` 之后，并检查：
 
 - `/` 是 erofs ro。
-- `/etc` 是 ext4，挂载点。
+- `/etc` 是独立挂载点。
 - `/var`/`/home` 是 btrfs 子卷，挂载点。
-- `sshd` 已启动（可选）。
+- `systemctl --failed` 为空。
 
 **不**把 `network-online.target` 放进去：DHCP 慢/网线没插不应触发回滚。
+决定见 [Q-0013](../open/Q-0013-bless-point.md) 的 Resolution。
 
 ## 6. Failure modes / recovery
 
@@ -180,3 +185,4 @@ E3：真机更新 5 轮。
 | 2026-11-10 | 初稿（物理 root 分区） |
 | 2026-11-13 | 改为 root LV；路径 `/dev/system/*`；LVM 失败进 recovery |
 | 2026-11-20 | `keel-update` 移入 recovery；更新改两段式；当前槽从 `/var/lib/keel/boot-ok` 读 |
+| 2026-11-26 | V5：tries=10；mask 原生 bless；`keel-boot-ok` / `keel-boot-repair` |

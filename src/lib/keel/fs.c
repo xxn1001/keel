@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
-#include <keel/fs.h>
-#include <keel/proc.h>
+#include "fs.h"
+#include "proc.h"
 
 #include <errno.h>
 #include <fcntl.h>
