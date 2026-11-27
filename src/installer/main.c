@@ -80,9 +80,17 @@ static int exec_argv(struct ctx *ctx, char *const argv[])
         return 0;
     }
     keel_print_argv("exec", argv);
-    if (keel_run(argv) != 0) {
-        keel_err("command failed: %s", argv[0]);
-        return 4;
+    {
+        int rc = keel_run_timeout(argv, ctx->timeout);
+
+        if (rc == 124) {
+            keel_err("timed out after %us: %s", ctx->timeout, argv[0]);
+            return 4;
+        }
+        if (rc != 0) {
+            keel_err("command failed: %s", argv[0]);
+            return 4;
+        }
     }
     return 0;
 }
@@ -95,9 +103,17 @@ static int exec_input(struct ctx *ctx, char *const argv[], const char *input)
         return 0;
     }
     keel_print_argv("exec", argv);
-    if (keel_run_input(argv, input) != 0) {
-        keel_err("command failed: %s", argv[0]);
-        return 4;
+    {
+        int rc = keel_run_input_timeout(argv, input, ctx->timeout);
+
+        if (rc == 124) {
+            keel_err("timed out after %us: %s", ctx->timeout, argv[0]);
+            return 4;
+        }
+        if (rc != 0) {
+            keel_err("command failed: %s", argv[0]);
+            return 4;
+        }
     }
     return 0;
 }
@@ -113,7 +129,9 @@ static int mount_fs(struct ctx *ctx, const char *source, const char *target,
         keel_print_argv("plan", argv);
         return 0;
     }
-    return keel_mount(source, target, type, options, m) == 0 ? 0 : 4;
+    return keel_mount(source, target, type, options, m, ctx->timeout) == 0
+               ? 0
+               : 4;
 }
 
 static int umount_fs(struct ctx *ctx, struct keel_mount *m)
@@ -124,7 +142,7 @@ static int umount_fs(struct ctx *ctx, struct keel_mount *m)
         keel_print_argv("plan", argv);
         return 0;
     }
-    return keel_umount(m) == 0 ? 0 : 4;
+    return keel_umount(m, ctx->timeout) == 0 ? 0 : 4;
 }
 
 static int make_dir(struct ctx *ctx, const char *path, mode_t mode)
@@ -144,7 +162,7 @@ static int make_dir(struct ctx *ctx, const char *path, mode_t mode)
     return 0;
 }
 
-static int disk_has_vg(const char *disk)
+static int disk_has_vg(const char *disk, unsigned timeout)
 {
     char out[4096];
     char *argv[] = { "pvs", "--noheadings", "--options",
@@ -152,8 +170,12 @@ static int disk_has_vg(const char *disk)
     char *line;
     char *save = NULL;
 
-    if (keel_capture(argv, out, sizeof(out)) != 0)
-        return -1;
+    {
+        int rc = keel_capture_timeout(argv, out, sizeof(out), timeout);
+
+        if (rc != 0)
+            return rc == 124 ? 124 : -1;
+    }
     for (line = strtok_r(out, "\n", &save); line != NULL;
          line = strtok_r(NULL, "\n", &save)) {
         char *pv = line;
@@ -252,7 +274,11 @@ static int check_disk(struct ctx *ctx)
             keel_err("disk is mounted: %s", ctx->disk);
             return 3;
         }
-        vg = disk_has_vg(ctx->disk);
+        vg = disk_has_vg(ctx->disk, ctx->timeout);
+        if (vg == 124) {
+            keel_err("pvs timed out after %us", ctx->timeout);
+            return 4;
+        }
         if (vg < 0) {
             keel_err("cannot run pvs");
             return 4;
@@ -309,7 +335,7 @@ static int step_partition(struct ctx *ctx)
         keel_print_argv("plan", partx_drop);
     } else {
         keel_print_argv("exec", partx_drop);
-        if (keel_run(partx_drop) < 0)
+        if (keel_run_timeout(partx_drop, ctx->timeout) < 0)
             return 4;
     }
     return exec_argv(ctx, partx);
@@ -332,9 +358,18 @@ static int step_discover(struct ctx *ctx)
     keel_log("discover: waiting for partition links");
     deadline = time(NULL) + (time_t)ctx->timeout;
     for (;;) {
+        time_t now = time(NULL);
+        unsigned remaining;
         int ready;
 
-        last_rc = keel_run(argv);
+        if (now >= deadline)
+            break;
+        remaining = (unsigned)(deadline - now);
+        last_rc = keel_run_timeout(argv, remaining);
+        if (last_rc == 124) {
+            keel_err("keel-discover timed out after %us", remaining);
+            return 4;
+        }
         ready = last_rc == 0;
         missing = "none";
         for (i = 0; ready && i < sizeof(part_labels) / sizeof(part_labels[0]);
@@ -418,10 +453,12 @@ static int step_write(struct ctx *ctx)
         plan_write(ctx, rootfs, "/dev/system/root_b");
         return plan_write(ctx, recovery, "/dev/disk/by-partlabel/recovery");
     }
-    rc = keel_write_image(rootfs, "/dev/system/root_a", &ctx->bytes_written);
+    rc = keel_write_image(rootfs, "/dev/system/root_a",
+                          &ctx->bytes_written);
     if (rc != 0)
         return 4;
-    rc = keel_write_image(rootfs, "/dev/system/root_b", &ctx->bytes_written);
+    rc = keel_write_image(rootfs, "/dev/system/root_b",
+                          &ctx->bytes_written);
     if (rc != 0)
         return 4;
     return keel_write_image(recovery, "/dev/disk/by-partlabel/recovery",
@@ -667,11 +704,14 @@ int main(int argc, char **argv)
         { "dry-run", no_argument, NULL, 'n' },
         { "force", no_argument, NULL, 'f' },
         { "timeout", required_argument, NULL, 't' },
+        { "self-test-timeout", required_argument, NULL, 1000 },
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 },
     };
     struct ctx ctx;
     int opt;
+    int self_test = 0;
+    unsigned self_test_timeout = 0;
     size_t i;
 
     keel_set_progname("keel-install");
@@ -700,6 +740,13 @@ int main(int argc, char **argv)
                 return 2;
             }
             break;
+        case 1000:
+            if (parse_timeout(optarg, &self_test_timeout) < 0) {
+                keel_err("invalid self-test timeout: %s", optarg);
+                return 2;
+            }
+            self_test = 1;
+            break;
         case 'h':
             usage(stdout);
             return 0;
@@ -707,6 +754,13 @@ int main(int argc, char **argv)
             usage(stderr);
             return 2;
         }
+    }
+    if (self_test) {
+        char *argv[] = { "sleep", "30", NULL };
+        int rc = keel_run_timeout(argv, self_test_timeout);
+
+        keel_log("self-test-timeout: rc=%d", rc);
+        return rc == 124 ? 0 : 1;
     }
     if (optind != argc || ctx.disk == NULL || ctx.source == NULL) {
         usage(stderr);
@@ -717,10 +771,10 @@ int main(int argc, char **argv)
 
         if (rc != 0) {
             keel_err("step %s failed (%d)", steps[i].name, rc);
-            keel_cleanup_mounts(ctx.mounts, M_COUNT);
+            keel_cleanup_mounts(ctx.mounts, M_COUNT, ctx.timeout);
             return rc;
         }
     }
-    keel_cleanup_mounts(ctx.mounts, M_COUNT);
+    keel_cleanup_mounts(ctx.mounts, M_COUNT, ctx.timeout);
     return 0;
 }
