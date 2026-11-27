@@ -453,18 +453,16 @@ static int step_write(struct ctx *ctx)
         plan_write(ctx, rootfs, "/dev/system/root_b");
         return plan_write(ctx, recovery, "/dev/disk/by-partlabel/recovery");
     }
-    rc = keel_write_image_timeout(rootfs, "/dev/system/root_a",
-                                  &ctx->bytes_written, ctx->timeout);
+    rc = keel_write_image(rootfs, "/dev/system/root_a",
+                          &ctx->bytes_written);
     if (rc != 0)
         return 4;
-    rc = keel_write_image_timeout(rootfs, "/dev/system/root_b",
-                                  &ctx->bytes_written, ctx->timeout);
+    rc = keel_write_image(rootfs, "/dev/system/root_b",
+                          &ctx->bytes_written);
     if (rc != 0)
         return 4;
-    return keel_write_image_timeout(recovery,
-                                    "/dev/disk/by-partlabel/recovery",
-                                    &ctx->bytes_written,
-                                    ctx->timeout) == 0 ? 0 : 4;
+    return keel_write_image(recovery, "/dev/disk/by-partlabel/recovery",
+                            &ctx->bytes_written) == 0 ? 0 : 4;
 }
 
 static int step_etc(struct ctx *ctx)
