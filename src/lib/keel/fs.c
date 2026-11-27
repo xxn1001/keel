@@ -218,8 +218,8 @@ static int write_all(int fd, const char *buf, size_t len)
     return 0;
 }
 
-int keel_write_image(const char *source, const char *target,
-                     unsigned long long *written)
+static int write_image_impl(const char *source, const char *target,
+                            unsigned long long *written)
 {
     unsigned long long source_size = keel_path_size(source);
     unsigned long long target_size = 0;
@@ -293,4 +293,41 @@ int keel_write_image(const char *source, const char *target,
             *written += source_size;
     }
     return rc;
+}
+
+int keel_write_image(const char *source, const char *target,
+                     unsigned long long *written)
+{
+    return write_image_impl(source, target, written);
+}
+
+int keel_write_image_timeout(const char *source, const char *target,
+                             unsigned long long *written,
+                             unsigned timeout_sec)
+{
+    unsigned long long size = keel_path_size(source);
+    pid_t pid;
+    int rc;
+
+    pid = fork();
+    if (pid < 0) {
+        keel_err("fork: %s", strerror(errno));
+        return -1;
+    }
+    if (pid == 0) {
+        (void)setpgid(0, 0);
+        _exit(write_image_impl(source, target, NULL) == 0 ? 0 : 1);
+    }
+    (void)setpgid(pid, pid);
+    rc = keel_wait_timeout(pid, timeout_sec);
+    if (rc == 124) {
+        keel_err("write %s -> %s timed out after %us", source, target,
+                 timeout_sec);
+        return -1;
+    }
+    if (rc != 0)
+        return -1;
+    if (written != NULL)
+        *written += size;
+    return 0;
 }

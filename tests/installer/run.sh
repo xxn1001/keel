@@ -18,4 +18,5 @@ ${CC:-cc} -std=c99 -Wall -Wextra -Werror \
     "$repo_dir/src/lib/keel/mount.c"
 
 KEEL_INSTALL_BIN="$bin" sh "$test_dir/test-dry-run.sh"
+KEEL_INSTALL_BIN="$bin" sh "$test_dir/test-timeout.sh"
 echo "tests/installer: ok"

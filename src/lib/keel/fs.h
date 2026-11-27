@@ -16,5 +16,8 @@ int keel_path_has_partition_table(const char *path);
 int keel_path_belongs_to(const char *path, const char *disk);
 int keel_write_image(const char *source, const char *target,
                      unsigned long long *written);
+int keel_write_image_timeout(const char *source, const char *target,
+                             unsigned long long *written,
+                             unsigned timeout_sec);
 
 #endif

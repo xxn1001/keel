@@ -10,8 +10,10 @@ struct keel_mount {
 };
 
 int keel_mount(const char *source, const char *target, const char *type,
-               const char *options, struct keel_mount *m);
-int keel_umount(struct keel_mount *m);
-void keel_cleanup_mounts(struct keel_mount *list, size_t n);
+               const char *options, struct keel_mount *m,
+               unsigned timeout_sec);
+int keel_umount(struct keel_mount *m, unsigned timeout_sec);
+void keel_cleanup_mounts(struct keel_mount *list, size_t n,
+                         unsigned timeout_sec);
 
 #endif
